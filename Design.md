@@ -1,6 +1,6 @@
-# FinanceBro Design System
+# PortfolioPilot Design System
 
-This document outlines the design language, color palette, and component structure for **FinanceBro**, a premium portfolio analysis dashboard.
+This document outlines the design language, color palette, and component structure for **PortfolioPilot**, a premium portfolio analysis dashboard.
 
 This file serves as context for Google Stitch agents to generate cohesive layouts and components matching the existing application.
 

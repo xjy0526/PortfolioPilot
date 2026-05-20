@@ -1,4 +1,4 @@
-"""FinanceBro - Analyst Track Record Service
+"""PortfolioPilot - Analyst Track Record Service
 
 Bewertet die Qualität von Analysten-Empfehlungen anhand ihres historischen
 Track Records. Vergleicht vergangene Ratings mit der tatsächlichen

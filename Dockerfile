@@ -1,4 +1,4 @@
-# FinanceBro - Production Container
+# PortfolioPilot - Production Container
 FROM python:3.12-slim
 
 # System deps

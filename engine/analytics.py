@@ -1,4 +1,4 @@
-"""FinanceBro - Analytics Engine
+"""PortfolioPilot - Analytics Engine
 
 Berechnungen für:
   - Korrelationsmatrix & Diversifikations-Score

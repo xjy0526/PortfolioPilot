@@ -1,4 +1,4 @@
-"""FinanceBro - Parqet Portfolio Fetcher
+"""PortfolioPilot - Parqet Portfolio Fetcher
 
 Liest Portfolio-Daten aus Parqet und liefert Netto-Positionen + Cash.
 

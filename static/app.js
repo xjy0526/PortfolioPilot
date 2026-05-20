@@ -1,5 +1,5 @@
 /**
- * FinanceBro – Dashboard Frontend Logic
+ * PortfolioPilot – Dashboard Frontend Logic
  * Fetches data from FastAPI backend and renders the dashboard.
  */
 
@@ -9,7 +9,7 @@ let sectorChart = null;
 let scoreChart = null;
 let currentFilter = 'all';
 let currentSort = 'score-desc';
-const savedDisplayCurrency = localStorage.getItem('financebro-currency');
+const savedDisplayCurrency = localStorage.getItem('portfoliopilot-currency');
 let displayCurrency = savedDisplayCurrency === 'CNY' ? 'CNY' : 'USD'; // USD or CNY
 let priceEventSource = null;
 let wsConnected = false;
@@ -1051,6 +1051,9 @@ function switchTab(tab) {
     if (tab === 'analyse') {
         renderAnalyseTab();
     }
+    if (tab === 'rebalancing') {
+        renderAiRebalance();
+    }
     // Load historie tab data on first view
     if (tab === 'historie') {
         loadPerformanceKPIs();
@@ -1365,7 +1368,7 @@ function formatBaseCurrency(eurValue) {
 
 function toggleCurrency() {
     displayCurrency = displayCurrency === 'USD' ? 'CNY' : 'USD';
-    localStorage.setItem('financebro-currency', displayCurrency);
+    localStorage.setItem('portfoliopilot-currency', displayCurrency);
     updateDynamicCurrencyLabels();
     renderDashboard();
 }
@@ -1560,6 +1563,8 @@ function updateLiveIndicator() {
 // ==================== Analyse Tab ====================
 let analyseLoaded = false;
 let benchmarkChartInstance = null;
+let portfolioRiskSummaryData = null;
+let structuredAiAnalysisData = null;
 
 async function renderAnalyseTab() {
     if (analyseLoaded) return;
@@ -1576,6 +1581,9 @@ async function renderAnalyseTab() {
 
     // Parallel laden
     renderRisk();
+    renderPortfolioRiskSummary();
+    renderRagEvidence();
+    renderBacktestReport();
     loadBenchmark();
     renderDividends();
     renderCorrelation();
@@ -1708,6 +1716,206 @@ async function renderRisk() {
             </div>
         `;
     } catch (e) { console.log(isZh() ? '风险数据不可用' : 'Risk data unavailable'); }
+}
+
+async function renderPortfolioRiskSummary() {
+    const container = document.getElementById('portfolioRiskSummaryContainer');
+    const assetContainer = document.getElementById('assetRiskCommentsContainer');
+    if (!container) return;
+    container.innerHTML = `<div class="empty-state">${isZh() ? '风险汇总加载中...' : 'Loading risk summary...'}</div>`;
+
+    try {
+        const res = await fetch('/api/portfolio/risk-summary');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        portfolioRiskSummaryData = data;
+
+        const m = data.portfolio_metrics || {};
+        const riskColor = data.risk_level === 'high' ? '#ef4444' : data.risk_level === 'medium' ? '#eab308' : '#22c55e';
+        container.innerHTML = `
+            <div class="research-kpi-grid">
+                <div class="research-kpi"><span>${isZh() ? '风险分' : 'Risk'}</span><strong style="color:${riskColor}">${Number(data.risk_score || 0).toFixed(1)}/10</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '年化收益' : 'Ann. Return'}</span><strong>${formatPercentDecimal(m.annual_return)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '年化波动' : 'Ann. Vol'}</span><strong>${formatPercentDecimal(m.annual_volatility)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '最大回撤' : 'Max DD'}</span><strong>${formatPercentDecimal(m.max_drawdown)}</strong></div>
+                <div class="research-kpi"><span>Sharpe</span><strong>${Number(m.sharpe_ratio || 0).toFixed(2)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '价格历史' : 'History'}</span><strong>${data.data_quality?.price_history_points || 0}</strong></div>
+            </div>
+            <div class="research-chip-list">
+                ${(data.concentration_flags || []).map(flag => `<span class="research-chip warn">${_escapeHtml(flag)}</span>`).join('') || `<span class="research-chip">${isZh() ? '暂无集中度警报' : 'No concentration flags'}</span>`}
+            </div>
+        `;
+        renderAssetRiskComments(data);
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state">${isZh() ? '暂无风险汇总数据' : 'No risk summary available'}</div>`;
+        if (assetContainer) assetContainer.innerHTML = `<div class="empty-state">${isZh() ? '暂无单资产风险解释' : 'No asset risk comments'}</div>`;
+    }
+}
+
+function renderAssetRiskComments(riskSummary, aiAnalysis = null) {
+    const container = document.getElementById('assetRiskCommentsContainer');
+    if (!container) return;
+
+    const aiByTicker = {};
+    (aiAnalysis?.asset_level_comments || []).forEach(item => {
+        aiByTicker[item.ticker] = item;
+    });
+    const metrics = riskSummary?.asset_metrics || {};
+    const rows = Object.entries(metrics).map(([ticker, item]) => {
+        const ai = aiByTicker[ticker];
+        const level = ai?.risk_level || item.risk_level || 'medium';
+        const cls = level === 'high' ? 'risk-high' : level === 'low' ? 'risk-low' : 'risk-medium';
+        const comment = ai?.comment || (
+            isZh()
+                ? `${ticker} 权重 ${formatPercentDecimal(item.weight)}，年化波动 ${formatPercentDecimal(item.annual_volatility)}，风险等级 ${level}。`
+                : `${ticker} weight ${formatPercentDecimal(item.weight)}, annual volatility ${formatPercentDecimal(item.annual_volatility)}, risk level ${level}.`
+        );
+        return `
+            <div class="asset-risk-row">
+                <div><strong>${_escapeHtml(ticker)}</strong><span>${_escapeHtml(item.sector || '')} · ${_escapeHtml(item.asset_type || '')}</span></div>
+                <span class="research-chip ${cls}">${_escapeHtml(level)}</span>
+                <p>${_escapeHtml(comment)}</p>
+            </div>
+        `;
+    }).join('');
+    container.innerHTML = rows || `<div class="empty-state">${isZh() ? '暂无单资产风险解释' : 'No asset risk comments'}</div>`;
+}
+
+async function loadStructuredAiAnalysis(force = false) {
+    const btn = document.querySelector('[onclick="loadStructuredAiAnalysis(true)"]');
+    if (structuredAiAnalysisData && !force) return structuredAiAnalysisData;
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = isZh() ? '分析中...' : 'Analyzing...';
+    }
+    try {
+        const res = await fetch('/api/ai/analyze-portfolio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lang: currentLang, top_k: 5 }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        structuredAiAnalysisData = data.analysis;
+        if (data.portfolio_risk_summary) {
+            portfolioRiskSummaryData = data.portfolio_risk_summary;
+            renderAssetRiskComments(data.portfolio_risk_summary, data.analysis);
+        }
+        renderRagEvidence(data.evidence || []);
+        showToast(isZh() ? '结构化 AI 分析已生成' : 'Structured AI analysis ready', 'success');
+        return data.analysis;
+    } catch (e) {
+        showToast(localizeServerMessage(e.message, 'AI 分析失败', 'AI analysis failed'), 'error');
+        return null;
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = isZh() ? '生成结构化 AI 分析' : 'Run structured AI analysis';
+        }
+    }
+}
+
+async function renderRagEvidence(preloaded = null) {
+    const container = document.getElementById('ragEvidenceContainer');
+    if (!container) return;
+    try {
+        let evidence = preloaded;
+        if (!evidence) {
+            const query = buildRiskEvidenceQuery();
+            const res = await fetch('/api/rag/retrieve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, top_k: 5 }),
+            });
+            const data = await res.json();
+            evidence = data.evidence || [];
+        }
+        container.innerHTML = (evidence || []).map(item => `
+            <div class="evidence-item">
+                <strong>${_escapeHtml(item.source || 'local evidence')}</strong>
+                <span>${Number(item.score || 0).toFixed(2)}</span>
+                <p>${_escapeHtml((item.text || '').slice(0, 220))}</p>
+            </div>
+        `).join('') || `<div class="empty-state">${isZh() ? '暂无本地证据。可把 txt/md/csv 放入 rag_documents/。' : 'No local evidence. Add txt/md/csv files to rag_documents/.'}</div>`;
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state">${isZh() ? 'RAG 暂不可用' : 'RAG unavailable'}</div>`;
+    }
+}
+
+async function renderBacktestReport() {
+    const container = document.getElementById('backtestReportContainer');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/backtest/report');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        const rows = data.strategies || [];
+        container.innerHTML = `
+            ${data.mock_price_data_used ? `<div class="holding-rec-note">${isZh() ? '使用可复现 mock 行情数据' : 'Using reproducible mock price data'}</div>` : ''}
+            <div class="research-table-wrap">
+                <table class="research-table">
+                    <thead><tr><th>${isZh() ? '策略' : 'Strategy'}</th><th>${isZh() ? '收益' : 'Return'}</th><th>${isZh() ? '波动' : 'Vol'}</th><th>Sharpe</th><th>${isZh() ? '换手' : 'Turnover'}</th></tr></thead>
+                    <tbody>${rows.map(row => `
+                        <tr>
+                            <td>${_escapeHtml(row.strategy)}</td>
+                            <td>${formatPercentDecimal(row.annual_return)}</td>
+                            <td>${formatPercentDecimal(row.annual_volatility)}</td>
+                            <td>${Number(row.sharpe_ratio || 0).toFixed(2)}</td>
+                            <td>${formatPercentDecimal(row.turnover)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>
+            </div>
+        `;
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state">${isZh() ? '暂无回测报告' : 'No backtest report'}</div>`;
+    }
+}
+
+async function renderAiRebalance() {
+    const container = document.getElementById('aiRebalanceContainer');
+    if (!container) return;
+    container.innerHTML = `<div class="empty-state">${isZh() ? '调仓建议加载中...' : 'Loading rebalance suggestions...'}</div>`;
+    try {
+        const res = await fetch('/api/portfolio/rebalance');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        const suggestions = data.rebalance?.suggestions || [];
+        container.innerHTML = `
+            <div class="research-chip-list">
+                <span class="research-chip">${isZh() ? '风险分' : 'Risk'} ${Number(data.risk_score || 0).toFixed(1)}/10</span>
+                ${(data.rebalance?.sector_warnings || []).map(x => `<span class="research-chip warn">${_escapeHtml(x)}</span>`).join('')}
+            </div>
+            <div class="holding-rec-grid">
+                ${suggestions.map(item => `
+                    <div class="holding-rec-card">
+                        <div class="holding-rec-topline">
+                            <div><strong>${_escapeHtml(item.ticker)}</strong><span>${formatPercentDecimal(item.current_weight)} → ${formatPercentDecimal(item.target_weight)}</span></div>
+                            <span class="advisor-rec-badge ${item.weight_change < -0.005 ? 'rec-reduce' : item.weight_change > 0.005 ? 'rec-buy' : 'rec-hold'}">${formatPercentDecimal(item.weight_change)}</span>
+                        </div>
+                        <p class="holding-rec-rationale">${_escapeHtml(item.reason || '')}</p>
+                    </div>
+                `).join('') || `<div class="empty-state">${isZh() ? '暂无调仓建议' : 'No rebalance suggestions'}</div>`}
+            </div>
+            <div class="holding-rec-next">${_escapeHtml(data.disclaimer || '')}</div>
+        `;
+    } catch (e) {
+        container.innerHTML = `<div class="empty-state">${isZh() ? 'AI 调仓建议暂不可用' : 'AI rebalance unavailable'}</div>`;
+    }
+}
+
+function buildRiskEvidenceQuery() {
+    const tickers = (portfolioData?.stocks || [])
+        .map(s => s.position?.ticker)
+        .filter(Boolean)
+        .slice(0, 12)
+        .join(' ');
+    return `portfolio risk news policy research ${tickers}`;
+}
+
+function formatPercentDecimal(value) {
+    const num = Number(value || 0) * 100;
+    return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`;
 }
 
 async function loadBenchmark() {
@@ -2112,7 +2320,7 @@ if (!fmpUsageInterval) {
 function saveScoreHistory() {
     if (!portfolioData || !portfolioData.scores) return;
     const today = new Date().toISOString().split('T')[0];
-    const historyKey = 'financebroScoreHistory';
+    const historyKey = 'portfoliopilotScoreHistory';
     let history = {};
     try {
         history = JSON.parse(localStorage.getItem(historyKey) || '{}');
@@ -2136,7 +2344,7 @@ function saveScoreHistory() {
 
 function getScoreHistory(ticker) {
     try {
-        const history = JSON.parse(localStorage.getItem('financebroScoreHistory') || '{}');
+        const history = JSON.parse(localStorage.getItem('portfoliopilotScoreHistory') || '{}');
         return history[ticker] || [];
     } catch(e) { return []; }
 }

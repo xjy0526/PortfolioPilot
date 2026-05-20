@@ -1,4 +1,4 @@
-"""FinanceBro - Shadow Portfolio Agent.
+"""PortfolioPilot - Shadow Portfolio Agent.
 
 Autonomer AI-Agent der ein fiktives Portfolio verwaltet:
   1. PERCEPTION  - Liest echtes Portfolio + Marktdaten + Shadow-State
@@ -545,7 +545,7 @@ async def _call_gemini_agent(context: dict, candidates: list[dict]) -> dict:
     strategy_hint = strategy_hints.get(rules.get("strategy_mode", "balanced"), strategy_hints["balanced"])
 
     system_prompt = (
-        "Du bist ein autonomer AI-Portfolio-Agent fuer FinanceBro. "
+        "Du bist ein autonomer AI-Portfolio-Agent fuer PortfolioPilot. "
         "Du verwaltest ein fiktives Shadow-Portfolio mit Paper-Money. "
         "Deine Aufgabe: Analyse das Portfolio taeglich und triff eigenstaendig Kauf/Verkauf-Entscheidungen.\n\n"
         f"SHADOW-PORTFOLIO STATUS:\n"

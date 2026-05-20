@@ -1,4 +1,4 @@
-/* FinanceBro - Premium Dark Mode Dashboard */
+/* PortfolioPilot - Premium Dark Mode Dashboard */
 
 /* ==================== CSS Variables ==================== */
 :root {
@@ -4761,4 +4761,165 @@ button:focus:not(:focus-visible) {
 /* Chevron rotation when expanded */
 .shadow-config-chevron-open {
     transform: rotate(180deg);
+}
+
+/* Research extensions */
+.research-row {
+    align-items: stretch;
+}
+
+.research-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.research-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.research-kpi {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.8rem;
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.research-kpi span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-bottom: 0.35rem;
+}
+
+.research-kpi strong {
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.research-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.8rem;
+}
+
+.research-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 0.72rem;
+}
+
+.research-chip.warn,
+.research-chip.risk-high {
+    border-color: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.09);
+}
+
+.research-chip.risk-medium {
+    border-color: rgba(234, 179, 8, 0.35);
+    color: #fde68a;
+    background: rgba(234, 179, 8, 0.09);
+}
+
+.research-chip.risk-low {
+    border-color: rgba(34, 197, 94, 0.35);
+    color: #86efac;
+    background: rgba(34, 197, 94, 0.09);
+}
+
+.asset-risk-row,
+.evidence-item {
+    border-bottom: 1px solid var(--border);
+    padding: 0.85rem 0;
+}
+
+.asset-risk-row:first-child,
+.evidence-item:first-child {
+    padding-top: 0;
+}
+
+.asset-risk-row:last-child,
+.evidence-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.asset-risk-row > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.asset-risk-row strong,
+.evidence-item strong {
+    color: var(--text-primary);
+}
+
+.asset-risk-row span,
+.evidence-item span {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.asset-risk-row p,
+.evidence-item p {
+    margin: 0.45rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+.research-table-wrap {
+    overflow-x: auto;
+}
+
+.research-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+}
+
+.research-table th,
+.research-table td {
+    padding: 0.55rem 0.45rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.research-table th {
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.research-table td {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.ai-rebalance-card {
+    margin-bottom: 1rem;
+}
+
+@media (max-width: 768px) {
+    .research-card-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .research-kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }

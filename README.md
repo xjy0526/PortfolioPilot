@@ -160,6 +160,224 @@ POLY-BTC-150K-2026,80,0.31,0.36,2026-01-05,USD,Prediction Markets,BTC above 150k
 
 在 Dashboard 里通过 `CSV Import` 上传后，系统会把标准化后的持仓保存到项目目录下的 `portfolio.csv`（可通过 `.env` 里的 `PARQET_PORTFOLIO_CSV` 修改路径）。之后重启服务或执行刷新时，会优先读取这份本地 CSV，所以真实持仓可以长期保存在本地。`portfolio.csv` 已加入 `.gitignore`，避免误提交真实持仓。
 
+## 新增投研与资管能力
+
+这一版将项目升级为面向证券投研与基金资产管理场景的 LLM 金融资产分析、组合风控与智能调仓系统：
+
+- `analytics/risk_metrics.py`：计算单资产和组合收益、年化波动、最大回撤、Sharpe、资产权重、行业集中度、资产类型暴露，并输出 `portfolio_risk_summary`
+- `services/financial_analysis.py` + `prompts/financial_analysis_prompt.py`：调用千问兼容接口生成严格 JSON Schema 的组合分析；无 API Key 或 JSON 非法时自动回退到安全模板
+- `rag/`：读取本地 `txt/md/csv`，执行 chunking、embedding 和本地向量检索；未安装 `sentence-transformers/faiss` 时自动使用轻量 hashing 检索
+- `portfolio_optimizer/`：提供等权、简化风险平价、最小方差、均值-方差、LLM 风险调整权重策略，输出可解释的目标权重与调整原因
+- `backtest/`：比较原始组合、等权、风险平价、最小方差、均值-方差、LLM 风险调整策略，输出收益、波动、回撤、Sharpe 和换手率
+
+前端已新增：
+
+- 组合风险总览
+- 单资产风险解释
+- AI 调仓建议
+- RAG 证据来源
+- 回测结果表格
+
+## API 示例
+
+风险总览：
+
+```bash
+curl http://localhost:8000/api/portfolio/risk-summary
+```
+
+结构化 AI 分析：
+
+```bash
+curl -X POST http://localhost:8000/api/ai/analyze-portfolio \
+  -H "Content-Type: application/json" \
+  -d '{"lang":"zh","top_k":5}'
+```
+
+RAG 检索：
+
+```bash
+curl -X POST http://localhost:8000/api/rag/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{"query":"科技行业集中度和AI监管风险","top_k":5}'
+```
+
+AI 风险调仓：
+
+```bash
+curl http://localhost:8000/api/portfolio/rebalance
+```
+
+策略回测报告：
+
+```bash
+curl http://localhost:8000/api/backtest/report
+```
+
+## RAG 本地证据
+
+默认读取 `.env` 中的：
+
+```env
+RAG_DOCUMENT_DIR=rag_documents
+RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+RAG_CHUNK_SIZE=900
+RAG_TOP_K=5
+```
+
+把新闻、公告、研报摘要、政策文本放入 `rag_documents/` 即可，支持 `.txt`、`.md`、`.csv`。该目录默认被 `.gitignore` 忽略，避免误提交非公开资料。
+
+如果你想启用更强的本地语义检索，可以自行安装：
+
+```bash
+pip install sentence-transformers faiss-cpu
+```
+
+未安装这些库时，系统仍会用内置 hashing embedding 正常运行。
+
+## 回测
+
+运行：
+
+```bash
+python -m backtest.run_backtest
+```
+
+默认读取 [example_portfolio.csv](example_portfolio.csv)，并优先寻找：
+
+```text
+data/prices/example_historical_prices.csv
+```
+
+如果这个真实行情格式的 CSV 存在，回测会优先使用它；如果不存在，才会生成可复现的 mock price data。报告会生成到：
+
+```text
+cache/backtest_report.json
+```
+
+报告会包含：
+
+- `data_source`：`historical_csv` 或 `mock_price_data`
+- `start_date` / `end_date`：价格样本覆盖区间
+- `asset_count`：实际参与回测的资产数量
+- `mock_price_data_used`：是否使用 mock 行情
+
+### 均值-方差优化器说明
+
+`portfolio_optimizer/mean_variance_optimizer.py` 提供两个研究演示函数：
+
+- `minimum_variance_portfolio`：在 long-only、权重和为 1、单资产最大权重、可选行业最大权重约束下，寻找低波动组合
+- `mean_variance_portfolio`：在同样约束下，根据历史收益均值和协方差矩阵做均值-方差权衡
+
+这两个函数已经接入 `python -m backtest.run_backtest`，回测报告会新增 `minimum_variance` 和 `mean_variance` 策略结果，并输出 `target_weight`、`weight_change`、`expected_return`、`expected_volatility`、`reason`。该模块仅用于投研流程演示和风险研究，不构成投资建议、交易建议或收益承诺。
+
+如果没有真实历史行情数据，回测会生成固定随机种子的 mock price data，并在报告里标记：
+
+```json
+"mock_price_data_used": true
+```
+
+### 如何使用真实行情数据回测
+
+推荐把组合和行情分别放在：
+
+```text
+data/portfolios/
+data/prices/
+```
+
+项目已提供多资产组合示例：
+
+```text
+data/portfolios/example_multi_asset_portfolio.csv
+```
+
+`data/prices/example_historical_prices.csv` 是小型格式示例，适合验证流程；做真实评估时请替换为覆盖更长周期的日频行情。
+
+历史行情 CSV 至少需要包含 `date`、`ticker`、`close` 三列，例如：
+
+```csv
+date,ticker,close
+2026-04-20,AAPL,168.00
+2026-04-21,AAPL,169.20
+2026-04-20,600519.SS,1580.00
+2026-04-21,600519.SS,1595.00
+```
+
+也支持宽表格式：
+
+```csv
+date,AAPL,MSFT,NVDA
+2026-04-20,168,410,860
+2026-04-21,169.2,412.3,875
+```
+
+使用真实行情文件运行：
+
+```bash
+python -m backtest.run_backtest \
+  --portfolio data/portfolios/example_multi_asset_portfolio.csv \
+  --prices data/prices/example_historical_prices.csv
+```
+
+也可以在 `.env` 中设置默认价格文件：
+
+```env
+BACKTEST_PRICE_CSV=data/prices/example_historical_prices.csv
+```
+
+## 测试
+
+```bash
+pytest
+```
+
+## LLM Evaluation
+
+项目新增了结构化 LLM 金融分析质量评估模块：
+
+```bash
+python -m evaluation.run_llm_eval
+```
+
+默认输出：
+
+```text
+cache/evaluation_report.json
+```
+
+评估集包含 20 条组合风险测试用例，覆盖：
+
+- 单资产集中
+- 行业集中
+- 高波动
+- 高回撤
+- 多资产分散
+- 低风险组合
+- 预测市场敞口
+
+报告指标包括：
+
+- `json_valid_rate`：LLM 输出是否能解析为合法 JSON
+- `risk_detection_rate`：是否识别到测试用例预期风险
+- `evidence_usage_rate`：是否引用了传入的本地证据来源
+- `rebalance_explainability_rate`：调仓建议是否包含可解释理由
+- `hallucination_flag_rate`：是否出现未知 ticker 或虚构证据来源
+
+没有真实 `QWEN_API_KEY` 时会自动使用 mock LLM response。为了避免消耗模型额度，也可以强制 mock：
+
+```bash
+python -m evaluation.run_llm_eval --mock
+```
+
+如果已经配置千问 Key，并希望评估真实模型输出：
+
+```bash
+python -m evaluation.run_llm_eval --real
+```
+
+本项目在没有真实 `QWEN_API_KEY`、没有向量库、没有真实行情数据时也可以运行：AI 分析会使用安全模板，RAG 返回空证据或 hashing 检索，回测使用可复现 mock 行情。
+
 ## 后续可扩展方向
 
 - 接入更多中国市场数据源

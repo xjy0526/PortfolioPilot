@@ -1,0 +1,9 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+AAPL,15,142.50,178.10,2024-03-15,USD,Technology,Apple Inc.,equity,US,NASDAQ,US
+MSFT,10,285.00,425.10,2024-01-20,USD,Technology,Microsoft Corp.,equity,US,NASDAQ,US
+NVDA,8,450.00,955.00,2024-06-01,USD,Technology,NVIDIA Corp.,equity,US,NASDAQ,US
+SPY,12,430.00,510.00,2024-04-10,USD,ETF,S&P 500 ETF,etf,US,NYSEARCA,US
+600519.SS,3,1680.00,1650.00,2024-05-10,CNY,Consumer Defensive,Kweichow Moutai,cn_equity,CN-A,SSE,CN
+300750.SZ,10,185.00,203.00,2024-02-22,CNY,Industrials,CATL,cn_equity,CN-A,SZSE,CN
+POLY-TRUMP-2028,120,0.42,0.63,2025-12-01,USD,Prediction Markets,Trump wins 2028?,prediction_market,Polymarket,Polymarket,WEB3
+POLY-BTC-150K-2026,80,0.31,0.41,2026-01-05,USD,Prediction Markets,BTC above 150k in 2026?,prediction_market,Polymarket,Polymarket,WEB3

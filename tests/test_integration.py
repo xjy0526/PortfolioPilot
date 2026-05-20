@@ -1,4 +1,4 @@
-"""FinanceBro - Integration Tests (C3)
+"""PortfolioPilot - Integration Tests (C3)
 
 End-to-end Tests für die komplette Pipeline:
   - Scorer mit allen 10 Faktoren

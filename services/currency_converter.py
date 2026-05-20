@@ -1,4 +1,4 @@
-"""FinanceBro - Zentrale Währungskonvertierung
+"""PortfolioPilot - Zentrale Währungskonvertierung
 
 Einheitliche EUR-Konvertierung basierend auf Ticker-Suffix und ISIN-Erkennung.
 Ersetzt die 3× duplizierte Konvertierungslogik in refresh.py.

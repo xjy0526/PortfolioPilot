@@ -294,6 +294,32 @@
                 </div>
             </div>
 
+            <!-- PortfolioPilot Research Extensions -->
+            <div class="analyse-row research-row">
+                <div class="chart-card analyse-wide">
+                    <div class="chart-header research-card-header">
+                        <h3 class="chart-title" style="margin:0;">组合风险总览</h3>
+                        <button class="filter-btn" onclick="loadStructuredAiAnalysis(true)">生成结构化 AI 分析</button>
+                    </div>
+                    <div id="portfolioRiskSummaryContainer"></div>
+                </div>
+                <div class="chart-card analyse-narrow">
+                    <h3 class="chart-title">RAG 证据来源</h3>
+                    <div id="ragEvidenceContainer"></div>
+                </div>
+            </div>
+
+            <div class="analyse-row research-row">
+                <div class="chart-card analyse-wide">
+                    <h3 class="chart-title">单资产风险解释</h3>
+                    <div id="assetRiskCommentsContainer"></div>
+                </div>
+                <div class="chart-card analyse-narrow">
+                    <h3 class="chart-title">回测结果</h3>
+                    <div id="backtestReportContainer"></div>
+                </div>
+            </div>
+
             <!-- Benchmark + Dividends -->
             <div class="analyse-row">
                 <div class="chart-card analyse-wide">
@@ -384,6 +410,10 @@
             <div class="rebalancing-header">
                 <h2 class="section-title" data-i18n="rebalancingRecommendations">⚖️ Rebalancing-Empfehlungen</h2>
                 <p class="rebalancing-summary" id="rebalancingSummary" data-i18n="calculating">Wird berechnet...</p>
+            </div>
+            <div class="chart-card ai-rebalance-card">
+                <h3 class="chart-title">AI 调仓建议</h3>
+                <div id="aiRebalanceContainer"></div>
             </div>
             <div class="rebalancing-cards" id="rebalancingCards">
             </div>

@@ -1,4 +1,4 @@
-"""FinanceBro - Wöchentlicher Performance-Digest (Gemini 2.0 Flash).
+"""PortfolioPilot - Wöchentlicher Performance-Digest (Gemini 2.0 Flash).
 
 Freitags-Report nach Börsenschluss mit Wochenrückblick:
   - Wochen-Performance (P&L)
@@ -159,7 +159,7 @@ def _format_digest(data: dict, ai_summary: str) -> str:
     from models import Rating
 
     lines = [
-        "📊 *FinanceBro Wochen-Digest*",
+        "📊 *PortfolioPilot Wochen-Digest*",
         f"_{datetime.now().strftime('%d.%m.%Y')}_\n",
         f"💰 Portfoliowert: {format_display_money(data['total_value'], data.get('summary'))}",
         f"💵 Einstandskosten: {format_display_money(data.get('total_cost', 0), data.get('summary'))}",
@@ -247,6 +247,6 @@ def _format_digest(data: dict, ai_summary: str) -> str:
 
     # Footer
     lines.append("\n" + "─" * 30)
-    lines.append("_FinanceBro Weekly Digest • Freitag 22:30_")
+    lines.append("_PortfolioPilot Weekly Digest • Freitag 22:30_")
 
     return "\n".join(lines)

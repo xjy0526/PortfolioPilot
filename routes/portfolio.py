@@ -1,4 +1,4 @@
-"""FinanceBro - Portfolio & Daten API-Routes.
+"""PortfolioPilot - Portfolio & Daten API-Routes.
 
 GET-Endpoints für Dashboard, Portfolio, Aktien, Rebalancing, etc.
 """

@@ -1,4 +1,4 @@
-"""FinanceBro - Wechselkurs Fetcher
+"""PortfolioPilot - Wechselkurs Fetcher
 
 Holt aktuelle Wechselkurse für die Währungsumrechnung im Dashboard.
 Nutzt FMP Forex-Endpoint oder Fallback auf ExchangeRate API.

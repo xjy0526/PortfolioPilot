@@ -1,4 +1,4 @@
-"""FinanceBro - Fear & Greed Index Fetcher
+"""PortfolioPilot - Fear & Greed Index Fetcher
 
 Holt den aktuellen Fear & Greed Index als Markt-Sentiment-Indikator.
 Primär: CNN Fear & Greed (inoffiziell)

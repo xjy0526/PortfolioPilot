@@ -1,4 +1,4 @@
-"""FinanceBro - URL Content Fetcher.
+"""PortfolioPilot - URL Content Fetcher.
 
 Shared Helper zum Abrufen und Konvertieren von externen Webseiten:
   - HTML → Plain Text Konvertierung (ohne externe Dependencies)
@@ -102,7 +102,7 @@ async def fetch_url_text(
             follow_redirects=True,
             timeout=httpx.Timeout(timeout),
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; FinanceBro/1.0)",
+                "User-Agent": "Mozilla/5.0 (compatible; PortfolioPilot/1.0)",
                 "Accept": "text/html,application/xhtml+xml,text/plain,application/json",
                 "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
             },

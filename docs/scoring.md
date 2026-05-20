@@ -1,4 +1,4 @@
-# FinanceBro – Scoring Engine v5
+# PortfolioPilot – Scoring Engine v5
 
 ## Übersicht
 

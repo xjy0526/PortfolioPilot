@@ -250,7 +250,7 @@ class TestTechRecommendationModel:
         assert rec.ai_summary == ""
         assert rec.revenue_growth is None
         assert rec.roe is None
-        assert rec.source == "FinanceBro Tech-Radar"
+        assert rec.source == "PortfolioPilot Tech-Radar"
 
     def test_new_fields_populated(self):
         rec = TechRecommendation(

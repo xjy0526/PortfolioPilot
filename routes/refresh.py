@@ -1,4 +1,4 @@
-"""FinanceBro - Refresh API-Routes.
+"""PortfolioPilot - Refresh API-Routes.
 
 POST-Endpoints zum Auslösen von Daten-Refreshes.
 """

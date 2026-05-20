@@ -1,4 +1,4 @@
-"""FinanceBro - Tests für Währungsumrechnung."""
+"""PortfolioPilot - Tests für Währungsumrechnung."""
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from fetchers.currency import fetch_eur_usd_rate, fetch_eur_dkk_rate, fetch_eur_gbp_rate, DEFAULT_EUR_USD, DEFAULT_EUR_DKK, DEFAULT_EUR_GBP

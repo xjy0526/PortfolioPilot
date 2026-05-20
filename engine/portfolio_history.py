@@ -1,4 +1,4 @@
-"""FinanceBro - Portfolio History Engine
+"""PortfolioPilot - Portfolio History Engine
 
 Rekonstruiert den historischen Wert jeder Einzelaktie und des
 Gesamtportfolios über die Zeit.
@@ -28,7 +28,7 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # SQLite-Pfad (gleiche DB wie database.py)
-_DB_PATH = settings.CACHE_DIR / "financebro.db"
+_DB_PATH = settings.CACHE_DIR / "portfoliopilot.db"
 
 
 # ─────────────────────────────────────────────────────────────

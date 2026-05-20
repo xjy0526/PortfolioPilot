@@ -5,6 +5,7 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 python-dotenv==1.0.1
 pandas==2.2.3
+numpy>=1.26
 jinja2==3.1.5
 pydantic==2.10.4
 pydantic-settings>=2.0
@@ -19,6 +20,10 @@ apscheduler==3.10.4
 
 # Logging
 structlog>=24.0
+
+# Optional local RAG acceleration:
+# sentence-transformers>=3.0
+# faiss-cpu>=1.8
 
 # Charts (served via CDN, but listed for reference)
 # chart.js - loaded via CDN in frontend

@@ -1,4 +1,4 @@
-"""FinanceBro - URL Fetcher Tests.
+"""PortfolioPilot - URL Fetcher Tests.
 
 Tests für:
   - HTML→Text Konvertierung

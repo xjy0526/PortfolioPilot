@@ -1,4 +1,4 @@
-"""FinanceBro - Knowledge Data Module.
+"""PortfolioPilot - Knowledge Data Module.
 
 Wissens-Datenbank mit Technologie-Fakten und täglichen Lern-Tipps
 basierend auf allen Antigravity-Projekten.
@@ -51,8 +51,8 @@ PROJECT_KNOWLEDGE: dict[str, dict] = {
         ],
         "key_learning": "Modulares JavaScript und Algorithmen-Implementierung",
     },
-    "financebro": {
-        "name": "FinanceBro",
+    "portfoliopilot": {
+        "name": "PortfolioPilot",
         "emoji": "💰",
         "description": "Full-Stack Aktienportfolio-Dashboard mit AI-Analyse",
         "difficulty": "⭐⭐⭐⭐⭐ Komplex",
@@ -174,10 +174,10 @@ DAILY_TIPS: list[dict] = [
             "Das Ergebnis: Die Engine könnte ohne Browser laufen – z.B. für Batch-Simulationen in Node.js."
         ),
     },
-    # ── Projekt: FinanceBro ──
+    # ── Projekt: PortfolioPilot ──
     {
         "category": "Python",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "FastAPI – Modernes Python Web-Framework",
         "text": (
             "⚡ *FastAPI*\n\n"
@@ -190,7 +190,7 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Python",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Pydantic – Daten die sich selbst prüfen",
         "text": (
             "📋 *Pydantic Models*\n\n"
@@ -201,29 +201,29 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Python",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Async/Await – Mehrere Dinge gleichzeitig",
         "text": (
             "⚡ *Async/Await*\n\n"
             "Statt nacheinander auf 5 APIs zu warten (5×2s = 10s), startest du alle gleichzeitig (~2s).\n\n"
             "`async def get_data():`\n"
             "`    results = await asyncio.gather(api1(), api2(), api3())`\n\n"
-            "📂 FinanceBro holt Parqet, FMP und yfinance parallel."
+            "📂 PortfolioPilot holt Parqet, FMP und yfinance parallel."
         ),
     },
     {
         "category": "Sicherheit",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Secrets gehören in .env, nie in den Code!",
         "text": (
             "🔐 *Environment Variables*\n\n"
             "API-Keys NIEMALS in den Code schreiben! Bots scannen GitHub und missbrauchen Keys innerhalb von Minuten.\n\n"
-            "Lösung: `.env`-Datei + `.gitignore`. FinanceBro nutzt `python-dotenv` + `config.py` als zentrale Settings-Klasse."
+            "Lösung: `.env`-Datei + `.gitignore`. PortfolioPilot nutzt `python-dotenv` + `config.py` als zentrale Settings-Klasse."
         ),
     },
     {
         "category": "Architektur",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Layered Architecture – Schichten statt Spaghetti",
         "text": (
             "🏗️ *Layered Architecture*\n\n"
@@ -234,19 +234,19 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "API",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "OAuth2 – Sicherer API-Zugang ohne Passwort",
         "text": (
             "🔄 *OAuth2 Flow*\n\n"
             "Du autorisierst dich einmal und bekommst zwei Tokens:\n"
             "• Access Token – kurzlebig (~1h), für API-Calls\n"
             "• Refresh Token – langlebig, holt neue Access Tokens\n\n"
-            "📂 FinanceBro's `parqet_auth.py` erneuert Tokens automatisch."
+            "📂 PortfolioPilot's `parqet_auth.py` erneuert Tokens automatisch."
         ),
     },
     {
         "category": "Performance",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Caching – Einmal holen, mehrmals nutzen",
         "text": (
             "💾 *Caching mit TTL*\n\n"
@@ -257,7 +257,7 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Python",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "APScheduler – Automatische Zeitsteuerung",
         "text": (
             "⏰ *Scheduled Jobs*\n\n"
@@ -270,24 +270,24 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Echtzeit",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "WebSocket vs. Polling – Echtzeit-Daten",
         "text": (
             "🌐 *WebSocket Streaming*\n\n"
             "Polling: Alle 5s fragen 'Hat sich was geändert?' → 240 Anfragen/Minute bei 20 Aktien.\n"
             "WebSocket: 1 offene Verbindung, Updates kommen automatisch sofort.\n\n"
-            "📂 FinanceBro nutzt yFinance WebSocket für Live-Kurse."
+            "📂 PortfolioPilot nutzt yFinance WebSocket für Live-Kurse."
         ),
     },
     {
         "category": "DevOps",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Docker – Deine App in einer Box",
         "text": (
             "🐳 *Docker Container*\n\n"
             "Docker packt App + alle Abhängigkeiten in einen Container.\n"
             "Funktioniert auf deinem PC? → Funktioniert überall.\n\n"
-            "FinanceBro Best Practices:\n"
+            "PortfolioPilot Best Practices:\n"
             "• `python:3.12-slim` (kleines Image)\n"
             "• Non-Root User (Sicherheit)\n"
             "• Cloud Run Deployment"
@@ -295,7 +295,7 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Resilienz",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Graceful Degradation – Nie abstürzen",
         "text": (
             "🛡️ *Graceful Degradation*\n\n"
@@ -307,11 +307,11 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "KI",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Google Gemini API – KI in der eigenen App",
         "text": (
             "🤖 *Gemini Integration*\n\n"
-            "FinanceBro nutzt Gemini 2.5 Pro für:\n"
+            "PortfolioPilot nutzt Gemini 2.5 Pro für:\n"
             "• Tägliche Portfolio-Analysen\n"
             "• Marktberichte mit Search Grounding\n"
             "• Earnings-Analysen\n"
@@ -321,11 +321,11 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Scoring",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Multi-Faktor Scoring – 9 Datenpunkte, 1 Score",
         "text": (
             "🏆 *Scoring Engine*\n\n"
-            "Statt einer Zahl kombiniert FinanceBro 9 Faktoren:\n"
+            "Statt einer Zahl kombiniert PortfolioPilot 9 Faktoren:\n"
             "Quality 20% | Analyst 15% | Valuation 15%\n"
             "Technical 15% | Growth 12% | Quant 10%\n"
             "Sentiment 7% | Momentum 6% | Insider+ESG 5%\n\n"
@@ -388,14 +388,14 @@ DAILY_TIPS: list[dict] = [
     # ── Allgemeine Konzepte ──
     {
         "category": "Grundlagen",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "API – Der Kellner zwischen Küche und Gast",
         "text": (
             "🔌 *Was ist eine API?*\n\n"
             "API = Application Programming Interface = Schnittstelle.\n\n"
             "Wie ein Kellner: Du (Client) gibst eine Bestellung auf, "
             "der Kellner (API) bringt sie zur Küche (Server) und kommt mit dem Essen (Daten) zurück.\n\n"
-            "FinanceBro nutzt 7+ verschiedene APIs!"
+            "PortfolioPilot nutzt 7+ verschiedene APIs!"
         ),
     },
     {
@@ -422,24 +422,24 @@ DAILY_TIPS: list[dict] = [
     },
     {
         "category": "Telegram",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "Telegram Bot API – Dein eigener Bot",
         "text": (
             "🤖 *Telegram Bot*\n\n"
             "Ein Bot ist ein Programm das auf Nachrichten reagiert.\n"
-            "FinanceBro nutzt Webhooks: Telegram sendet jede Nachricht an eine URL, "
+            "PortfolioPilot nutzt Webhooks: Telegram sendet jede Nachricht an eine URL, "
             "der Server verarbeitet sie und antwortet.\n\n"
             "Befehle wie /portfolio, /score, /news machen den Bot interaktiv."
         ),
     },
     {
         "category": "Testing",
-        "project": "financebro",
+        "project": "portfoliopilot",
         "title": "pytest – Automatische Code-Tests",
         "text": (
             "🧪 *Automatisierte Tests*\n\n"
             "`pytest` führt Test-Funktionen aus und prüft ob dein Code korrekt ist.\n\n"
-            "FinanceBro hat 15+ Testdateien die prüfen:\n"
+            "PortfolioPilot hat 15+ Testdateien die prüfen:\n"
             "• Scoring-Berechnung korrekt?\n"
             "• Telegram-Nachrichten richtig formatiert?\n"
             "• AI-Agent-Report vollständig?\n\n"
@@ -472,12 +472,12 @@ def get_project_summary(project_key: str) -> str:
 
     Args:
         project_key: Schlüssel aus PROJECT_KNOWLEDGE
-                     (ai_knowledge, pokerpro, financebro, job_automation)
+                     (ai_knowledge, pokerpro, portfoliopilot, job_automation)
 
     Returns:
         Formatierter Text für Telegram.
     """
-    # Fuzzy matching: "financebro", "FinanceBro", "finanz" → financebro
+    # Fuzzy matching: "portfoliopilot", "PortfolioPilot", "finanz" → portfoliopilot
     key = _fuzzy_match_project(project_key)
     if not key:
         available = ", ".join(
@@ -551,10 +551,10 @@ def _fuzzy_match_project(query: str) -> str | None:
         "poker": "pokerpro",
         "pokerpro": "pokerpro",
         "simulator": "pokerpro",
-        "finanz": "financebro",
-        "financebro": "financebro",
-        "aktien": "financebro",
-        "portfolio": "financebro",
+        "finanz": "portfoliopilot",
+        "portfoliopilot": "portfoliopilot",
+        "aktien": "portfoliopilot",
+        "portfolio": "portfoliopilot",
         "job": "job_automation",
         "jobs": "job_automation",
         "job_automation": "job_automation",
@@ -567,7 +567,7 @@ def _fuzzy_match_project(query: str) -> str | None:
     if q in aliases:
         return aliases[q]
 
-    # Partial match: "finanz" → "financebro"
+    # Partial match: "finanz" → "portfoliopilot"
     for key in PROJECT_KNOWLEDGE:
         if q in key or key in q:
             return key

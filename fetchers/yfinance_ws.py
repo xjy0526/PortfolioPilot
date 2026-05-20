@@ -1,4 +1,4 @@
-"""FinanceBro - yfinance Echtzeit-Kurs-Streaming
+"""PortfolioPilot - yfinance Echtzeit-Kurs-Streaming
 
 WebSocket-basierter Echtzeit-Kursfetcher über yfinance AsyncWebSocket.
 Kein API-Key nötig. Primäre Echtzeit-Preisquelle für alle Ticker (US + EU).

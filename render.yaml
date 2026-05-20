@@ -24,6 +24,10 @@ services:
         value: qwen-plus
       - key: PARQET_PORTFOLIO_CSV
         value: /app/cache/portfolio.csv
+      - key: RAG_DOCUMENT_DIR
+        value: /app/cache/rag_documents
+      - key: BACKTEST_PRICE_CSV
+        value: /app/cache/historical_prices.csv
       - key: CACHE_TTL_HOURS
         value: 12
       - key: QWEN_API_KEY

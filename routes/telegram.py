@@ -1,4 +1,4 @@
-"""FinanceBro - Telegram Webhook Route.
+"""PortfolioPilot - Telegram Webhook Route.
 
 Empfängt eingehende Nachrichten von Telegram via Webhook
 und leitet sie an den Command Handler weiter.

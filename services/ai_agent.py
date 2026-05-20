@@ -1,4 +1,4 @@
-"""FinanceBro - AI Finance Agent.
+"""PortfolioPilot - AI Finance Agent.
 
 Täglicher Analyse-Agent der:
   1. Portfolio-Daten und Analyse-Report sammelt
@@ -48,7 +48,7 @@ async def run_daily_report():
     summary: Optional[PortfolioSummary] = portfolio_data.get("summary")
     if not summary or not summary.stocks:
         logger.warning("Keine Portfolio-Daten vorhanden – Agent übersprungen")
-        await send_message("⚠️ FinanceBro Agent: Keine Portfolio-Daten verfügbar. Bitte zuerst einen Full-Refresh starten.")
+        await send_message("⚠️ PortfolioPilot Agent: Keine Portfolio-Daten verfügbar. Bitte zuerst einen Full-Refresh starten.")
         return
 
     # 2. Letzten Analyse-Report holen
@@ -87,7 +87,7 @@ def _build_telegram_report(
     sections = []
 
     # Header
-    sections.append(f"📊 *FinanceBro Daily Report*")
+    sections.append(f"📊 *PortfolioPilot Daily Report*")
     sections.append(f"📅 {now}")
     sections.append("")
 
@@ -199,7 +199,7 @@ def _build_telegram_report(
 
     # Footer
     sections.append("─" * 30)
-    sections.append("_FinanceBro AI Agent • Mo-Fr 16:15_")
+    sections.append("_PortfolioPilot AI Agent • Mo-Fr 16:15_")
 
     return "\n".join(sections)
 

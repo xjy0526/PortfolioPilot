@@ -4,7 +4,7 @@
  * Language is stored in localStorage and defaults to browser language
  */
 
-const savedLang = localStorage.getItem('financebro-lang');
+const savedLang = localStorage.getItem('portfoliopilot-lang');
 let currentLang = savedLang === 'de'
     ? 'zh'
     : (savedLang || (navigator.language.startsWith('zh') ? 'zh' : 'en'));
@@ -564,7 +564,7 @@ function t(key) {
  */
 function switchLanguage(lang) {
     currentLang = lang;
-    localStorage.setItem('financebro-lang', lang);
+    localStorage.setItem('portfoliopilot-lang', lang);
     applyTranslations();
     // Re-render dynamic content
     if (typeof renderDashboard === 'function') {

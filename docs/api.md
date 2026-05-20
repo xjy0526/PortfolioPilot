@@ -1,4 +1,4 @@
-# 📡 FinanceBro API Reference
+# 📡 PortfolioPilot API Reference
 
 Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), sofern nicht anders angegeben.
 

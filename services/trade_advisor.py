@@ -1,4 +1,4 @@
-"""FinanceBro - AI Trade Advisor v2.
+"""PortfolioPilot - AI Trade Advisor v2.
 
 Evaluiert Kauf/Verkauf/Aufstocken-Entscheidungen mit:
   - Gemini 2.5 Pro (AI-Analyse + Google Search Grounding)

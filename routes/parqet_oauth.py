@@ -1,4 +1,4 @@
-"""FinanceBro - Parqet OAuth2 Routes
+"""PortfolioPilot - Parqet OAuth2 Routes
 
 Endpoints fuer Parqet Connect API OAuth2 PKCE-Autorisierung.
 Einmaliger Setup: /api/parqet/authorize → Login bei Parqet → Callback mit Tokens.

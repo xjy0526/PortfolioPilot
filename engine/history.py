@@ -1,4 +1,4 @@
-"""FinanceBro - Portfolio History Engine
+"""PortfolioPilot - Portfolio History Engine
 
 Speichert tägliche Portfolio-Snapshots und lädt historische Daten.
 Delegiert an die zentrale SQLite-Datenbank (database.py).

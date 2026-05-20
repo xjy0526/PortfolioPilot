@@ -1,4 +1,4 @@
-"""FinanceBro - Data Loader (C1 Refactoring)
+"""PortfolioPilot - Data Loader (C1 Refactoring)
 
 Lädt Daten für eine einzelne Position aus allen Quellen parallel:
   - FMP (Fundamentals, Analyst, Rating, Profile)

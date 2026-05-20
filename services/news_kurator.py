@@ -1,4 +1,4 @@
-"""FinanceBro - Personalisierter News-Kurator.
+"""PortfolioPilot - Personalisierter News-Kurator.
 
 Proaktive, portfoliorelevante Nachrichten-Alerts:
   - Prüft alle 4h (Mo-Fr) via Gemini + Google Search Grounding
@@ -261,7 +261,7 @@ def _format_alerts(alerts: list[dict], market_mood: str) -> str:
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     lines = [
-        "📡 *FinanceBro News-Alert*",
+        "📡 *PortfolioPilot News-Alert*",
         f"_{now}_\n",
     ]
 

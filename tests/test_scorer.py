@@ -1,4 +1,4 @@
-"""FinanceBro - Tests für die Scoring Engine v4.
+"""PortfolioPilot - Tests für die Scoring Engine v4.
 
 Angepasst für:
   - 9-Faktor System (quality, valuation, analyst, technical, growth,

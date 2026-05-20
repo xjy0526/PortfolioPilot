@@ -1,4 +1,4 @@
-"""FinanceBro - Scoring Engine v5
+"""PortfolioPilot - Scoring Engine v5
 
 Multi-Faktor Bewertungssystem fuer Aktien.
 10 Faktoren mit einheitlicher Prozent-Normalisierung.

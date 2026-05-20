@@ -1,4 +1,4 @@
-"""FinanceBro - Structured Logging Setup
+"""PortfolioPilot - Structured Logging Setup
 
 Konfiguriert structlog für:
   - Production (Cloud Run): JSON-Format → GCP Cloud Logging

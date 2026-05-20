@@ -1,12 +1,12 @@
-# FinanceBro – Architektur
+# PortfolioPilot – Architektur
 
 ## Übersicht
 
-FinanceBro ist ein intelligentes Aktienportfolio-Dashboard mit automatisierter Multi-Faktor-Analyse.  
+PortfolioPilot ist ein intelligentes Aktienportfolio-Dashboard mit automatisierter Multi-Faktor-Analyse.
 Läuft lokal (Python) und auf Google Cloud Run (Docker).
 
 ```
-FinanceBro/
+PortfolioPilot/
 ├── main.py                 # FastAPI App + Lifespan + Scheduler
 ├── config.py               # Pydantic Settings v2 (.env auto-loading)
 ├── models.py               # 31 Pydantic-Datenmodelle
@@ -154,7 +154,7 @@ sequenceDiagram
 
 | Schicht | Technologie | Inhalt | Verlust bei Restart? |
 |---------|------------|--------|---------------------|
-| **SQLite** (`financebro.db`) | WAL-Modus | Score-History, Snapshots, Reports | Ja (Cloud Run) |
+| **SQLite** (`portfoliopilot.db`) | WAL-Modus | Score-History, Snapshots, Reports | Ja (Cloud Run) |
 | **JSON Cache** | Memory + Disk | FMP, yFinance, Parqet | Teilweise (volatile) |
 | **State** (`portfolio_data`) | In-Memory Dict | Aktuelles Portfolio, Activities | Ja |
 
@@ -187,7 +187,7 @@ graph LR
     B -->|GCP_PROJECT_ID| C[Vertex AI Client FA]
     B -->|GEMINI_API_KEY| D[API Key Fallback]
     B -->|Weder noch| E[AI deaktiviert]
-    
+
     C --> F[Daily Limit: 100/Tag]
     D --> F
     F --> G[Flash: Score-Kommentare]
@@ -260,7 +260,7 @@ Konfiguration:
 
 ### Keep-Alive (Cloud Scheduler)
 ```
-Job:      financebro-keepalive
+Job:      portfoliopilot-keepalive
 Schedule: */10 8-22 * * 1-5 (alle 10min, Mo-Fr 08-22 CET)
 Target:   GET /health
 Zweck:    Hält den Container wach damit APScheduler
@@ -293,7 +293,7 @@ Kosten:  0 €/Monat (Free Tier)
 | Weekly Digest | Freitag 22:30 | KI-Zusammenfassung |
 | Cloud Run Job | 15:45 CET (Cloud Scheduler) | Full Refresh → Telegram Report |
 
-> **Wichtig:** Der APScheduler läuft in-process im Cloud Run Container. Ohne den `financebro-keepalive` Cloud Scheduler Job würde der Container bei Inaktivität abschalten und alle geplanten Jobs stoppen.
+> **Wichtig:** Der APScheduler läuft in-process im Cloud Run Container. Ohne den `portfoliopilot-keepalive` Cloud Scheduler Job würde der Container bei Inaktivität abschalten und alle geplanten Jobs stoppen.
 
 ## Shadow Portfolio Agent
 

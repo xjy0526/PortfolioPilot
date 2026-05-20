@@ -1,4 +1,4 @@
-"""FinanceBro - Financial Modeling Prep API Fetcher (Stable API)
+"""PortfolioPilot - Financial Modeling Prep API Fetcher (Stable API)
 
 Holt Fundamentaldaten, Analyst-Ratings, Bewertungen und Kurse von FMP.
 Nutzt die neue Stable API: https://financialmodelingprep.com/stable/
@@ -711,7 +711,7 @@ async def discover_tech_stocks(limit: int = 10) -> list[TechRecommendation]:
             tags=tags,
             revenue_growth=round(rev_growth_val, 1) if rev_growth_val is not None else None,
             roe=round(roe_val, 1) if roe_val is not None else None,
-            source="FinanceBro Tech-Radar",
+            source="PortfolioPilot Tech-Radar",
         ))
 
     recommendations.sort(key=lambda x: x.score, reverse=True)

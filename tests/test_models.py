@@ -1,4 +1,4 @@
-"""FinanceBro - Tests für Pydantic Models."""
+"""PortfolioPilot - Tests für Pydantic Models."""
 import pytest
 from models import (
     PortfolioPosition,

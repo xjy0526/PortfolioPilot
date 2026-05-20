@@ -1,4 +1,4 @@
-"""FinanceBro - Analytics API Routes.
+"""PortfolioPilot - Analytics API Routes.
 
 Endpunkte für erweiterte Analysen:
   - Dividenden, Benchmark, Korrelation, Risk, Earnings, News,

@@ -1,4 +1,4 @@
-"""FinanceBro - Zentrale Konfiguration (Pydantic Settings v2)
+"""PortfolioPilot - Zentrale Konfiguration (Pydantic Settings v2)
 
 Alle Werte werden aus .env oder Umgebungsvariablen geladen.
 Type-Safety und Validierung durch Pydantic.
@@ -69,6 +69,16 @@ class Settings(BaseSettings):
 
     # AI Finance Agent
     AI_AGENT_TIME: str = "16:30"
+
+    # Local RAG for financial evidence
+    RAG_DOCUMENT_DIR: str = "rag_documents"
+    RAG_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    RAG_CHUNK_SIZE: int = 900
+    RAG_TOP_K: int = 5
+    RAG_VECTOR_BACKEND: str = "faiss"
+
+    # Strategy backtest
+    BACKTEST_PRICE_CSV: str = ""
 
     # Caching
     CACHE_TTL_HOURS: int = 12

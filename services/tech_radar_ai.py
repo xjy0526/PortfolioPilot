@@ -1,4 +1,4 @@
-"""FinanceBro - Tech-Radar KI-Analyse (v2: Gemini 2.5 Pro).
+"""PortfolioPilot - Tech-Radar KI-Analyse (v2: Gemini 2.5 Pro).
 
 Nutzt Google Gemini 2.5 Pro für tiefgehende Investment-Analysen
 der Tech-Empfehlungen. Ein einziger API-Call für alle Empfehlungen.

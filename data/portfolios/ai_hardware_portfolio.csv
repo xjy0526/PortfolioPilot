@@ -1,0 +1,11 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+002916.SZ,500,92.00,124.00,2025-10-15,CNY,AI Hardware - PCB,Shennan Circuits,cn_equity,CN-A,SZSE,CN
+300476.SZ,600,58.00,84.00,2025-09-20,CNY,AI Hardware - PCB,Victory Giant Technology,cn_equity,CN-A,SZSE,CN
+300308.SZ,150,128.00,180.00,2025-11-05,CNY,AI Hardware - CPO,Zhongji Innolight,cn_equity,CN-A,SZSE,CN
+688498.SS,120,118.00,156.00,2025-12-02,CNY,AI Hardware - CPO,Yuanjie Semiconductor,cn_equity,CN-A,SSE,CN
+NVDA,20,620.00,955.00,2025-08-12,USD,AI Hardware - Chips,NVIDIA Corp.,equity,US,NASDAQ,US
+AMD,45,132.00,170.00,2025-09-01,USD,AI Hardware - Chips,Advanced Micro Devices,equity,US,NASDAQ,US
+TSM,30,116.00,150.00,2025-10-01,USD,AI Hardware - Chips,Taiwan Semiconductor,equity,US,NYSE,TW
+SMH,35,178.00,230.00,2025-09-10,USD,AI Hardware - ETF,VanEck Semiconductor ETF,etf,US,NASDAQ,US
+159995.SZ,10000,0.86,1.05,2025-10-20,CNY,AI Hardware - ETF,China Semiconductor ETF,etf,CN-A,SZSE,CN
+CASH,1,12000.00,12000.00,2026-05-01,USD,Cash,Cash,cash,Cash,Cash,US

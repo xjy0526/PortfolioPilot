@@ -1,4 +1,4 @@
-"""FinanceBro - Parqet Token Management
+"""PortfolioPilot - Parqet Token Management
 
 Verwaltet Parqet API Authentication:
 - JWT Token-Validierung (Expiration-Check)
@@ -408,7 +408,7 @@ def _persist_tokens_to_cloud_run(access_token: str, refresh_token: str):
 
             # Cloud Run Admin API: aktuellen Service lesen, Env-Vars updaten
             region = settings.GCP_LOCATION
-            service_name = "financebro"
+            service_name = "portfoliopilot"
             url = (
                 f"https://run.googleapis.com/v2/projects/{project}/"
                 f"locations/{region}/services/{service_name}"

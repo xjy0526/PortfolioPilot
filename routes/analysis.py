@@ -1,4 +1,4 @@
-"""FinanceBro - Analyse API-Routes.
+"""PortfolioPilot - Analyse API-Routes.
 
 Endpoints für die Portfolio-Analyse:
   POST /api/analysis/run     → Analyse starten (full/mid/light)

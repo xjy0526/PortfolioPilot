@@ -1,10 +1,10 @@
-"""FinanceBro - SQLite Persistence Layer
+"""PortfolioPilot - SQLite Persistence Layer
 
 Ersetzt JSON-Dateien für persistente Daten:
   - Portfolio-Snapshots (tägliche Werte)
   - Score-History (Ticker-Scores pro Analyse)
 
-Datenbank: cache/financebro.db
+Datenbank: cache/portfoliopilot.db
 Für Cloud Run Persistenz: Litestream → GCS Backup.
 """
 import json
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 TZ_BERLIN = ZoneInfo("Europe/Berlin")
 
-DB_PATH = settings.CACHE_DIR / "financebro.db"
+DB_PATH = settings.CACHE_DIR / "portfoliopilot.db"
 
 # Thread-local connections (sqlite3 ist nicht thread-safe)
 _local = threading.local()

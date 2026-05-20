@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional
 import logging
 
-logger = logging.getLogger("financebro.csv_reader")
+logger = logging.getLogger("portfoliopilot.csv_reader")
 
 CSV_FIELDS = [
     "ticker",
@@ -89,6 +89,8 @@ def _normalize_asset_type(raw_value: str, ticker: str, market: str) -> str:
     aliases = {
         "stock": "equity",
         "equity": "equity",
+        "etf": "etf",
+        "fund": "etf",
         "cn_equity": "cn_equity",
         "china_a": "cn_equity",
         "a_share": "cn_equity",

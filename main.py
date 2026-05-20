@@ -1,4 +1,4 @@
-"""FinanceBro - FastAPI Backend
+"""PortfolioPilot - FastAPI Backend
 
 Hauptserver: App-Erstellung, Lifespan-Management und Router-Einbindung.
 Die gesamte Geschäftslogik lebt in services/ und routes/.
@@ -27,6 +27,7 @@ from routes.telegram import router as telegram_router
 from routes.parqet_oauth import router as parqet_oauth_router
 from routes.demo import router as demo_router
 from routes.shadow_portfolio import router as shadow_portfolio_router
+from routes.research import router as research_router
 
 # Structured Logging (JSON in production, colored console in dev)
 setup_logging(settings.ENVIRONMENT)
@@ -79,7 +80,7 @@ async def reload_portfolio_and_subscribe():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App startup/shutdown."""
-    logger.info("\U0001f680 FinanceBro startet...")
+    logger.info("\U0001f680 PortfolioPilot startet...")
     logger.info(f"   Environment: {settings.ENVIRONMENT}")
     logger.info(f"   Port: {settings.SERVER_PORT}")
     logger.info(f"   Demo-Mode: {settings.demo_mode}")
@@ -313,7 +314,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"yFinance WS Shutdown ignoriert: {e}")
         
-    logger.info("FinanceBro beendet.")
+    logger.info("PortfolioPilot beendet.")
 
 
 # Create FastAPI app
@@ -352,6 +353,7 @@ app.include_router(telegram_router)
 app.include_router(parqet_oauth_router)
 app.include_router(demo_router)
 app.include_router(shadow_portfolio_router)
+app.include_router(research_router)
 
 
 # Health Check (für Cloud Run Startup/Liveness Probes)

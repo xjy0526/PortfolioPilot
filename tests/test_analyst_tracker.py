@@ -1,4 +1,4 @@
-"""FinanceBro - Tests für den Analyst Track Record Service.
+"""PortfolioPilot - Tests für den Analyst Track Record Service.
 
 Tests für:
   - Track Record Berechnung (Bullish-Analyst korrekt/falsch)

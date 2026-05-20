@@ -1,4 +1,4 @@
-"""FinanceBro - Authentifizierungs-Middleware.
+"""PortfolioPilot - Authentifizierungs-Middleware.
 
 Basic Auth Schutz für das Dashboard und API-Endpoints.
 Der Telegram-Webhook ist davon ausgenommen (hat eigenes Secret).

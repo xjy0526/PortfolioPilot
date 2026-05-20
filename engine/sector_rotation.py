@@ -1,4 +1,4 @@
-"""FinanceBro - Sektor-Rotation-Analyse (A3)
+"""PortfolioPilot - Sektor-Rotation-Analyse (A3)
 
 Berechnet relative Sektor-Performance und identifiziert
 Rotations-Signale im Portfolio:

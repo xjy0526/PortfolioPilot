@@ -1,4 +1,4 @@
-"""FinanceBro - Zentraler gemeinsamer Zustand.
+"""PortfolioPilot - Zentraler gemeinsamer Zustand.
 
 Dieses Modul enthält den globalen State, der von Services und Routes
 geteilt wird. Durch die Zentralisierung wird vermieden, dass mehrere

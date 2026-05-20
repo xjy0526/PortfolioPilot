@@ -1,4 +1,4 @@
-"""FinanceBro - Demo-Daten
+"""PortfolioPilot - Demo-Daten
 
 Stellt ein Demo-Portfolio mit realistischen Daten bereit,
 wenn keine API-Keys konfiguriert sind oder Parqet nicht erreichbar ist.

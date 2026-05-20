@@ -1,4 +1,4 @@
-"""FinanceBro - Rebalancing Engine v3
+"""PortfolioPilot - Rebalancing Engine v3
 
 Berechnet Portfolio-Rebalancing Empfehlungen basierend auf:
 - Aktueller Allokation vs. Ziel-Allokation

@@ -1,4 +1,4 @@
-"""FinanceBro - yfinance WebSocket Tests
+"""PortfolioPilot - yfinance WebSocket Tests
 
 Testet den YFinanceStreamer In-Memory-Cache, Subscribe/Unsubscribe-Logik
 und Message-Processing. Keine echte WebSocket-Verbindung nötig.

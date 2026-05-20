@@ -1,4 +1,4 @@
-"""FinanceBro - Score Backtesting Engine (A1)
+"""PortfolioPilot - Score Backtesting Engine (A1)
 
 Misst die Prädiktivität der Score-Engine durch Vergleich
 historischer Scores mit tatsächlicher Kursperformance.

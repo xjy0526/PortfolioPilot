@@ -1,4 +1,4 @@
-"""FinanceBro - Shadow Portfolio Agent API-Routes.
+"""PortfolioPilot - Shadow Portfolio Agent API-Routes.
 
 REST-Endpunkte fuer den autonomen Shadow-Portfolio-Agent:
   GET  /api/shadow-portfolio          - Aktueller Portfolio-Stand

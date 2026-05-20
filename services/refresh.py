@@ -1,4 +1,4 @@
-"""FinanceBro - Daten-Refresh Services.
+"""PortfolioPilot - Daten-Refresh Services.
 
 Enthält die gesamte Refresh-Logik:
 - _refresh_data() / _do_refresh(): Voller Refresh aller Quellen
