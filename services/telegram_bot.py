@@ -353,7 +353,7 @@ async def _cmd_news(chat_id: str):
 
     # Gemini 2.5 Pro Anfrage
     try:
-        from services.vertex_ai import get_client, get_grounded_config, get_cached_content
+        from services.llm.compat import get_client, get_grounded_config, get_cached_content
 
         client = get_client()
 
@@ -612,7 +612,7 @@ async def _cmd_chat(chat_id: str, question: str):
         return
 
     try:
-        from services.vertex_ai import get_client, get_grounded_config, get_cached_content
+        from services.llm.compat import get_client, get_grounded_config, get_cached_content
 
         client = get_client()
         portfolio_context = _get_portfolio_context()
@@ -717,7 +717,7 @@ async def _cmd_risk(chat_id: str, scenario: Optional[str] = None):
     await send_message(f"🛡️ Analysiere Szenario: *{scenario_key.title()}*... (dauert ~15s)", chat_id=chat_id)
 
     try:
-        from services.vertex_ai import get_client, get_grounded_config
+        from services.llm.compat import get_client, get_grounded_config
 
         client = get_client()
         portfolio_context = _get_portfolio_context()
@@ -831,7 +831,7 @@ async def _cmd_wissen_quiz(chat_id: str):
 
     try:
         from services.knowledge_data import get_all_technologies, PROJECT_KNOWLEDGE
-        from services.vertex_ai import get_client
+        from services.llm.compat import get_client
 
         client = get_client()
         techs = get_all_technologies()
@@ -950,7 +950,7 @@ async def _process_voice_with_gemini(audio_bytes: bytes, caption: str = "") -> s
     Returns:
         KI-Antwort als Text
     """
-    from services.vertex_ai import Content, Part, get_client, get_grounded_config
+    from services.llm.compat import Content, Part, get_client, get_grounded_config
 
     client = get_client()
 

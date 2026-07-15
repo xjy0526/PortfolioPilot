@@ -84,72 +84,87 @@ async def get_portfolio_history(days: int = 90):
     2. Lokale Snapshots aus vorherigen Refreshes
     3. Aktueller Portfoliowert als einzelner Datenpunkt
     """
+    history_days = 9999 if days <= 0 else days
+    summary = portfolio_data.get("summary")
+    if summary and summary.is_demo:
+        from fetchers.demo_data import get_demo_portfolio_history
+        demo_days = 365 if days <= 0 else history_days
+        return get_demo_portfolio_history(days=demo_days)
+
     # --- 1. Versuche Investment-Timeline aus Parqet Activities ---
-    try:
-        # Activities aus State lesen (bereits beim Refresh gecacht)
-        activities = portfolio_data.get("activities")
-        if not activities:
-            from fetchers.parqet import fetch_portfolio_activities_raw
-            activities = await fetch_portfolio_activities_raw()
-        from datetime import datetime as dt, timedelta
-        if activities and len(activities) > 0:
-            # Kumuliertes investiertes Kapital pro Tag berechnen
-            daily_invested = {}
-            cumulative = 0.0
+    if portfolio_data.get("source") not in {"csv", "sample_csv"}:
+        try:
+            # Activities aus State lesen (bereits beim Refresh gecacht)
+            activities = portfolio_data.get("activities")
+            if not activities:
+                from fetchers.parqet import fetch_portfolio_activities_raw
+                activities = await fetch_portfolio_activities_raw()
+            from datetime import datetime as dt, timedelta
+            if activities and len(activities) > 0:
+                # Kumuliertes investiertes Kapital pro Tag berechnen
+                daily_invested = {}
+                cumulative = 0.0
 
-            for act in activities:
-                date = act.get("date", "")
-                if not date:
-                    continue
-                act_type = act.get("type", "")
-                amount = act.get("amount", 0)
+                for act in activities:
+                    date = act.get("date", "")
+                    if not date:
+                        continue
+                    act_type = act.get("type", "")
+                    amount = act.get("amount", 0)
 
-                if act_type in ("buy", "kauf", "purchase"):
-                    cumulative += amount
-                elif act_type in ("sell", "verkauf", "sale"):
-                    cumulative -= amount
-                elif act_type in ("transferin", "transfer_in"):
-                    cumulative += amount
-                elif act_type in ("transferout", "transfer_out"):
-                    cumulative -= amount
+                    if act_type in ("buy", "kauf", "purchase"):
+                        cumulative += amount
+                    elif act_type in ("sell", "verkauf", "sale"):
+                        cumulative -= amount
+                    elif act_type in ("transferin", "transfer_in"):
+                        cumulative += amount
+                    elif act_type in ("transferout", "transfer_out"):
+                        cumulative -= amount
 
-                daily_invested[date] = round(cumulative, 2)
+                    daily_invested[date] = round(cumulative, 2)
 
-            if daily_invested:
-                # Cutoff anwenden
-                if days < 9999:
-                    cutoff = (dt.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-                    filtered = {d: v for d, v in daily_invested.items() if d >= cutoff}
-                else:
-                    filtered = daily_invested
+                if daily_invested:
+                    # Cutoff anwenden
+                    if history_days < 9999:
+                        cutoff = (dt.now() - timedelta(days=history_days)).strftime("%Y-%m-%d")
+                        filtered = {d: v for d, v in daily_invested.items() if d >= cutoff}
+                    else:
+                        filtered = daily_invested
 
-                if filtered:
-                    # Aktuellen Portfoliowert als letzten Datenpunkt hinzufuegen
-                    summary = portfolio_data.get("summary")
-                    current_value = summary.total_value if summary else 0
-                    today = dt.now().strftime("%Y-%m-%d")
+                    if filtered:
+                        # Aktuellen Portfoliowert als letzten Datenpunkt hinzufuegen
+                        summary = portfolio_data.get("summary")
+                        current_value = summary.total_value if summary else 0
 
-                    result = [
-                        {"date": d, "total_value": 0, "invested_capital": v}
-                        for d, v in sorted(filtered.items())
-                    ]
-                    # Aktuellen Wert beim letzten Eintrag setzen
-                    if result and current_value > 0:
-                        result[-1]["total_value"] = round(current_value, 2)
+                        result = [
+                            {"date": d, "total_value": 0, "invested_capital": v}
+                            for d, v in sorted(filtered.items())
+                        ]
+                        # Aktuellen Wert beim letzten Eintrag setzen
+                        if result and current_value > 0:
+                            result[-1]["total_value"] = round(current_value, 2)
 
-                    return result
+                        return result
 
-    except Exception as e:
-        logger.warning(f"Portfolio Activities Timeline fehlgeschlagen: {e}")
+        except Exception as e:
+            logger.warning(f"Portfolio Activities Timeline fehlgeschlagen: {e}")
 
     # --- 2. Fallback: Lokale Snapshots ---
     from database import load_snapshots as load_history
-    local = load_history(days=days)
-    if local:
+    local = load_history(days=history_days)
+    if local and len(local) >= 2:
         return local
 
+    if summary and summary.total_value > 0 and portfolio_data.get("source") in {"csv", "sample_csv"}:
+        from services.portfolio_history_fallback import build_estimated_portfolio_history
+        estimated_days = 365 if days <= 0 else history_days
+        return build_estimated_portfolio_history(
+            summary,
+            days=estimated_days,
+            source=portfolio_data.get("source", "csv"),
+        )
+
     # --- 3. Fallback: Aktueller Portfoliowert ---
-    summary = portfolio_data.get("summary")
     if summary and summary.total_value > 0:
         from datetime import datetime as dt
         return [{
@@ -294,13 +309,16 @@ def _is_ws_connected() -> bool:
 @router.get("/api/portfolio/csv-positions")
 async def get_csv_positions():
     """List positions stored in the local portfolio CSV."""
-    from fetchers.csv_reader import load_saved_csv_positions, resolve_csv_path
+    from fetchers.csv_reader import load_saved_csv_positions, resolve_csv_path, resolve_csv_read_path
 
-    path = resolve_csv_path()
+    write_path = resolve_csv_path()
+    read_path, sample_fallback = resolve_csv_read_path()
     return {
-        "exists": path.exists(),
-        "csv_path": str(path),
-        "positions": load_saved_csv_positions() if path.exists() else [],
+        "exists": read_path.exists(),
+        "csv_path": str(read_path),
+        "write_csv_path": str(write_path),
+        "sample_fallback": sample_fallback,
+        "positions": load_saved_csv_positions() if read_path.exists() else [],
     }
 
 

@@ -20,6 +20,14 @@ def main() -> None:
     parser.add_argument("--output", default=str(settings.CACHE_DIR / "backtest_report.json"))
     parser.add_argument("--periods", type=int, default=252)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-window", type=int, default=60)
+    parser.add_argument("--holding-window", type=int, default=20)
+    parser.add_argument("--rebalance-frequency", type=int, default=20)
+    parser.add_argument("--transaction-cost-bps", type=float, default=5.0)
+    parser.add_argument("--slippage-bps", type=float, default=2.0)
+    parser.add_argument("--minimum-trade-amount", type=float, default=0.0)
+    parser.add_argument("--turnover-limit", type=float, default=1.0)
+    parser.add_argument("--benchmark", default="", help="Optional benchmark price CSV")
     args = parser.parse_args()
     price_candidate = args.prices or settings.BACKTEST_PRICE_CSV or None
     prices_csv = resolve_prices_csv(price_candidate) if price_candidate else resolve_prices_csv()
@@ -31,6 +39,14 @@ def main() -> None:
             output_path=Path(args.output),
             periods=args.periods,
             seed=args.seed,
+            train_window=args.train_window,
+            holding_window=args.holding_window,
+            rebalance_frequency=args.rebalance_frequency,
+            transaction_cost_bps=args.transaction_cost_bps,
+            slippage_bps=args.slippage_bps,
+            minimum_trade_amount=args.minimum_trade_amount,
+            turnover_limit=args.turnover_limit,
+            benchmark_price_csv=Path(args.benchmark) if args.benchmark else None,
         )
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))

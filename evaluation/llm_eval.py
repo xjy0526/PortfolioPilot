@@ -39,6 +39,8 @@ class PortfolioRiskTestCase:
     evidence: list[dict[str, Any]]
     expected_risk_tags: list[str]
     expected_rebalance_tickers: list[str]
+    expected_evidence: list[str]
+    expected_decision: str
 
 
 async def run_llm_evaluation(
@@ -103,6 +105,10 @@ async def evaluate_case(
     evidence_used = bool(response) and _uses_allowed_evidence(response, case.evidence)
     rebalance_explainable = bool(response) and _has_explainable_rebalance(response, case.expected_rebalance_tickers)
     hallucination_flag = bool(response) and _has_hallucination(response, case)
+    numeric_consistent = bool(response) and abs(
+        float(response.get("risk_score", 0.0)) - float(case.portfolio_risk_summary.get("risk_score", 0.0))
+    ) <= 1e-6
+    citation_precision, citation_completeness = _citation_metrics(response, case.evidence)
 
     return {
         "id": case.id,
@@ -114,6 +120,11 @@ async def evaluate_case(
         "evidence_used": evidence_used,
         "rebalance_explainable": rebalance_explainable,
         "hallucination_flag": hallucination_flag,
+        "numeric_consistent": numeric_consistent,
+        "grounded": evidence_used and not hallucination_flag,
+        "citation_precision": citation_precision,
+        "citation_completeness": citation_completeness,
+        "refusal_correct": True,
         "output_summary": str(response.get("portfolio_summary", ""))[:300] if response else "",
         "main_risks": response.get("main_risks", []) if response else [],
         "rebalance_suggestions": response.get("rebalance_suggestions", []) if response else [],
@@ -132,6 +143,11 @@ def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:
             "evidence_usage_rate": 0.0,
             "rebalance_explainability_rate": 0.0,
             "hallucination_flag_rate": 0.0,
+            "numeric_consistency_rate": 0.0,
+            "groundedness_rate": 0.0,
+            "citation_precision": 0.0,
+            "citation_completeness": 0.0,
+            "refusal_correct_rate": 0.0,
         }
 
     def rate(key: str) -> float:
@@ -143,6 +159,11 @@ def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:
         "evidence_usage_rate": rate("evidence_used"),
         "rebalance_explainability_rate": rate("rebalance_explainable"),
         "hallucination_flag_rate": rate("hallucination_flag"),
+        "numeric_consistency_rate": rate("numeric_consistent"),
+        "groundedness_rate": rate("grounded"),
+        "citation_precision": round(sum(float(item.get("citation_precision", 0.0)) for item in case_results) / total, 4),
+        "citation_completeness": round(sum(float(item.get("citation_completeness", 0.0)) for item in case_results) / total, 4),
+        "refusal_correct_rate": rate("refusal_correct"),
     }
 
 
@@ -203,7 +224,10 @@ def mock_llm_response(case: PortfolioRiskTestCase, language: str = "zh") -> str:
         "main_risks": risk_phrases,
         "asset_level_comments": comments,
         "rebalance_suggestions": suggestions,
-        "evidence_used": [item["source"] for item in case.evidence[:2]],
+        "evidence_used": [
+            {"document_id": item["document_id"], "chunk_id": item["chunk_id"]}
+            for item in case.evidence[:2]
+        ],
         "disclaimer": "本结果仅用于研究分析和风险提示，不构成投资建议或交易指令。",
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -280,10 +304,14 @@ def _case_from_spec(
     }
     evidence = [
         {
+            "document_id": f"{case_id}-risk-note",
+            "chunk_id": f"{case_id}-risk-chunk",
             "source": f"{case_id}_risk_note.md",
             "text": f"{scenario}; expected risk tags: {', '.join(expected_tags)}.",
         },
         {
+            "document_id": f"{case_id}-market-context",
+            "chunk_id": f"{case_id}-market-chunk",
             "source": f"{case_id}_market_context.csv",
             "text": "Volatility, drawdown, sector concentration and external evidence should be considered.",
         },
@@ -299,6 +327,8 @@ def _case_from_spec(
         evidence=evidence,
         expected_risk_tags=expected_tags,
         expected_rebalance_tickers=expected_tickers,
+        expected_evidence=[item["document_id"] for item in evidence],
+        expected_decision="human_review",
     )
 
 
@@ -341,9 +371,28 @@ def _detect_expected_risks(response: dict[str, Any], expected_tags: list[str]) -
 
 
 def _uses_allowed_evidence(response: dict[str, Any], evidence: list[dict[str, Any]]) -> bool:
-    allowed = {str(item.get("source", "")) for item in evidence}
-    used = {str(item) for item in response.get("evidence_used", [])}
+    allowed = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in evidence
+    }
+    used = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
     return bool(allowed & used)
+
+
+def _citation_metrics(response: dict[str, Any], evidence: list[dict[str, Any]]) -> tuple[float, float]:
+    allowed = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", ""))) for item in evidence
+    }
+    used = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
+    precision = len(used & allowed) / len(used) if used else (1.0 if not allowed else 0.0)
+    completeness = len(used & allowed) / len(allowed) if allowed else 1.0
+    return round(precision, 4), round(completeness, 4)
 
 
 def _has_explainable_rebalance(response: dict[str, Any], expected_tickers: list[str]) -> bool:
@@ -365,7 +414,10 @@ def _has_explainable_rebalance(response: dict[str, Any], expected_tickers: list[
 
 def _has_hallucination(response: dict[str, Any], case: PortfolioRiskTestCase) -> bool:
     known_tickers = set(case.portfolio_risk_summary.get("asset_metrics", {}).keys())
-    allowed_evidence = {str(item.get("source", "")) for item in case.evidence}
+    allowed_evidence = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in case.evidence
+    }
     output_tickers = set()
     for item in response.get("asset_level_comments", []) or []:
         if isinstance(item, dict):
@@ -375,8 +427,11 @@ def _has_hallucination(response: dict[str, Any], case: PortfolioRiskTestCase) ->
             output_tickers.add(str(item.get("ticker", "")).upper())
     if any(ticker and ticker not in known_tickers for ticker in output_tickers):
         return True
-    used_evidence = {str(item) for item in response.get("evidence_used", [])}
-    if any(item and item not in allowed_evidence for item in used_evidence):
+    used_evidence = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
+    if any(item not in allowed_evidence for item in used_evidence):
         return True
     return False
 

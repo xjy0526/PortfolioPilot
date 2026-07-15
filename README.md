@@ -7,7 +7,7 @@ PortfolioPilot 是一个基于 FastAPI 的 AI 投资组合看板项目，适合�
 - 基于 FastAPI + 原生前端脚本，部署简单，启动直接
 - 支持通过 CSV 导入投资组合
 - 默认使用千问兼容接口进行 AI 分析与交易建议
-- 支持投资组合分析、调仓建议、历史记录、Telegram 推送
+- 支持投资组合分析、调仓建议、历史记录、网页端 API 设置与邮箱联系入口
 - 支持混合资产展示：
   - 美股及其他全球股票
   - 中国 A 股，如 `600519.SS`、`300750.SZ`
@@ -84,6 +84,7 @@ APP_TAGLINE=面向全球股票、中国A股与Polymarket的AI投资组合助手
 
 - 未配置完整 API Key 时，项目仍可在演示模式下运行
 - AI 分析、交易建议、部分自动化能力依赖千问接口配置
+- 本地运行时也可以在网页右上角 `操作` → `API 设置` 中填写 `QWEN_API_KEY`、模型、FMP Key 和联系邮箱；密钥会写入本地 `.env`，页面不会回显真实密钥
 
 ## Render 公网部署
 
@@ -160,13 +161,26 @@ POLY-BTC-150K-2026,80,0.31,0.36,2026-01-05,USD,Prediction Markets,BTC above 150k
 
 在 Dashboard 里通过 `CSV Import` 上传后，系统会把标准化后的持仓保存到项目目录下的 `portfolio.csv`（可通过 `.env` 里的 `PARQET_PORTFOLIO_CSV` 修改路径）。之后重启服务或执行刷新时，会优先读取这份本地 CSV，所以真实持仓可以长期保存在本地。`portfolio.csv` 已加入 `.gitignore`，避免误提交真实持仓。
 
+### 测试持仓 CSV
+
+仓库内置了几份可直接上传的模拟持仓，均已填写 `current_price`，适合在没有行情 API Key 时验证分析页、风险汇总、RAG 和回测流程：
+
+- `data/portfolios/test_us_growth_portfolio.csv`：美股成长股组合
+- `data/portfolios/test_global_balanced_portfolio.csv`：全球 ETF 分散组合
+- `data/portfolios/test_china_a_share_portfolio.csv`：A 股与 ETF 组合
+- `data/portfolios/test_ai_hardware_concentrated_portfolio.csv`：AI 硬件高集中度组合
+- `data/portfolios/test_defensive_income_portfolio.csv`：防御与现金等价物组合
+- `data/portfolios/test_prediction_market_portfolio.csv`：ETF + Polymarket 预测市场组合
+
+这些文件仅用于功能测试和演示，不代表真实持仓或投资建议。
+
 ## 新增投研与资管能力
 
 这一版将项目升级为面向证券投研与基金资产管理场景的 LLM 金融资产分析、组合风控与智能调仓系统：
 
 - `analytics/risk_metrics.py`：计算单资产和组合收益、年化波动、最大回撤、Sharpe、资产权重、行业集中度、资产类型暴露，并输出 `portfolio_risk_summary`
 - `services/financial_analysis.py` + `prompts/financial_analysis_prompt.py`：调用千问兼容接口生成严格 JSON Schema 的组合分析；无 API Key 或 JSON 非法时自动回退到安全模板
-- `rag/`：读取本地 `txt/md/csv`，执行 chunking、embedding 和本地向量检索；未安装 `sentence-transformers/faiss` 时自动使用轻量 hashing 检索
+- `rag/`：提供 SQLite 版本化轻量知识库，支持 `txt/md/csv/pdf`、结构化切片、发布/失效、有效期和检索前权限过滤；未安装 `sentence-transformers/faiss` 时自动使用轻量 hashing 检索
 - `portfolio_optimizer/`：提供等权、简化风险平价、最小方差、均值-方差、LLM 风险调整权重策略，输出可解释的目标权重与调整原因
 - `backtest/`：比较原始组合、等权、风险平价、最小方差、均值-方差、LLM 风险调整策略，输出收益、波动、回撤、Sharpe 和换手率
 
@@ -177,6 +191,29 @@ POLY-BTC-150K-2026,80,0.31,0.36,2026-01-05,USD,Prediction Markets,BTC above 150k
 - AI 调仓建议
 - RAG 证据来源
 - 回测结果表格
+
+## 应用模式与历史风险行情
+
+默认 `personal` 模式保留现有个人组合功能。机构投研界面可在 `.env` 中启用：
+
+```env
+APP_MODE=fund_research
+```
+
+`fund_research` 会隐藏 Tech Picks、Shadow Agent 和交易分析入口，停止 Shadow Agent 定时模拟，并将 Buy/Hold/Sell 改为研究关注、维持观察、降低风险暴露等研究表述。页面左上角会显示当前模式。
+
+风险总览与结构化 AI 分析使用统一 adjusted-close 历史行情服务。默认通过 yfinance 获取，也可改用 CSV：
+
+```env
+PRICE_HISTORY_PROVIDER=yfinance
+# PRICE_HISTORY_PROVIDER=csv
+# PRICE_HISTORY_CSV=data/prices/example_historical_prices.csv
+PRICE_HISTORY_LOOKBACK_DAYS=365
+PRICE_HISTORY_STALE_AFTER_DAYS=5
+RISK_MIN_OBSERVATIONS=20
+```
+
+历史样本不足时，波动率、最大回撤和 Sharpe 返回 `null`，并通过 `metric_status` 与 `data_quality` 披露缺失、陈旧行情和 ticker 覆盖率，不再以 `0` 代表未知数据。
 
 ## API 示例
 
@@ -199,7 +236,17 @@ RAG 检索：
 ```bash
 curl -X POST http://localhost:8000/api/rag/retrieve \
   -H "Content-Type: application/json" \
-  -d '{"query":"科技行业集中度和AI监管风险","top_k":5}'
+  -d '{"query":"科技行业集中度和AI监管风险","top_k":5,"permission_groups":["public"]}'
+```
+
+上传并发布公开知识文档（上传接口使用 JSON；PDF 请通过 `content_base64` 传入）：
+
+```bash
+curl -X POST http://localhost:8000/api/knowledge/documents \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"notice.md","content":"# 公告摘要\n\n公开模拟内容","metadata":{"title":"公告摘要","source_type":"public_notice","permission_groups":["public"]}}'
+
+curl -X POST http://localhost:8000/api/knowledge/documents/<document_id>/publish
 ```
 
 AI 风险调仓：
@@ -214,7 +261,7 @@ curl http://localhost:8000/api/portfolio/rebalance
 curl http://localhost:8000/api/backtest/report
 ```
 
-## RAG 本地证据
+## 轻量企业知识库
 
 默认读取 `.env` 中的：
 
@@ -223,9 +270,51 @@ RAG_DOCUMENT_DIR=rag_documents
 RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 RAG_CHUNK_SIZE=900
 RAG_TOP_K=5
+RAG_SCORE_THRESHOLD=0.15
+RAG_RRF_K=60
+RAG_RETRIEVAL_POOL_SIZE=20
 ```
 
-把新闻、公告、研报摘要、政策文本放入 `rag_documents/` 即可，支持 `.txt`、`.md`、`.csv`。该目录默认被 `.gitignore` 忽略，避免误提交非公开资料。
+知识文档通过 `/api/knowledge/documents` 接入 SQLite，支持 `.txt`、`.md`、`.csv`、`.pdf`。标题、章节和 PDF 页码会保留到 chunk；内容 checksum 变化时创建新版本，不变时返回 `duplicate`，新版本只有显式发布后才进入正常检索。已失效、过期、尚未生效或未发布的文档不会被检索。
+
+非公开文档必须设置明确的 `permission_groups`（不能使用 `public`）。`/api/rag/retrieve` 在 SQL 取出 chunk 前应用权限组和有效期条件，敏感文本不会先进入 embedding/相似度计算再被删除。生产部署应由可信认证层生成用户权限组，不应直接信任公网客户端自报的 header/body。
+
+`RAG_DOCUMENT_DIR` 仅保留为旧版公开目录兼容入口。默认目录为空时，系统会将仓库内 `data/research_docs/` 的公开或模拟材料幂等接入并发布；不要把实习单位或其他内部文件放入示例目录。
+
+检索链路依次执行 query normalization、ticker/基金代码/文档类型/时间意图提取、metadata/permission/temporal SQL 前置过滤、BM25、dense retrieval、Reciprocal Rank Fusion、可选 reranker、去重和分数阈值。Dense retrieval 继续保留无外部依赖的 hashing fallback；reranker 通过 `Reranker` 接口注入，未注入时自动关闭。返回的 citation 包含 `document_id`、`version`、`chunk_id`、标题、来源类型、发布日期、页码、章节、分数、引用片段和权限等级；全部候选低于阈值时返回 `evidence_insufficient=true`。
+
+运行可复现的离线检索评测：
+
+```bash
+python -m evaluation.run_retrieval_eval
+```
+
+报告写入 `cache/retrieval_evaluation_report.json`，包含 Recall@K、Precision@K、MRR、citation hit rate、过期文档命中率和未授权文档命中数。
+
+## Prompt Registry 与模型适配
+
+金融分析 Prompt 已迁移到 SQLite Prompt Registry。Prompt 支持 `draft`、`testing`、`published`、`deprecated` 状态，并可创建新版本、显式发布、回滚和使用同一测试集比较版本指标。首次访问 Prompt API 或运行金融分析时，会幂等创建并发布 `financial-analysis` 基线版本。
+
+```bash
+curl http://localhost:8000/api/prompts
+curl -X POST http://localhost:8000/api/prompts/financial-analysis/versions/1/publish
+curl -X POST http://localhost:8000/api/prompts/financial-analysis/rollback \
+  -H "Content-Type: application/json" -d '{"target_version":1}'
+```
+
+金融分析业务仅依赖 `LLMProvider`，内置 `QwenProvider`、`MockProvider` 和可选 `OptionalOpenAICompatibleProvider`。结构化输出由唯一 Pydantic 模型生成 JSON Schema，所有对象禁止额外字段；模型输出还会校验组合 ticker、当次 RAG citation 和输入可映射金融数值。校验失败会重试一次，再进入安全模板。每次 Provider 调用都会在 `llm_call_traces` 中记录 `prompt_id`、`prompt_version`、Provider、模型和校验状态。
+
+## 受控投研 Workflow 与三层评测
+
+`POST /api/workflows/research-report` 启动面向公募基金研究报告的受控工作流。节点按固定状态机运行，工具仅来自 allowlist；数值、引用、权限和禁用表达验证以及人工审核均不可由 LLM 跳过。人工可 approve、reject 或 request changes，审核意见会进入 Trace 和后续 Eval 数据。该工作流只发布研究报告，不包含任何真实或模拟交易工具；机构模式下 shadow trading 工具不在 allowlist 中。
+
+完整离线评测：
+
+```bash
+python -m evaluation.run_full_eval
+```
+
+输出 `cache/full_evaluation_report.json`，包含 Retrieval、Generation、Workflow 三层指标、20 条组合风险用例、公开检索 golden set、权限/过期/证据不足/冲突证据用例、中英文切片统计和 badcase 归因。前端 `Eval & Trace` 页面展示指标趋势、Prompt 对比、badcase、延迟/成本和人工采纳率。
 
 如果你想启用更强的本地语义检索，可以自行安装：
 
@@ -235,13 +324,15 @@ pip install sentence-transformers faiss-cpu
 
 未安装这些库时，系统仍会用内置 hashing embedding 正常运行。
 
-## 回测
+## Point-in-time Walk-Forward 回测
 
 运行：
 
 ```bash
 python -m backtest.run_backtest
 ```
+
+可配置 `--train-window`、`--holding-window`、`--rebalance-frequency`、交易成本、滑点、最小交易金额、换手上限和 benchmark CSV。每个调仓快照保存训练区间、输入哈希、预期收益、协方差、风险标签和目标权重；训练数据结束日必须早于调仓日。
 
 默认读取 [example_portfolio.csv](example_portfolio.csv)，并优先寻找：
 
@@ -261,6 +352,12 @@ cache/backtest_report.json
 - `start_date` / `end_date`：价格样本覆盖区间
 - `asset_count`：实际参与回测的资产数量
 - `mock_price_data_used`：是否使用 mock 行情
+- `rebalance_snapshots` / `data_leakage_checks`：逐期输入、权重和未来数据隔离状态
+- benchmark return、active return、tracking error、information ratio、beta、alpha 和 active drawdown
+- downside volatility、Sortino、historical VaR/CVaR、风险贡献和主动权重
+- 股票市场、科技行业、利率和汇率压力情景及单资产损失贡献
+
+未提供历史时点 Prompt、evidence 和 model snapshot 时，原 `llm_risk_adjusted` 会明确降级并改名为 `rule_risk_adjusted`。只有完整历史 snapshot 覆盖每个调仓日时，才允许运行 `llm_historical_adjusted`。
 
 ### 均值-方差优化器说明
 

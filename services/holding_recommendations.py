@@ -316,7 +316,7 @@ def _build_summary(score: float, view: str, recommendations: list[dict[str, Any]
 
 
 async def _call_qwen_for_holding_recommendations(base_report: dict[str, Any], lang: str) -> dict[str, Any]:
-    from services.vertex_ai import get_client
+    from services.llm.compat import get_client
 
     client = get_client()
     language = "Chinese" if lang == "zh" else "English"

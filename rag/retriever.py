@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from rag.models import PermissionContext
+
 import numpy as np
 
 from config import BASE_DIR, settings
@@ -118,33 +120,74 @@ class LocalVectorIndex:
 _INDEX_CACHE: dict[str, tuple[tuple[tuple[str, float, int], ...], LocalVectorIndex]] = {}
 
 
-def retrieve_evidence(query: str, top_k: int = 5, document_dir: str | Path | None = None) -> list[dict]:
-    """Retrieve local evidence chunks for a query.
+def retrieve_evidence(
+    query: str,
+    top_k: int = 5,
+    document_dir: str | Path | None = None,
+    permission_context: PermissionContext | None = None,
+) -> list[dict]:
+    """Retrieve authorized, published and currently effective evidence.
 
-    The function is intentionally safe in empty or partially configured
-    environments: no documents or missing vector libraries simply return [].
+    An explicitly supplied ``document_dir`` keeps the legacy public-directory
+    behavior for local tests/tools. Normal application retrieval uses the
+    versioned SQLite knowledge base and applies ACL filtering before embedding.
     """
-    root = _resolve_document_dir(document_dir)
-    if not root.exists() or not root.is_dir():
-        return []
+    return retrieve_evidence_with_status(
+        query,
+        top_k=top_k,
+        document_dir=document_dir,
+        permission_context=permission_context,
+    )["citations"]
 
+
+def retrieve_evidence_with_status(
+    query: str,
+    top_k: int = 5,
+    document_dir: str | Path | None = None,
+    permission_context: PermissionContext | None = None,
+    score_threshold: float | None = None,
+) -> dict:
+    """Retrieve evidence plus normalized intent and insufficiency status."""
+    if document_dir is not None:
+        root = _resolve_usable_document_dir(document_dir)
+        if not root.exists() or not root.is_dir():
+            return {"citations": [], "evidence_insufficient": True}
+        try:
+            index = _get_or_build_index(root)
+            citations = index.search(query, top_k=top_k)
+            return {"citations": citations, "evidence_insufficient": not citations}
+        except Exception as exc:
+            logger.warning("Legacy RAG retrieval failed: %s", exc)
+            return {"citations": [], "evidence_insufficient": True}
+
+    root = _resolve_usable_document_dir(document_dir)
     try:
-        index = _get_or_build_index(root)
-        return index.search(query, top_k=top_k)
+        from rag.service import KnowledgeBaseService
+
+        service = KnowledgeBaseService()
+        bundled_samples = BASE_DIR / "data" / "research_docs"
+        if root.exists() and bundled_samples.exists() and root.resolve() == bundled_samples.resolve():
+            service.bootstrap_public_directory(root)
+        return service.retrieve_with_status(
+            query,
+            top_k=top_k,
+            permission_context=permission_context or PermissionContext(),
+            score_threshold=score_threshold,
+        )
     except Exception as exc:
         logger.warning("RAG retrieval failed: %s", exc)
-        return []
+        return {"citations": [], "evidence_insufficient": True, "error": str(exc)}
 
 
 def load_documents(document_dir: str | Path | None = None) -> list[dict[str, str]]:
     """Load txt, md and csv documents from a local directory."""
-    root = _resolve_document_dir(document_dir)
+    root = _resolve_usable_document_dir(document_dir)
     if not root.exists() or not root.is_dir():
         return []
 
     docs: list[dict[str, str]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {".txt", ".md", ".csv"}:
+        if not path.is_file() or path.suffix.lower() not in {".txt", ".md", ".csv", ".pdf"}:
             continue
         text = _read_document(path)
         if text.strip():
@@ -214,6 +257,11 @@ def _build_embedder() -> Embedder:
 
 def _read_document(path: Path) -> str:
     try:
+        if path.suffix.lower() == ".pdf":
+            from rag.parsers import parse_document
+
+            _, blocks, _ = parse_document(path.read_bytes(), path.name, path.stem)
+            return "\n\n".join(block.text for block in blocks)
         if path.suffix.lower() == ".csv":
             return _read_csv_document(path)
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -241,7 +289,7 @@ def _read_csv_document(path: Path) -> str:
 def _directory_signature(root: Path) -> tuple[tuple[str, float, int], ...]:
     items = []
     for path in sorted(root.rglob("*")):
-        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv"}:
+        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv", ".pdf"}:
             stat = path.stat()
             items.append((str(path), math.floor(stat.st_mtime), stat.st_size))
     return tuple(items)
@@ -253,3 +301,23 @@ def _resolve_document_dir(document_dir: str | Path | None) -> Path:
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
+
+def _resolve_usable_document_dir(document_dir: str | Path | None) -> Path:
+    root = _resolve_document_dir(document_dir)
+    configured = str(getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents") or "").strip()
+    uses_default_dir = document_dir is None and configured in {"", "rag_documents"}
+    if uses_default_dir and not _has_supported_documents(root):
+        demo_docs = BASE_DIR / "data" / "research_docs"
+        if _has_supported_documents(demo_docs):
+            return demo_docs
+    return root
+
+
+def _has_supported_documents(root: Path) -> bool:
+    if not root.exists() or not root.is_dir():
+        return False
+    return any(
+        path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv", ".pdf"}
+        for path in root.rglob("*")
+    )

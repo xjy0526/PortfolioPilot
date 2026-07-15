@@ -66,7 +66,7 @@ def calculate_rebalancing(
     R5: Portfolio-Health-Score
     """
     if not positions:
-        return RebalancingAdvice(summary="Keine Positionen im Portfolio")
+        return RebalancingAdvice(summary="No positions in portfolio")
 
     # ── R2: Gesamt-Portfolio inkl. Cash berechnen ──
     stock_positions = [p for p in positions if p.ticker != "CASH"]

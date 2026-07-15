@@ -9,6 +9,7 @@ werden mit einem In-Memory-Cache (15min TTL) zwischengespeichert.
 """
 import logging
 import time
+from datetime import datetime
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -36,6 +37,81 @@ def _get_cached(key: str):
 def _set_cached(key: str, data):
     """Speichert Daten im Analytics-Cache."""
     _analytics_cache[key] = (time.time(), data)
+
+
+def _build_summary_performance(summary, source: str = "portfolio") -> dict:
+    """Build a Parqet-like performance payload from the loaded portfolio.
+
+    Local CSV portfolios do not have Parqet activities, but the history tab still
+    needs active holdings and basic unrealized P&L.
+    """
+    stocks = getattr(summary, "stocks", []) or []
+    holdings = []
+    total_value = 0.0
+    total_cost = 0.0
+    total_pnl = 0.0
+
+    for stock in stocks:
+        pos = stock.position
+        is_cash = (pos.ticker or "").upper() == "CASH" or pos.asset_type == "cash"
+        purchase_value = float(pos.total_cost or 0.0)
+        current_value = float(pos.current_value or 0.0)
+        gain = current_value - purchase_value
+        gain_pct = (gain / purchase_value * 100.0) if purchase_value > 0 else 0.0
+
+        if not is_cash:
+            total_value += current_value
+            total_cost += purchase_value
+            total_pnl += gain
+
+        holdings.append({
+            "ticker": pos.ticker,
+            "name": pos.name or pos.ticker,
+            "type": "cash" if is_cash else (pos.asset_type or "equity"),
+            "logo": "",
+            "shares": pos.shares,
+            "purchaseValue": round(purchase_value, 2),
+            "currentValue": round(current_value, 2),
+            "unrealizedGainGross": round(gain, 2),
+            "unrealizedReturnGross": round(gain_pct, 2),
+            "realizedGainGross": 0.0,
+            "dividendsGross": 0.0,
+            "taxes": 0.0,
+            "fees": 0.0,
+            "isSold": False,
+            "status": "active",
+            "weight": 0.0,
+        })
+
+    for item in holdings:
+        if item["type"] != "cash" and total_value > 0:
+            item["weight"] = round(item["currentValue"] / total_value * 100.0, 2)
+
+    active_holdings = [item for item in holdings if item["type"] != "cash" and not item["isSold"]]
+    total_return_pct = (total_pnl / total_cost * 100.0) if total_cost > 0 else 0.0
+    refreshed = portfolio_data.get("last_refresh")
+    end = refreshed.date().isoformat() if hasattr(refreshed, "date") else datetime.now().date().isoformat()
+
+    return {
+        "source": source,
+        "kpis": {
+            "valuation": round(total_value, 2),
+            "unrealizedGains": {
+                "gainGross": round(total_pnl, 2),
+                "returnGross": round(total_return_pct, 2),
+            },
+            "realizedGains": {"gainGross": 0.0, "returnGross": 0.0},
+            "dividends": {"gainGross": 0.0},
+            "taxes": 0.0,
+            "fees": 0.0,
+            "interval": {"start": "CSV", "end": end},
+        },
+        "holdings": holdings,
+        "holdingsActive": active_holdings,
+        "holdingsSold": [],
+        "activeHoldings": len(active_holdings),
+        "soldHoldings": 0,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -163,6 +239,7 @@ async def get_benchmark(symbol: str = "SPY", period: str = "6month"):
 
     days_map = {"1month": 30, "3month": 90, "6month": 180, "1year": 365}
     days = days_map.get(period, 180)
+    portfolio_data_series = _portfolio_return_series(days, summary_check)
 
     try:
         import yfinance as yf
@@ -175,10 +252,18 @@ async def get_benchmark(symbol: str = "SPY", period: str = "6month"):
         hist = ticker.history(start=start, end=end)
 
         if hist is None or hist.empty:
+            fallback = _benchmark_fallback_result(symbol, period, portfolio_data_series)
+            if fallback:
+                _set_cached(cache_key, fallback)
+                return fallback
             return {"error": f"Keine Daten für {symbol}"}
 
         closes = hist["Close"].dropna()
         if len(closes) < 2:
+            fallback = _benchmark_fallback_result(symbol, period, portfolio_data_series)
+            if fallback:
+                _set_cached(cache_key, fallback)
+                return fallback
             return {"error": "Zu wenig Datenpunkte"}
 
         first_price = float(closes.iloc[0])
@@ -191,33 +276,23 @@ async def get_benchmark(symbol: str = "SPY", period: str = "6month"):
                 "return_pct": round(pct, 2),
             })
 
-        # Portfolio-Performance aus History (Demo Mode wird in der DB via Summary abgefangen)
-        from database import load_snapshots as load_history
-        portfolio_history = load_history(days=days)
-
-        portfolio_data_series = []
-        if portfolio_history and len(portfolio_history) >= 2:
-            first_val = portfolio_history[0].get("total_value", 1)
-            for entry in portfolio_history:
-                val = entry.get("total_value", 0)
-                pct = ((val - first_val) / first_val) * 100 if first_val > 0 else 0
-                portfolio_data_series.append({
-                    "date": entry["date"],
-                    "value": val,
-                    "return_pct": round(pct, 2),
-                })
-
         result = {
             "benchmark_symbol": symbol,
             "benchmark_name": _benchmark_name(symbol),
             "period": period,
             "benchmark": benchmark_data,
             "portfolio": portfolio_data_series,
+            "benchmark_estimated": False,
         }
         _set_cached(cache_key, result)
         return result
 
     except Exception as e:
+        fallback = _benchmark_fallback_result(symbol, period, portfolio_data_series)
+        if fallback:
+            logger.warning(f"Benchmark-Daten für {symbol} nicht verfügbar, nutze lokalen Fallback: {e}")
+            _set_cached(cache_key, fallback)
+            return fallback
         logger.error(f"Benchmark-Vergleich fehlgeschlagen: {e}")
         return {"error": str(e)}
 
@@ -230,6 +305,64 @@ def _benchmark_name(symbol: str) -> str:
         "^GDAXI": "DAX",
     }
     return names.get(symbol, symbol)
+
+
+def _portfolio_return_series(days: int, summary) -> list[dict]:
+    """Return local portfolio return series, with CSV estimate fallback."""
+    from database import load_snapshots as load_history
+
+    portfolio_history = load_history(days=days)
+    if (not portfolio_history or len(portfolio_history) < 2) and summary and portfolio_data.get("source") in {"csv", "sample_csv"}:
+        from services.portfolio_history_fallback import build_estimated_portfolio_history
+
+        portfolio_history = build_estimated_portfolio_history(
+            summary,
+            days=days,
+            source=portfolio_data.get("source", "csv"),
+        )
+
+    if not portfolio_history or len(portfolio_history) < 2:
+        return []
+
+    first_val = float(portfolio_history[0].get("total_value") or 0)
+    if first_val <= 0:
+        return []
+
+    series = []
+    for entry in portfolio_history:
+        val = float(entry.get("total_value") or 0)
+        pct = ((val - first_val) / first_val) * 100 if first_val > 0 else 0
+        series.append({
+            "date": entry["date"],
+            "value": round(val, 2),
+            "return_pct": round(pct, 2),
+            "estimated": bool(entry.get("estimated", False)),
+        })
+    return series
+
+
+def _benchmark_fallback_result(symbol: str, period: str, portfolio_series: list[dict]) -> dict | None:
+    """Build a neutral benchmark line when external market data is unavailable."""
+    if len(portfolio_series) < 2:
+        return None
+
+    return {
+        "benchmark_symbol": symbol,
+        "benchmark_name": f"{_benchmark_name(symbol)} baseline",
+        "period": period,
+        "benchmark": [
+            {
+                "date": entry["date"],
+                "price": None,
+                "return_pct": 0.0,
+                "estimated": True,
+            }
+            for entry in portfolio_series
+        ],
+        "portfolio": portfolio_series,
+        "benchmark_estimated": True,
+        "note": "External benchmark data unavailable; using a neutral baseline so the local portfolio curve remains visible.",
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -589,6 +722,13 @@ async def get_portfolio_history_detail(period: str = "6month"):
             pass
 
     if not activities:
+        if summary and portfolio_data.get("source") in {"csv", "sample_csv"}:
+            from services.portfolio_history_fallback import build_estimated_history_detail
+            return build_estimated_history_detail(
+                summary,
+                days=days,
+                source=portfolio_data.get("source", "csv"),
+            )
         return JSONResponse({"error": "Keine Activities verfügbar"}, status_code=503)
 
     # Raw Activities für Cash-Rekonstruktion laden (inkl. Cash-Einträge)
@@ -637,15 +777,19 @@ async def get_portfolio_performance():
         from fetchers.demo_data import get_demo_performance
         return get_demo_performance()
 
+    if summary and portfolio_data.get("source") in {"csv", "sample_csv"}:
+        return _build_summary_performance(summary, source=portfolio_data.get("source", "csv"))
+
     try:
         from fetchers.parqet import fetch_portfolio_performance
         result = await fetch_portfolio_performance()
         if not result:
-            return JSONResponse(
-                {"error": "Performance-Daten nicht verfügbar"},
-                status_code=503,
-            )
+            if summary and getattr(summary, "stocks", None):
+                return _build_summary_performance(summary, source="portfolio_fallback")
+            return JSONResponse({"error": "Performance data unavailable"}, status_code=503)
         return result
     except Exception as e:
         logger.error(f"Performance Endpoint Fehler: {e}")
+        if summary and getattr(summary, "stocks", None):
+            return _build_summary_performance(summary, source="portfolio_fallback")
         return JSONResponse({"error": str(e)}, status_code=500)

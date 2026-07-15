@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,20 @@ class BacktestConfig:
     output_path: Path
     seed: int = 42
     periods: int = 252
+    train_window: int = 60
+    holding_window: int = 20
+    rebalance_frequency: int = 20
+    transaction_cost_bps: float = 5.0
+    slippage_bps: float = 2.0
+    minimum_trade_amount: float = 0.0
+    turnover_limit: float = 1.0
+    initial_capital: float = 1_000_000.0
+    benchmark_price_csv: Path | None = None
+    llm_historical_snapshots: dict[str, dict[str, Any]] | None = None
+    run_llm_historical_adjusted: bool = False
+    stress_scenarios: dict[str, float] | None = None
+    benchmark_sector_weights: dict[str, float] | None = None
+    benchmark_constituent_weights: dict[str, float] | None = None
 
 
 @dataclass
@@ -47,7 +62,7 @@ DEFAULT_PRICE_CSV = Path(__file__).resolve().parent.parent / "data" / "prices" /
 
 
 def run_strategy_backtest(config: BacktestConfig) -> dict[str, Any]:
-    """Run a reproducible strategy comparison backtest."""
+    """Run a point-in-time walk-forward strategy comparison."""
     raw_positions = parse_csv_file(str(config.portfolio_csv))
     if not raw_positions:
         raise ValueError(f"No valid positions found in {config.portfolio_csv}")
@@ -60,77 +75,143 @@ def run_strategy_backtest(config: BacktestConfig) -> dict[str, Any]:
     returns = calculate_returns(prices)
     start_date, end_date = _date_bounds(prices)
     priced_assets = [ticker for ticker in tickers if ticker in prices.columns]
-    expected_returns = returns.mean().fillna(0.0) * 252 if not returns.empty else pd.Series(dtype=float)
-    covariance = returns.cov().fillna(0.0) * 252 if not returns.empty else pd.DataFrame()
     sector_map = _sector_map_from_rows(portfolio_positions)
+    if config.run_llm_historical_adjusted and not config.llm_historical_snapshots:
+        raise ValueError("llm_historical_adjusted requires historical prompt/evidence/model snapshots")
 
-    asset_risk_metrics = {
-        ticker: {
-            "annual_volatility": calculate_annualized_volatility(returns[ticker]) if ticker in returns else 0.0,
-            "max_drawdown": calculate_max_drawdown(returns[ticker]) if ticker in returns else 0.0,
-            "risk_level": _risk_level_from_returns(returns[ticker]) if ticker in returns else "medium",
+    strategy_names = [
+        "original_portfolio", "equal_weight", "risk_parity", "minimum_variance",
+        "mean_variance", "rule_risk_adjusted",
+    ]
+    if config.llm_historical_snapshots:
+        strategy_names.append("llm_historical_adjusted")
+    strategy_returns = {name: pd.Series(0.0, index=returns.index) for name in strategy_names}
+    strategy_weights = {name: dict(current_weights) for name in strategy_names}
+    turnovers = {name: 0.0 for name in strategy_names}
+    snapshots: list[dict[str, Any]] = []
+    min_var_explanations: list[dict[str, Any]] = []
+    mean_var_explanations: list[dict[str, Any]] = []
+    rule_explanations: list[dict[str, Any]] = []
+
+    effective_train = max(1, min(config.train_window, max(1, len(returns) // 2)))
+    frequency = max(1, config.rebalance_frequency)
+    holding = max(1, config.holding_window)
+    for position in range(effective_train, len(returns), frequency):
+        rebalance_date = returns.index[position]
+        train = returns.iloc[max(0, position - effective_train):position].copy()
+        if not train.empty and train.index.max() >= rebalance_date:
+            raise AssertionError("Point-in-time violation: training data reaches rebalance date")
+        hold_end = min(len(returns), position + min(holding, frequency))
+        expected_returns = train.mean().fillna(0.0) * 252 if not train.empty else pd.Series(0.0, index=tickers)
+        covariance = (
+            train.cov().fillna(0.0) * 252
+            if len(train) >= 2 else pd.DataFrame(0.0, index=tickers, columns=tickers)
+        )
+        asset_risk_metrics = _asset_risk_metrics(train, tickers)
+        targets: dict[str, dict[str, float]] = {
+            "original_portfolio": current_weights,
+            "equal_weight": _targets_to_weight_map(equal_weight_baseline(current_weights)),
+            "risk_parity": _targets_to_weight_map(risk_parity_simple(current_weights, asset_risk_metrics)),
         }
-        for ticker in tickers
-    }
+        minimum_rows = minimum_variance_portfolio(
+            current_weights=current_weights, expected_returns=expected_returns,
+            covariance=covariance, max_weight=0.35, sector_map=sector_map, sector_max_weight=0.55,
+        )
+        mean_rows = mean_variance_portfolio(
+            current_weights=current_weights, expected_returns=expected_returns,
+            covariance=covariance, risk_aversion=5.0, max_weight=0.35,
+            sector_map=sector_map, sector_max_weight=0.55,
+        )
+        targets["minimum_variance"] = _targets_to_weight_map(minimum_rows)
+        targets["mean_variance"] = _targets_to_weight_map(mean_rows)
+        rule_score = _rule_risk_score(asset_risk_metrics)
+        rule_adjusted = llm_risk_adjusted_weighting(
+            current_weights=current_weights, asset_risk_metrics=asset_risk_metrics,
+            llm_risk_score=rule_score,
+            asset_level_comments=[
+                {"ticker": ticker, "risk_level": values["risk_level"], "comment": "Point-in-time rule label"}
+                for ticker, values in asset_risk_metrics.items()
+            ],
+            sector_exposure=_sector_exposure_from_rows(portfolio_positions),
+        )
+        targets["rule_risk_adjusted"] = {
+            item["ticker"]: float(item["target_weight"]) for item in rule_adjusted.get("suggestions", [])
+        }
+        if config.llm_historical_snapshots:
+            snapshot = config.llm_historical_snapshots.get(pd.Timestamp(rebalance_date).date().isoformat())
+            _validate_llm_snapshot(snapshot, rebalance_date)
+            adjusted = llm_risk_adjusted_weighting(
+                current_weights=current_weights, asset_risk_metrics=asset_risk_metrics,
+                llm_risk_score=float(snapshot["risk_score"]),
+                asset_level_comments=snapshot.get("asset_level_comments", []),
+                sector_exposure=_sector_exposure_from_rows(portfolio_positions),
+            )
+            targets["llm_historical_adjusted"] = {
+                item["ticker"]: float(item["target_weight"]) for item in adjusted.get("suggestions", [])
+            }
 
-    equal_weights = _targets_to_weight_map(equal_weight_baseline(current_weights))
-    risk_parity_weights = _targets_to_weight_map(risk_parity_simple(current_weights, asset_risk_metrics))
-    minimum_variance_rows = minimum_variance_portfolio(
-        current_weights=current_weights,
-        expected_returns=expected_returns,
-        covariance=covariance,
-        max_weight=0.35,
-        sector_map=sector_map,
-        sector_max_weight=0.55,
-    )
-    minimum_variance_weights = _targets_to_weight_map(minimum_variance_rows)
-    mean_variance_rows = mean_variance_portfolio(
-        current_weights=current_weights,
-        expected_returns=expected_returns,
-        covariance=covariance,
-        risk_aversion=5.0,
-        max_weight=0.35,
-        sector_map=sector_map,
-        sector_max_weight=0.55,
-    )
-    mean_variance_weights = _targets_to_weight_map(mean_variance_rows)
-    llm_adjusted = llm_risk_adjusted_weighting(
-        current_weights=current_weights,
-        asset_risk_metrics=asset_risk_metrics,
-        llm_risk_score=6.5,
-        asset_level_comments=[
-            {"ticker": ticker, "risk_level": metrics["risk_level"], "comment": "Backtest-derived risk proxy"}
-            for ticker, metrics in asset_risk_metrics.items()
-        ],
-        sector_exposure=_sector_exposure_from_rows(portfolio_positions),
-    )
-    llm_weights = {
-        item["ticker"]: float(item["target_weight"])
-        for item in llm_adjusted.get("suggestions", [])
-    }
-
-    strategies = {
-        "original_portfolio": current_weights,
-        "equal_weight": equal_weights,
-        "risk_parity": risk_parity_weights,
-        "minimum_variance": minimum_variance_weights,
-        "mean_variance": mean_variance_weights,
-        "llm_risk_adjusted": llm_weights,
-    }
-
-    results = []
-    for name, weights in strategies.items():
-        normalized = _normalize_weights({ticker: weights.get(ticker, 0.0) for ticker in tickers})
-        portfolio_returns = _portfolio_returns(returns, normalized)
-        results.append({
-            "strategy": name,
-            "annual_return": round(calculate_annual_return(portfolio_returns), 6),
-            "annual_volatility": round(calculate_annualized_volatility(portfolio_returns), 6),
-            "max_drawdown": round(calculate_max_drawdown(portfolio_returns), 6),
-            "sharpe_ratio": round(calculate_sharpe_ratio(portfolio_returns), 4),
-            "turnover": round(_turnover(current_weights, normalized), 6),
-            "weights": {ticker: round(weight, 6) for ticker, weight in normalized.items()},
+        snapshot_weights: dict[str, dict[str, float]] = {}
+        for name in strategy_names:
+            target = _normalize_weights({ticker: targets[name].get(ticker, 0.0) for ticker in tickers})
+            target = _apply_trade_constraints(
+                strategy_weights[name], target, config.turnover_limit,
+                config.minimum_trade_amount, config.initial_capital,
+            )
+            turnover = _turnover(strategy_weights[name], target)
+            cost = turnover * (config.transaction_cost_bps + config.slippage_bps) / 10_000.0
+            period_returns = _portfolio_returns(returns.iloc[position:hold_end], target)
+            if not period_returns.empty:
+                period_returns.iloc[0] -= cost
+                strategy_returns[name].loc[period_returns.index] = period_returns
+            strategy_weights[name] = target
+            turnovers[name] += turnover
+            snapshot_weights[name] = {ticker: round(value, 8) for ticker, value in target.items()}
+        min_var_explanations = minimum_rows
+        mean_var_explanations = mean_rows
+        rule_explanations = rule_adjusted.get("suggestions", [])
+        snapshots.append({
+            "rebalance_date": pd.Timestamp(rebalance_date).date().isoformat(),
+            "train_start": pd.Timestamp(train.index.min()).date().isoformat() if not train.empty else None,
+            "train_end": pd.Timestamp(train.index.max()).date().isoformat() if not train.empty else None,
+            "holding_end": pd.Timestamp(returns.index[hold_end - 1]).date().isoformat() if hold_end > position else None,
+            "training_observations": len(train),
+            "input_hash": hashlib.sha256(train.to_csv().encode()).hexdigest(),
+            "input_snapshot": {
+                "expected_returns": {ticker: round(float(expected_returns.get(ticker, 0.0)), 8) for ticker in tickers},
+                "covariance": {
+                    row: {column: round(float(covariance.loc[row, column]), 10) for column in covariance.columns}
+                    for row in covariance.index
+                },
+                "risk_labels": {ticker: values["risk_level"] for ticker, values in asset_risk_metrics.items()},
+            },
+            "weights": snapshot_weights,
         })
+
+    benchmark_returns, benchmark_name = _load_benchmark_returns(config.benchmark_price_csv, returns.index)
+    results = []
+    out_of_sample_index = returns.index[effective_train:]
+    for name in strategy_names:
+        series = strategy_returns[name].reindex(out_of_sample_index).fillna(0.0)
+        active = _benchmark_metrics(series, benchmark_returns)
+        final_weights = strategy_weights[name]
+        result = {
+            "strategy": name,
+            **_risk_metrics(series),
+            **active,
+            "turnover": round(turnovers[name], 6),
+            "weights": {ticker: round(weight, 6) for ticker, weight in final_weights.items()},
+            "risk_contribution": _risk_contribution(final_weights, returns.loc[series.index]),
+            "sector_active_weight": _sector_active_weight(
+                final_weights, sector_map, config.benchmark_sector_weights or {},
+            ),
+            "single_name_active_weight": {
+                ticker: round(weight - (config.benchmark_constituent_weights or {}).get(ticker, 0.0), 6)
+                for ticker, weight in final_weights.items()
+            },
+            "confidence_intervals": _confidence_intervals(series),
+            "stress_test": _stress_test(final_weights, portfolio_positions, config.stress_scenarios),
+        }
+        results.append(result)
 
     report = {
         "portfolio_csv": str(config.portfolio_csv),
@@ -146,14 +227,236 @@ def run_strategy_backtest(config: BacktestConfig) -> dict[str, Any]:
             if price_bundle.mock_used else ""
         ),
         "periods": len(returns),
+        "methodology": "Point-in-time walk-forward; each rebalance uses returns strictly before rebalance_date.",
+        "train_window": config.train_window,
+        "effective_train_window": effective_train,
+        "holding_window": config.holding_window,
+        "rebalance_frequency": config.rebalance_frequency,
+        "rebalance_dates": [item["rebalance_date"] for item in snapshots],
+        "rebalance_snapshots": snapshots,
+        "cost_assumptions": {
+            "transaction_cost_bps": config.transaction_cost_bps,
+            "slippage_bps": config.slippage_bps,
+            "minimum_trade_amount": config.minimum_trade_amount,
+            "turnover_limit": config.turnover_limit,
+        },
+        "benchmark": {
+            "name": benchmark_name,
+            "price_csv": str(config.benchmark_price_csv) if config.benchmark_price_csv else None,
+            "sector_weights": config.benchmark_sector_weights or {},
+            "constituent_weights": config.benchmark_constituent_weights or {},
+        },
+        "out_of_sample": True,
+        "data_leakage_checks": {
+            "status": "passed",
+            "training_strictly_before_rebalance": all(
+                not item["train_end"] or item["train_end"] < item["rebalance_date"] for item in snapshots
+            ),
+            "future_prices_used_for_estimation": False,
+            "llm_strategy_status": "historical_snapshots_validated" if config.llm_historical_snapshots else "rule_risk_adjusted_only",
+        },
+        "confidence_intervals": {row["strategy"]: row["confidence_intervals"] for row in results},
         "strategies": results,
-        "minimum_variance_explanations": minimum_variance_rows,
-        "mean_variance_explanations": mean_variance_rows,
-        "llm_adjusted_explanations": llm_adjusted.get("suggestions", []),
+        "minimum_variance_explanations": min_var_explanations,
+        "mean_variance_explanations": mean_var_explanations,
+        "rule_risk_adjusted_explanations": rule_explanations,
     }
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
     config.output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
+
+
+def _asset_risk_metrics(train: pd.DataFrame, tickers: list[str]) -> dict[str, dict[str, Any]]:
+    return {
+        ticker: {
+            "annual_volatility": calculate_annualized_volatility(train[ticker]) if ticker in train else 0.0,
+            "max_drawdown": calculate_max_drawdown(train[ticker]) if ticker in train else 0.0,
+            "risk_level": _risk_level_from_returns(train[ticker]) if ticker in train else "medium",
+        }
+        for ticker in tickers
+    }
+
+
+def _rule_risk_score(metrics: dict[str, dict[str, Any]]) -> float:
+    if not metrics:
+        return 5.0
+    levels = {"low": 2.5, "medium": 5.0, "high": 8.0}
+    return round(sum(levels.get(str(item.get("risk_level")), 5.0) for item in metrics.values()) / len(metrics), 2)
+
+
+def _apply_trade_constraints(
+    current: dict[str, float], target: dict[str, float], turnover_limit: float,
+    minimum_trade_amount: float, capital: float,
+) -> dict[str, float]:
+    tickers = set(current) | set(target)
+    constrained = dict(target)
+    minimum_weight = max(0.0, minimum_trade_amount) / max(1.0, capital)
+    for ticker in tickers:
+        if abs(target.get(ticker, 0.0) - current.get(ticker, 0.0)) < minimum_weight:
+            constrained[ticker] = current.get(ticker, 0.0)
+    constrained = _normalize_weights(constrained)
+    turnover = _turnover(current, constrained)
+    limit = max(0.0, float(turnover_limit))
+    if turnover > limit and turnover > 0:
+        scale = limit / turnover
+        constrained = {
+            ticker: current.get(ticker, 0.0) + scale * (constrained.get(ticker, 0.0) - current.get(ticker, 0.0))
+            for ticker in tickers
+        }
+    return _normalize_weights(constrained)
+
+
+def _validate_llm_snapshot(snapshot: dict[str, Any] | None, rebalance_date: Any) -> None:
+    if not snapshot:
+        raise ValueError(f"Missing historical LLM snapshot for {pd.Timestamp(rebalance_date).date().isoformat()}")
+    required = {"prompt_id", "prompt_version", "model", "evidence_snapshot", "risk_score", "as_of"}
+    missing = sorted(required - set(snapshot))
+    if missing:
+        raise ValueError(f"Historical LLM snapshot missing: {', '.join(missing)}")
+    if pd.Timestamp(snapshot["as_of"]) > pd.Timestamp(rebalance_date):
+        raise ValueError("Historical LLM snapshot contains future information")
+
+
+def _risk_metrics(series: pd.Series) -> dict[str, Any]:
+    clean = series.dropna()
+    annual_return = calculate_annual_return(clean)
+    annual_vol = calculate_annualized_volatility(clean)
+    downside = clean[clean < 0]
+    downside_vol = float(downside.std(ddof=1) * np.sqrt(252)) if len(downside) > 1 else 0.0
+    var_cutoff = float(clean.quantile(0.05)) if len(clean) else 0.0
+    tail = clean[clean <= var_cutoff]
+    return {
+        "annual_return": round(annual_return, 6),
+        "annual_volatility": round(annual_vol, 6),
+        "max_drawdown": round(calculate_max_drawdown(clean), 6),
+        "sharpe_ratio": round(calculate_sharpe_ratio(clean), 4),
+        "downside_volatility": round(downside_vol, 6),
+        "sortino_ratio": round(annual_return / downside_vol, 4) if downside_vol > 0 else None,
+        "historical_var": round(max(0.0, -var_cutoff), 6),
+        "historical_cvar": round(max(0.0, -float(tail.mean())), 6) if len(tail) else 0.0,
+    }
+
+
+def _load_benchmark_returns(path: Path | None, index: pd.Index) -> tuple[pd.Series, str | None]:
+    if not path or not path.exists():
+        return pd.Series(dtype=float), None
+    frame = pd.read_csv(path)
+    columns = {str(column).lower(): column for column in frame.columns}
+    if "date" not in columns:
+        raise ValueError("Benchmark CSV requires a date column")
+    date_col = columns["date"]
+    if {"ticker", "close"}.issubset(columns):
+        ticker_col, close_col = columns["ticker"], columns["close"]
+        first_ticker = str(frame[ticker_col].dropna().iloc[0])
+        frame = frame[frame[ticker_col].astype(str) == first_ticker]
+        value_col = close_col
+        name = first_ticker
+    else:
+        candidates = [column for column in frame.columns if column != date_col]
+        if not candidates:
+            raise ValueError("Benchmark CSV requires a price column")
+        value_col = candidates[0]
+        name = str(value_col)
+    dates = pd.to_datetime(frame[date_col], errors="coerce")
+    values = pd.to_numeric(frame[value_col], errors="coerce")
+    prices = pd.Series(values.values, index=dates).dropna().sort_index()
+    returns = prices.pct_change(fill_method=None).dropna()
+    return returns.reindex(index).fillna(0.0), name
+
+
+def _benchmark_metrics(portfolio: pd.Series, benchmark: pd.Series) -> dict[str, Any]:
+    if benchmark.empty:
+        return {
+            "benchmark_return": None, "active_return": None, "tracking_error": None,
+            "information_ratio": None, "beta": None, "alpha": None, "active_drawdown": None,
+        }
+    aligned = pd.concat([portfolio.rename("portfolio"), benchmark.rename("benchmark")], axis=1).fillna(0.0)
+    active = aligned["portfolio"] - aligned["benchmark"]
+    benchmark_return = calculate_annual_return(aligned["benchmark"])
+    portfolio_return = calculate_annual_return(aligned["portfolio"])
+    tracking_error = float(active.std(ddof=1) * np.sqrt(252)) if len(active) > 1 else 0.0
+    variance = float(aligned["benchmark"].var(ddof=1)) if len(aligned) > 1 else 0.0
+    beta = float(aligned.cov().loc["portfolio", "benchmark"] / variance) if variance > 0 else 0.0
+    relative_curve = (1.0 + active).cumprod()
+    active_drawdown = float((relative_curve / relative_curve.cummax() - 1.0).min()) if len(relative_curve) else 0.0
+    return {
+        "benchmark_return": round(benchmark_return, 6),
+        "active_return": round(portfolio_return - benchmark_return, 6),
+        "tracking_error": round(tracking_error, 6),
+        "information_ratio": round((portfolio_return - benchmark_return) / tracking_error, 4) if tracking_error > 0 else None,
+        "beta": round(beta, 6),
+        "alpha": round(portfolio_return - beta * benchmark_return, 6),
+        "active_drawdown": round(active_drawdown, 6),
+    }
+
+
+def _risk_contribution(weights: dict[str, float], returns: pd.DataFrame) -> dict[str, float]:
+    columns = [ticker for ticker in weights if ticker in returns.columns]
+    if not columns or len(returns.index) < 2:
+        return {ticker: 0.0 for ticker in weights}
+    covariance = returns[columns].cov().fillna(0.0).to_numpy()
+    vector = np.array([weights[ticker] for ticker in columns])
+    variance = float(vector @ covariance @ vector)
+    if variance <= 0:
+        return {ticker: 0.0 for ticker in weights}
+    contributions = vector * (covariance @ vector) / variance
+    return {ticker: round(float(value), 6) for ticker, value in zip(columns, contributions, strict=False)}
+
+
+def _sector_active_weight(
+    weights: dict[str, float], sector_map: dict[str, str], benchmark_weights: dict[str, float],
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for ticker, weight in weights.items():
+        sector = sector_map.get(ticker, "Unknown")
+        result[sector] = result.get(sector, 0.0) + weight
+    sectors = set(result) | set(benchmark_weights)
+    return {
+        sector: round(result.get(sector, 0.0) - benchmark_weights.get(sector, 0.0), 6)
+        for sector in sectors
+    }
+
+
+def _stress_test(
+    weights: dict[str, float], rows: list[dict[str, Any]], scenarios: dict[str, float] | None,
+) -> dict[str, Any]:
+    shocks = scenarios or {
+        "equity_market_shock": -0.20, "technology_sector_shock": -0.30,
+        "interest_rate_shock": -0.10, "currency_shock": -0.08,
+    }
+    by_ticker = {str(row.get("ticker")): row for row in rows}
+    result = {}
+    for scenario, shock in shocks.items():
+        contributions = {}
+        for ticker, weight in weights.items():
+            row = by_ticker.get(ticker, {})
+            sector = str(row.get("sector", ""))
+            asset_type = str(row.get("asset_type", "equity"))
+            market = str(row.get("market", "Global"))
+            applies = (
+                scenario == "equity_market_shock" and "cash" not in asset_type.lower()
+                or scenario == "technology_sector_shock" and "tech" in sector.lower()
+                or scenario == "interest_rate_shock" and any(term in (sector + asset_type).lower() for term in ("bond", "financial"))
+                or scenario == "currency_shock" and market.upper() not in {"US", "USA"}
+            )
+            contributions[ticker] = round(weight * float(shock), 6) if applies else 0.0
+        result[scenario] = {
+            "portfolio_loss": round(sum(contributions.values()), 6),
+            "asset_loss_contribution": contributions,
+        }
+    return result
+
+
+def _confidence_intervals(series: pd.Series) -> dict[str, float | None]:
+    clean = series.dropna()
+    if len(clean) < 2:
+        return {"annual_return_lower_95": None, "annual_return_upper_95": None}
+    annual = float(clean.mean() * 252)
+    error = float(1.96 * clean.std(ddof=1) / np.sqrt(len(clean)) * 252)
+    return {
+        "annual_return_lower_95": round(annual - error, 6),
+        "annual_return_upper_95": round(annual + error, 6),
+    }
 
 
 def load_or_mock_prices(

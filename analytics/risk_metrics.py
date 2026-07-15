@@ -17,7 +17,7 @@ DEFAULT_RISK_FREE_RATE = 0.02
 
 
 def sanitize_price_frame(price_data: pd.DataFrame | dict[str, list[float]] | None) -> pd.DataFrame:
-    """Return a numeric, positive-only price frame with forward-filled gaps."""
+    """Return a numeric, positive-only price frame without future-value backfill."""
     if price_data is None:
         return pd.DataFrame()
 
@@ -31,7 +31,7 @@ def sanitize_price_frame(price_data: pd.DataFrame | dict[str, list[float]] | Non
     frame = frame.apply(pd.to_numeric, errors="coerce")
     frame = frame.replace([np.inf, -np.inf], np.nan)
     frame = frame.where(frame > 0)
-    frame = frame.ffill().bfill()
+    frame = frame.ffill()
     frame = frame.dropna(axis=0, how="all").dropna(axis=1, how="all")
     return frame
 
@@ -180,12 +180,20 @@ def build_portfolio_risk_summary(
     positions: list[Any],
     price_data: pd.DataFrame | dict[str, list[float]] | None = None,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    *,
+    min_observations: int = 2,
+    market_data_quality: dict[str, Any] | None = None,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     """Build a structured risk summary for API responses and LLM prompts."""
     non_empty_positions = [item for item in positions if _ticker(item)]
     weights = calculate_asset_weights(non_empty_positions)
+    prices = sanitize_price_frame(price_data)
     returns = calculate_returns(price_data)
     portfolio_returns = calculate_portfolio_returns(returns, weights)
+    min_observations = max(2, int(min_observations))
+    quality_input = dict(market_data_quality or {})
+    stale_tickers = {str(ticker).upper() for ticker in quality_input.get("stale_tickers", [])}
 
     asset_metrics: dict[str, dict[str, float | str]] = {}
     for item in non_empty_positions:
@@ -193,19 +201,29 @@ def build_portfolio_risk_summary(
         if not ticker:
             continue
         asset_returns = returns[ticker].dropna() if ticker in returns.columns else pd.Series(dtype=float)
-        realized_return = calculate_cumulative_return(asset_returns)
-        if asset_returns.empty:
-            realized_return = _position_return(item)
-        ann_vol = calculate_annualized_volatility(asset_returns)
-        max_dd = calculate_max_drawdown(asset_returns)
-        sharpe = calculate_sharpe_ratio(asset_returns, risk_free_rate=risk_free_rate)
-        risk_level = _risk_level(ann_vol, max_dd, weights.get(ticker, 0.0), _field(item, "asset_type", "equity"))
+        metric_values, metric_status = _time_series_metrics(
+            asset_returns,
+            risk_free_rate=risk_free_rate,
+            min_observations=min_observations,
+            stale=ticker in stale_tickers,
+        )
+        ann_vol = metric_values["annual_volatility"]
+        max_dd = metric_values["max_drawdown"]
+        risk_level = _risk_level(
+            ann_vol or 0.0,
+            max_dd or 0.0,
+            weights.get(ticker, 0.0),
+            _field(item, "asset_type", "equity"),
+        )
         asset_metrics[ticker] = {
             "ticker": ticker,
-            "return": round(realized_return, 6),
-            "annual_volatility": round(ann_vol, 6),
-            "max_drawdown": round(max_dd, 6),
-            "sharpe_ratio": round(sharpe, 4),
+            "return": _round_optional(metric_values["period_return"], 6),
+            "annual_volatility": _round_optional(ann_vol, 6),
+            "max_drawdown": _round_optional(max_dd, 6),
+            "sharpe_ratio": _round_optional(metric_values["sharpe_ratio"], 4),
+            "metric_status": metric_status,
+            "observations": int(len(asset_returns.dropna())),
+            "unrealized_return_since_cost": round(_position_return(item), 6),
             "weight": round(weights.get(ticker, 0.0), 6),
             "risk_level": risk_level,
             "sector": _field(item, "sector", "Unknown") or "Unknown",
@@ -214,23 +232,51 @@ def build_portfolio_risk_summary(
 
     sector_concentration = calculate_sector_concentration(non_empty_positions)
     asset_type_exposure = calculate_asset_type_exposure(non_empty_positions)
+    portfolio_values, portfolio_metric_status = _time_series_metrics(
+        portfolio_returns,
+        risk_free_rate=risk_free_rate,
+        min_observations=min_observations,
+        stale=bool(stale_tickers),
+    )
     portfolio_metrics = {
-        "period_return": round(calculate_cumulative_return(portfolio_returns), 6),
-        "annual_return": round(calculate_annual_return(portfolio_returns), 6),
-        "annual_volatility": round(calculate_annualized_volatility(portfolio_returns), 6),
-        "max_drawdown": round(calculate_max_drawdown(portfolio_returns), 6),
-        "sharpe_ratio": round(
-            calculate_sharpe_ratio(portfolio_returns, risk_free_rate=risk_free_rate),
-            4,
-        ),
+        "period_return": _round_optional(portfolio_values["period_return"], 6),
+        "annual_return": _round_optional(portfolio_values["annual_return"], 6),
+        "annual_volatility": _round_optional(portfolio_values["annual_volatility"], 6),
+        "max_drawdown": _round_optional(portfolio_values["max_drawdown"], 6),
+        "sharpe_ratio": _round_optional(portfolio_values["sharpe_ratio"], 4),
     }
 
     concentration_flags = _concentration_flags(weights, sector_concentration, asset_type_exposure)
     risk_score = _portfolio_risk_score(portfolio_metrics, concentration_flags)
+    missing_tickers = quality_input.get("missing_tickers")
+    if missing_tickers is None:
+        missing_tickers = [ticker for ticker in weights if ticker not in prices.columns and ticker != "CASH"]
+    coverage_ratio = quality_input.get("coverage_ratio")
+    if coverage_ratio is None:
+        requested = [ticker for ticker in weights if ticker != "CASH"]
+        available = [ticker for ticker in requested if ticker in prices.columns and prices[ticker].notna().any()]
+        coverage_ratio = len(available) / len(requested) if requested else 0.0
+    data_status = _data_quality_status(prices, list(missing_tickers), list(stale_tickers))
+    resolved_as_of = as_of or quality_input.get("as_of") or datetime.now(timezone.utc).isoformat()
+    data_quality = {
+        **quality_input,
+        "status": data_status,
+        "positions": len(non_empty_positions),
+        "price_history_assets": int(len(prices.columns)) if not prices.empty else 0,
+        "price_history_points": int(len(prices)) if not prices.empty else 0,
+        "observations": int(len(portfolio_returns.dropna())),
+        "min_observations": min_observations,
+        "missing_tickers": list(missing_tickers),
+        "stale_tickers": sorted(stale_tickers),
+        "coverage_ratio": round(float(coverage_ratio), 6),
+        "uses_position_return_fallback": False,
+    }
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "as_of": resolved_as_of,
         "total_value": round(sum(max(0.0, _current_value(item)) for item in non_empty_positions), 2),
         "portfolio_metrics": portfolio_metrics,
+        "metric_status": portfolio_metric_status,
         "risk_score": risk_score,
         "risk_level": "low" if risk_score <= 3 else "medium" if risk_score <= 6 else "high",
         "asset_weights": {ticker: round(weight, 6) for ticker, weight in weights.items()},
@@ -238,20 +284,52 @@ def build_portfolio_risk_summary(
         "asset_type_exposure": asset_type_exposure,
         "asset_metrics": asset_metrics,
         "concentration_flags": concentration_flags,
-        "data_quality": {
-            "positions": len(non_empty_positions),
-            "price_history_assets": int(len(returns.columns)) if not returns.empty else 0,
-            "price_history_points": int(len(returns)) if not returns.empty else 0,
-            "uses_position_return_fallback": bool(returns.empty),
-        },
+        "data_quality": data_quality,
     }
 
 
-def _portfolio_risk_score(metrics: dict[str, float], flags: list[str]) -> float:
+def _time_series_metrics(
+    returns: pd.Series,
+    *,
+    risk_free_rate: float,
+    min_observations: int,
+    stale: bool,
+) -> tuple[dict[str, float | None], dict[str, str]]:
+    clean = pd.Series(returns).dropna()
+    metric_names = ("period_return", "annual_return", "annual_volatility", "max_drawdown", "sharpe_ratio")
+    if len(clean) < min_observations:
+        return ({name: None for name in metric_names}, {name: "insufficient_data" for name in metric_names})
+
+    status = "stale" if stale else "valid"
+    values = {
+        "period_return": calculate_cumulative_return(clean),
+        "annual_return": calculate_annual_return(clean),
+        "annual_volatility": calculate_annualized_volatility(clean),
+        "max_drawdown": calculate_max_drawdown(clean),
+        "sharpe_ratio": calculate_sharpe_ratio(clean, risk_free_rate=risk_free_rate),
+    }
+    return values, {name: status for name in metric_names}
+
+
+def _round_optional(value: float | None, digits: int) -> float | None:
+    return None if value is None else round(float(value), digits)
+
+
+def _data_quality_status(prices: pd.DataFrame, missing: list[str], stale: list[str]) -> str:
+    if prices.empty:
+        return "unavailable"
+    if missing:
+        return "partial"
+    if stale:
+        return "stale"
+    return "valid"
+
+
+def _portfolio_risk_score(metrics: dict[str, float | None], flags: list[str]) -> float:
     score = 2.0
-    vol = abs(metrics.get("annual_volatility", 0.0))
-    drawdown = abs(metrics.get("max_drawdown", 0.0))
-    sharpe = metrics.get("sharpe_ratio", 0.0)
+    vol = abs(float(metrics.get("annual_volatility") or 0.0))
+    drawdown = abs(float(metrics.get("max_drawdown") or 0.0))
+    sharpe = float(metrics.get("sharpe_ratio") or 0.0)
 
     if vol > 0.35:
         score += 3.0

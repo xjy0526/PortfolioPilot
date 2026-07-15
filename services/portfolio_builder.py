@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 
 from state import portfolio_data, refresh_lock, YFINANCE_ALIASES, TZ_BERLIN
-from models import PortfolioSummary, StockFullData
+from models import PortfolioPosition, PortfolioSummary, StockFullData
 from fetchers.parqet import fetch_portfolio
 from fetchers.yfinance_data import quick_price_update
 from services.currency_converter import CurrencyConverter
@@ -79,8 +79,8 @@ async def update_parqet() -> dict:
             # 1. Fetch positions from Parqet API
             positions = await fetch_portfolio()
             if not positions:
-                logger.error("Keine Positionen von Parqet erhalten")
-                return {"status": "error", "message": "Keine Positionen"}
+                logger.error("No positions received from Parqet")
+                return {"status": "error", "message": "No positions found"}
 
             logger.info(f"📊 {len(positions)} Positionen von Parqet geladen")
 
@@ -180,10 +180,10 @@ async def update_saved_csv_portfolio() -> dict:
     from fetchers.csv_reader import (
         csv_positions_to_portfolio_format,
         parse_csv_file,
-        resolve_csv_path,
+        resolve_csv_read_path,
     )
 
-    path = resolve_csv_path()
+    path, sample_fallback = resolve_csv_read_path()
     positions = parse_csv_file(str(path))
     if not positions:
         portfolio_data["summary"] = PortfolioSummary(display_currency="USD")
@@ -193,32 +193,36 @@ async def update_saved_csv_portfolio() -> dict:
         return {
             "status": "empty",
             "positions": 0,
-            "source": "csv",
+            "source": "sample_csv" if sample_fallback else "csv",
             "csv_path": str(path),
+            "sample_fallback": sample_fallback,
         }
 
-    tickers = [
-        p["ticker"]
-        for p in positions
-        if p.get("asset_type") != "prediction_market"
-    ]
     prices = {}
     daily_changes = {}
-    try:
-        prices, daily_changes = await quick_price_update(tickers) if tickers else ({}, {})
-    except Exception as e:
-        logger.warning("Could not fetch live prices for saved CSV portfolio: %s", e)
+    tickers_missing_prices = [
+        p["ticker"]
+        for p in positions
+        if p.get("asset_type") != "prediction_market" and p.get("current_price") is None
+    ]
+    if tickers_missing_prices:
+        try:
+            prices, daily_changes = await quick_price_update(tickers_missing_prices)
+        except Exception as e:
+            logger.warning("Could not fetch live prices for saved CSV portfolio: %s", e)
 
     portfolio_positions = csv_positions_to_portfolio_format(positions, prices)
     result = await build_portfolio_from_csv(portfolio_positions, daily_changes)
     result.update({
         "status": "done",
         "positions": result.get("num_positions", len(portfolio_positions)),
-        "source": "csv",
+        "source": "sample_csv" if sample_fallback else "csv",
         "csv_path": str(path),
+        "sample_fallback": sample_fallback,
     })
     logger.info(
-        "📄 Lokale CSV geladen: %s Positionen aus %s",
+        "📄 %s CSV geladen: %s Positionen aus %s",
+        "Sample" if sample_fallback else "Lokale",
         result["positions"],
         path,
     )

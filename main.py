@@ -28,6 +28,11 @@ from routes.parqet_oauth import router as parqet_oauth_router
 from routes.demo import router as demo_router
 from routes.shadow_portfolio import router as shadow_portfolio_router
 from routes.research import router as research_router
+from routes.app_settings import router as app_settings_router
+from routes.knowledge import router as knowledge_router
+from routes.prompts import router as prompts_router
+from routes.workflows import router as workflows_router
+from routes.evaluation import router as evaluation_router
 
 # Structured Logging (JSON in production, colored console in dev)
 setup_logging(settings.ENVIRONMENT)
@@ -232,7 +237,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Shadow Agent Zyklus fehlgeschlagen: {e}")
 
-        if settings.gemini_configured:
+        if settings.gemini_configured and not settings.fund_research_mode:
             scheduler.add_job(
                 _run_shadow_agent, "cron",
                 hour=17, minute=0,
@@ -240,6 +245,8 @@ async def lifespan(app: FastAPI):
                 id="shadow_agent",
             )
             logger.info("🤖 Shadow Portfolio Agent geplant: Mo-Fr 17:00 CET")
+        elif settings.fund_research_mode:
+            logger.info("🏛️ Fund-Research-Modus: Shadow Agent und automatische Simulation deaktiviert")
 
         # Telegram Webhook registrieren (wenn auf Cloud Run)
         if settings.telegram_configured and settings.ENVIRONMENT == "production":
@@ -354,6 +361,11 @@ app.include_router(parqet_oauth_router)
 app.include_router(demo_router)
 app.include_router(shadow_portfolio_router)
 app.include_router(research_router)
+app.include_router(app_settings_router)
+app.include_router(knowledge_router)
+app.include_router(prompts_router)
+app.include_router(workflows_router)
+app.include_router(evaluation_router)
 
 
 # Health Check (für Cloud Run Startup/Liveness Probes)
@@ -364,23 +376,17 @@ async def health():
 
 if __name__ == "__main__":
     import os
+    import signal
     import subprocess
+    import time
     import uvicorn
 
     def _kill_port_occupants(port: int) -> None:
-        """Killt alle Prozesse die den Port bereits belegen (inkl. Kind-Prozesse).
-
-        Verhindert Whitescreen durch Zombie-Server-Instanzen die sich
-        über die Zeit ansammeln (z.B. durch Ctrl+C das nicht sauber
-        terminiert, IDE-Restarts, oder Agent-Sessions).
-
-        Verwendet taskkill /T um den gesamten Prozessbaum zu killen,
-        da der WatchFiles-Reloader Kind-Prozesse spawnt die sonst
-        als Zombies übrig bleiben.
-        """
+        """Stop stale local server processes before binding the dev port."""
         my_pid = os.getpid()
-        killed = []
+        pids: set[int] = set()
 
+        # Windows.
         try:
             result = subprocess.run(
                 ["netstat", "-ano"],
@@ -396,24 +402,59 @@ if __name__ == "__main__":
                 # Alle Verbindungsstatus (LISTENING, ESTABLISHED, TIME_WAIT)
                 try:
                     pid = int(parts[-1])
-                    if pid != my_pid and pid > 0 and pid not in killed:
-                        # /T = Tree-Kill: Killt den Prozess UND alle Kinder
-                        subprocess.run(
-                            ["taskkill", "/F", "/T", "/PID", str(pid)],
-                            capture_output=True, timeout=3,
-                        )
-                        killed.append(pid)
+                    if pid != my_pid and pid > 0:
+                        pids.add(pid)
                 except (ValueError, subprocess.TimeoutExpired):
                     pass
         except Exception:
             pass
 
-        if killed:
-            import time
-            time.sleep(1)  # Etwas länger warten für Tree-Kill
-            print(f"\033[1m🧹 {len(killed)} alte Server-Prozesse auf Port {port} beendet (inkl. Kinder): {killed}\033[0m")
+        # macOS / Linux.
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                try:
+                    pid = int(line.strip())
+                    if pid != my_pid and pid > 0:
+                        pids.add(pid)
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+        if not pids:
+            return
+
+        for pid in sorted(pids):
+            try:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True, timeout=3,
+                    )
+                else:
+                    os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+
+        time.sleep(0.7)
+        for pid in sorted(pids):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+        print(f"\033[1m🧹 已清理端口 {port} 上的旧服务进程: {sorted(pids)}\033[0m")
 
     is_dev = settings.ENVIRONMENT == "development"
+    enable_reload = is_dev and os.environ.get("PORTFOLIOPILOT_RELOAD", "0") == "1"
 
     # Alte Zombie-Prozesse auf dem Port killen bevor wir starten
     _kill_port_occupants(settings.SERVER_PORT)
@@ -422,15 +463,13 @@ if __name__ == "__main__":
         "main:app",
         host="127.0.0.1" if is_dev else settings.SERVER_HOST,
         port=settings.SERVER_PORT,
-        # Reload bleibt aktiv in dev: Nach dem Full-Refresh blockiert ein
-        # Background-Task (yfinance WS / tech_radar_ai) den Event-Loop.
-        # Der Reload-Neustart hebt die Blockade auf.
-        # _kill_port_occupants() verhindert Zombie-Prozesse.
-        reload=is_dev,
+        # Local reload can leave a multiprocessing child wedged after repeated
+        # edits. Enable explicitly with PORTFOLIOPILOT_RELOAD=1 when needed.
+        reload=enable_reload,
         reload_dirs=[
             "engine", "fetchers", "routes", "services",
             "middleware", "static",
-        ] if is_dev else None,
-        reload_includes=["*.py", "*.html", "*.js", "*.css"] if is_dev else None,
-        reload_excludes=["*.cache", "*.sqlite3", "*.db", "*.db-journal", "*.pyc", "__pycache__/*"] if is_dev else None,
+        ] if enable_reload else None,
+        reload_includes=["*.py", "*.html", "*.js", "*.css"] if enable_reload else None,
+        reload_excludes=["*.cache", "*.sqlite3", "*.db", "*.db-journal", "*.pyc", "__pycache__/*"] if enable_reload else None,
     )

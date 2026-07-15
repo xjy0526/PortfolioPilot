@@ -162,5 +162,6 @@ class TestConfigSettings:
         from config import Settings
         s = Settings()
         s.GCP_PROJECT_ID = ""
+        s.QWEN_API_KEY = ""
         s.GEMINI_API_KEY = ""
         assert s.gemini_configured is False

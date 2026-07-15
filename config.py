@@ -4,6 +4,7 @@ Alle Werte werden aus .env oder Umgebungsvariablen geladen.
 Type-Safety und Validierung durch Pydantic.
 """
 from pathlib import Path
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import computed_field
 
@@ -22,6 +23,8 @@ class Settings(BaseSettings):
     # Branding
     APP_NAME: str = "PortfolioPilot"
     APP_TAGLINE: str = "AI portfolio copilot for global equities, China A-shares and Polymarket."
+    CONTACT_EMAIL: str = ""
+    APP_MODE: Literal["personal", "fund_research"] = "personal"
 
     # Financial Modeling Prep
     FMP_API_KEY: str = ""
@@ -61,6 +64,9 @@ class Settings(BaseSettings):
     QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     QWEN_MODEL: str = "qwen-plus"
     QWEN_REASONING_MODEL: str = ""
+    OPENAI_COMPATIBLE_API_KEY: str = ""
+    OPENAI_COMPATIBLE_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_COMPATIBLE_MODEL: str = "gpt-4.1-mini"
 
     # Legacy Google Gemini / Vertex AI settings (kept for compatibility)
     GEMINI_API_KEY: str = ""
@@ -76,9 +82,19 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 900
     RAG_TOP_K: int = 5
     RAG_VECTOR_BACKEND: str = "faiss"
+    RAG_SCORE_THRESHOLD: float = 0.15
+    RAG_RRF_K: int = 60
+    RAG_RETRIEVAL_POOL_SIZE: int = 20
 
     # Strategy backtest
     BACKTEST_PRICE_CSV: str = ""
+
+    # Historical adjusted-close prices for portfolio risk analytics
+    PRICE_HISTORY_PROVIDER: Literal["yfinance", "csv"] = "yfinance"
+    PRICE_HISTORY_CSV: str = ""
+    PRICE_HISTORY_LOOKBACK_DAYS: int = 365
+    PRICE_HISTORY_STALE_AFTER_DAYS: int = 5
+    RISK_MIN_OBSERVATIONS: int = 20
 
     # Caching
     CACHE_TTL_HOURS: int = 12
@@ -136,6 +152,11 @@ class Settings(BaseSettings):
     @property
     def auth_configured(self) -> bool:
         return bool(self.DASHBOARD_USER and self.DASHBOARD_PASSWORD)
+
+    @computed_field
+    @property
+    def fund_research_mode(self) -> bool:
+        return self.APP_MODE == "fund_research"
 
     def model_post_init(self, __context) -> None:
         # Sync PORT → SERVER_PORT (Cloud Run setzt PORT)

@@ -79,3 +79,69 @@ def test_explicit_etf_asset_type_wins_over_cn_suffix():
 
 def test_asset_weights_empty_safe():
     assert calculate_asset_weights([]) == {}
+
+
+def test_missing_history_returns_null_metrics_not_zero():
+    stocks = [
+        StockFullData(position=PortfolioPosition(
+            ticker="AAPL", shares=10, avg_cost=100, current_price=120,
+            sector="Technology", asset_type="equity", market="US",
+        )),
+    ]
+
+    summary = build_portfolio_risk_summary(stocks, min_observations=20)
+
+    metrics = summary["portfolio_metrics"]
+    assert metrics["annual_volatility"] is None
+    assert metrics["max_drawdown"] is None
+    assert metrics["sharpe_ratio"] is None
+    assert summary["metric_status"]["annual_volatility"] == "insufficient_data"
+    assert summary["asset_metrics"]["AAPL"]["return"] is None
+    assert summary["asset_metrics"]["AAPL"]["unrealized_return_since_cost"] == 0.2
+    assert summary["data_quality"]["status"] == "unavailable"
+
+
+def test_partial_history_exposes_asset_metric_status():
+    stocks = [
+        StockFullData(position=PortfolioPosition(ticker="AAPL", shares=1, current_price=120)),
+        StockFullData(position=PortfolioPosition(ticker="MSFT", shares=1, current_price=220)),
+    ]
+    dates = pd.date_range("2026-06-01", periods=25, freq="B")
+    prices = pd.DataFrame({"AAPL": range(100, 125)}, index=dates)
+
+    summary = build_portfolio_risk_summary(
+        stocks,
+        prices,
+        min_observations=20,
+        market_data_quality={
+            "source": "test",
+            "missing_tickers": ["MSFT"],
+            "stale_tickers": [],
+            "coverage_ratio": 0.5,
+        },
+    )
+
+    assert summary["portfolio_metrics"]["annual_volatility"] is not None
+    assert summary["asset_metrics"]["AAPL"]["metric_status"]["annual_volatility"] == "valid"
+    assert summary["asset_metrics"]["MSFT"]["annual_volatility"] is None
+    assert summary["asset_metrics"]["MSFT"]["metric_status"]["annual_volatility"] == "insufficient_data"
+    assert summary["data_quality"]["status"] == "partial"
+    assert summary["data_quality"]["coverage_ratio"] == 0.5
+
+
+def test_stale_history_marks_metric_status_without_discarding_value():
+    stock = StockFullData(position=PortfolioPosition(ticker="AAPL", shares=1, current_price=120))
+    dates = pd.date_range("2026-05-01", periods=25, freq="B")
+    prices = pd.DataFrame({"AAPL": range(100, 125)}, index=dates)
+
+    summary = build_portfolio_risk_summary(
+        [stock],
+        prices,
+        min_observations=20,
+        market_data_quality={"missing_tickers": [], "stale_tickers": ["AAPL"], "coverage_ratio": 1.0},
+    )
+
+    assert summary["asset_metrics"]["AAPL"]["annual_volatility"] is not None
+    assert summary["asset_metrics"]["AAPL"]["metric_status"]["annual_volatility"] == "stale"
+    assert summary["metric_status"]["sharpe_ratio"] == "stale"
+    assert summary["data_quality"]["status"] == "stale"

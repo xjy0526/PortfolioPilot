@@ -268,13 +268,18 @@ def get_demo_risk() -> dict:
     """Synthetische Risikokennzahlen."""
     return {
         "portfolio_beta": 1.18,
+        "risk_score": 5,
+        "risk_level": "Moderat",
+        "volatility_annual": 18.5,
+        "var_95_daily": 1.82,
+        "var_95_monthly": 8.34,
+        "max_drawdown": 12.4,
         "var_95_pct": -1.82,
         "var_95_eur": -728.0,
         "max_drawdown_pct": -12.4,
         "sharpe_ratio": 1.45,
         "sortino_ratio": 2.12,
         "volatility_annualized": 18.5,
-        "risk_level": "Moderat",
         "is_demo": True,
     }
 

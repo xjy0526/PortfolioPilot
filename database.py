@@ -131,8 +131,96 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        -- ── Enterprise-lite Knowledge Base ──────────────────────
+
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+            document_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'uploaded',
+            department TEXT NOT NULL DEFAULT 'Research',
+            tickers TEXT NOT NULL DEFAULT '[]',
+            fund_codes TEXT NOT NULL DEFAULT '[]',
+            publish_date TEXT,
+            effective_from TEXT,
+            effective_to TEXT,
+            current_version INTEGER NOT NULL DEFAULT 0,
+            published_version INTEGER,
+            confidentiality TEXT NOT NULL DEFAULT 'public',
+            permission_groups TEXT NOT NULL DEFAULT '["public"]',
+            author TEXT NOT NULL DEFAULT '',
+            checksum TEXT NOT NULL DEFAULT '',
+            ingestion_status TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+            version_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            checksum TEXT NOT NULL,
+            source_filename TEXT NOT NULL,
+            parser TEXT NOT NULL,
+            content_text TEXT NOT NULL,
+            content_length INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'processing',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(document_id) REFERENCES knowledge_documents(document_id),
+            UNIQUE(document_id, version),
+            UNIQUE(document_id, checksum)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            version_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            section TEXT NOT NULL DEFAULT '',
+            page_number INTEGER,
+            text TEXT NOT NULL,
+            char_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(document_id) REFERENCES knowledge_documents(document_id),
+            FOREIGN KEY(version_id) REFERENCES knowledge_document_versions(version_id),
+            UNIQUE(version_id, chunk_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS ingestion_jobs (
+            job_id TEXT PRIMARY KEY,
+            document_id TEXT,
+            version_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            filename TEXT NOT NULL,
+            checksum TEXT NOT NULL DEFAULT '',
+            chunks_created INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_knowledge_documents_status
+            ON knowledge_documents(status, effective_from, effective_to);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_versions_document
+            ON knowledge_document_versions(document_id, version);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document_version
+            ON knowledge_chunks(document_id, version);
+        CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_document
+            ON ingestion_jobs(document_id, created_at);
     """)
     conn.commit()
+    # Kept as a separate idempotent migration so Prompt Registry can also use
+    # isolated SQLite connections in tests and offline evaluation.
+    from prompts.registry import ensure_prompt_schema
+    ensure_prompt_schema(conn)
+    from workflows import ensure_workflow_schema
+    ensure_workflow_schema(conn)
     logger.info(f"📦 SQLite-Datenbank initialisiert: {DB_PATH}")
 
 

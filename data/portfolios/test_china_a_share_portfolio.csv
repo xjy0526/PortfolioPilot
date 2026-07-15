@@ -1,0 +1,8 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+600519.SS,4,1580.00,1650.00,2024-08-10,CNY,Consumer Defensive,Kweichow Moutai,cn_equity,CN-A,SSE,CN
+300750.SZ,30,185.00,205.00,2024-09-15,CNY,Industrials,CATL,cn_equity,CN-A,SZSE,CN
+000858.SZ,80,128.00,142.00,2024-10-01,CNY,Consumer Defensive,Wuliangye Yibin,cn_equity,CN-A,SZSE,CN
+601318.SS,180,42.00,48.00,2024-11-20,CNY,Financial Services,Ping An Insurance,cn_equity,CN-A,SSE,CN
+600036.SS,220,34.00,39.00,2025-01-05,CNY,Financial Services,China Merchants Bank,cn_equity,CN-A,SSE,CN
+159995.SZ,6000,0.92,1.08,2025-02-12,CNY,Semiconductor ETF,China Semiconductor ETF,etf,CN-A,SZSE,CN
+510300.SS,3500,3.70,4.10,2024-07-18,CNY,Broad Market ETF,CSI 300 ETF,etf,CN-A,SSE,CN

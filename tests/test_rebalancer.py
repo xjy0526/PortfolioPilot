@@ -25,7 +25,7 @@ from models import (
 class TestCalculateRebalancing:
     def test_empty_portfolio(self):
         result = calculate_rebalancing([], {})
-        assert "Keine Positionen" in result.summary
+        assert "No positions" in result.summary
 
     def test_zero_value_portfolio(self):
         positions = [PortfolioPosition(ticker="X", shares=10, avg_cost=0, current_price=0)]

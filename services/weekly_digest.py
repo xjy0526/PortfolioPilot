@@ -107,7 +107,7 @@ def _build_digest_data(summary, history: list[dict]) -> dict:
 async def _generate_ai_summary(digest_data: dict) -> str:
     """Generiert eine KI-Zusammenfassung via Gemini 2.5 Flash."""
     try:
-        from services.vertex_ai import get_client
+        from services.llm.compat import get_client
 
         client = get_client()
 

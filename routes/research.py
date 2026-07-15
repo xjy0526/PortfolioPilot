@@ -13,11 +13,12 @@ from analytics.risk_metrics import build_portfolio_risk_summary
 from backtest.strategy_backtester import BacktestConfig, resolve_prices_csv, run_strategy_backtest
 from config import BASE_DIR, settings
 from portfolio_optimizer import llm_risk_adjusted_weighting
-from rag import retrieve_evidence
+from rag import PermissionContext, retrieve_evidence, retrieve_evidence_with_status
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
     safe_financial_analysis_template,
 )
+from services.market_data import get_price_history_service
 from state import portfolio_data
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ async def get_portfolio_risk_summary():
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
 
     try:
-        return build_portfolio_risk_summary(summary.stocks)
+        return await _build_portfolio_risk_summary(summary)
     except Exception as exc:
         logger.exception("Risk summary calculation failed")
         return JSONResponse({"error": "Risk summary calculation failed", "detail": str(exc)}, status_code=500)
@@ -49,10 +50,14 @@ async def analyze_portfolio_endpoint(data: dict[str, Any] | None = Body(default=
     data = data or {}
     language = data.get("lang") or data.get("language") or "zh"
     try:
-        risk_summary = build_portfolio_risk_summary(summary.stocks)
+        risk_summary = await _build_portfolio_risk_summary(summary)
         query = data.get("query") or _default_rag_query(summary, risk_summary)
         top_k = int(data.get("top_k", getattr(settings, "RAG_TOP_K", 5)) or 5)
-        evidence = retrieve_evidence(query=query, top_k=top_k)
+        evidence = retrieve_evidence(
+            query=query,
+            top_k=top_k,
+            permission_context=_permission_context_from_data(data),
+        )
         analysis = await analyze_portfolio_with_llm(risk_summary, evidence, language=language)
         portfolio_data["last_structured_ai_analysis"] = analysis
         return {
@@ -73,9 +78,30 @@ async def rag_retrieve_endpoint(data: dict[str, Any] | None = Body(default=None)
     query = str(data.get("query", "")).strip()
     top_k = int(data.get("top_k", getattr(settings, "RAG_TOP_K", 5)) or 5)
     if not query:
-        return {"status": "ok", "query": query, "evidence": []}
-    evidence = retrieve_evidence(query=query, top_k=top_k)
-    return {"status": "ok", "query": query, "top_k": top_k, "evidence": evidence}
+        return {
+            "status": "ok",
+            "query": query,
+            "normalized_query": "",
+            "top_k": top_k,
+            "intent": {},
+            "evidence": [],
+            "citations": [],
+            "evidence_insufficient": True,
+        }
+    permission_context = _permission_context_from_data(data)
+    result = retrieve_evidence_with_status(
+        query=query,
+        top_k=top_k,
+        permission_context=permission_context,
+        score_threshold=data.get("score_threshold"),
+    )
+    return {
+        "status": "ok",
+        "query": query,
+        "top_k": top_k,
+        "evidence": result.get("citations", []),
+        **result,
+    }
 
 
 @router.get("/api/portfolio/rebalance")
@@ -86,7 +112,7 @@ async def get_portfolio_rebalance():
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
 
     try:
-        risk_summary = build_portfolio_risk_summary(summary.stocks)
+        risk_summary = await _build_portfolio_risk_summary(summary)
         analysis = portfolio_data.get("last_structured_ai_analysis")
         if not analysis:
             analysis = safe_financial_analysis_template(risk_summary, evidence=[], language="zh")
@@ -118,7 +144,9 @@ async def get_strategy_backtest_report(force: bool = False):
     output_path = settings.CACHE_DIR / "backtest_report.json"
     try:
         if output_path.exists() and not force:
-            return json.loads(output_path.read_text(encoding="utf-8"))
+            cached = json.loads(output_path.read_text(encoding="utf-8"))
+            if cached.get("out_of_sample") is True and cached.get("data_leakage_checks", {}).get("status") == "passed":
+                return cached
 
         report = run_strategy_backtest(
             BacktestConfig(
@@ -141,6 +169,38 @@ def _optional_prices_path() -> Path | None:
             path = BASE_DIR / path
         return resolve_prices_csv(path)
     return resolve_prices_csv()
+
+
+def _permission_context_from_data(data: dict[str, Any]) -> PermissionContext:
+    raw_groups = data.get("permission_groups") or ["public"]
+    if isinstance(raw_groups, str):
+        raw_groups = [raw_groups]
+    if not isinstance(raw_groups, (list, tuple, set)):
+        raw_groups = ["public"]
+    groups = [str(group).strip() for group in raw_groups if str(group).strip()]
+    return PermissionContext(
+        user_id=str(data.get("user_id") or "anonymous"),
+        permission_groups=groups or ["public"],
+    )
+
+
+async def _build_portfolio_risk_summary(summary: Any) -> dict[str, Any]:
+    tickers = [
+        stock.position.ticker
+        for stock in getattr(summary, "stocks", [])
+        if getattr(stock.position, "ticker", "") and getattr(stock.position, "ticker", "") != "CASH"
+    ]
+    history = await get_price_history_service().get_history(
+        tickers,
+        lookback_days=settings.PRICE_HISTORY_LOOKBACK_DAYS,
+    )
+    return build_portfolio_risk_summary(
+        summary.stocks,
+        price_data=history.adjusted_close,
+        min_observations=settings.RISK_MIN_OBSERVATIONS,
+        market_data_quality=history.data_quality(),
+        as_of=history.as_of,
+    )
 
 
 def _default_rag_query(summary: Any, risk_summary: dict[str, Any]) -> str:

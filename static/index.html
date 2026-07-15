@@ -27,6 +27,7 @@
             <div class="sidebar-logo">
                 <span class="logo-icon"><i data-lucide="bar-chart-3"></i></span>
                 <span class="logo-text">PortfolioPilot</span>
+                <span class="app-mode-badge" id="appModeBadge">Personal</span>
             </div>
             
             <nav class="sidebar-nav" id="tabs">
@@ -42,14 +43,17 @@
                 <button class="nav-btn" data-tab="rebalancing" onclick="switchTab('rebalancing')">
                     <i data-lucide="scale"></i> <span data-i18n="rebalancing">Rebalancing</span> <span class="tab-badge" id="rebalancingBadge"></span>
                 </button>
-                <button class="nav-btn" data-tab="techpicks" onclick="switchTab('techpicks')">
+                <button class="nav-btn" data-tab="techpicks" data-personal-only="tech_picks" onclick="switchTab('techpicks')">
                     <i data-lucide="rocket"></i> <span data-i18n="techPicks">Tech Picks</span>
                 </button>
                 <button class="nav-btn" data-tab="advisor" onclick="switchTab('advisor')">
                     <i data-lucide="brain"></i> <span data-i18n="aiAdvisor">AI Advisor</span>
                 </button>
-                <button class="nav-btn" data-tab="shadow" onclick="switchTab('shadow')">
+                <button class="nav-btn" data-tab="shadow" data-personal-only="shadow_agent" onclick="switchTab('shadow')">
                     <i data-lucide="bot"></i> <span data-i18n="shadowAgent">Shadow Agent</span>
+                </button>
+                <button class="nav-btn" data-tab="evaluation" onclick="switchTab('evaluation')">
+                    <i data-lucide="activity"></i> <span data-i18n="evalTrace">Eval & Trace</span>
                 </button>
                 <div class="nav-indicator" id="tabIndicator"></div>
             </nav>
@@ -61,6 +65,7 @@
             <!-- App Header (Controls) -->
             <header class="app-header" id="header">
                 <div class="header-left">
+                    <span class="app-mode-badge app-mode-header-badge">Personal</span>
                 </div>
                 <div class="header-right">
                     <span class="last-update" id="lastUpdate">–</span>
@@ -85,8 +90,11 @@
                             <button class="action-dropdown-item" id="btnUpdateParqet" onclick="updateParqet()">
                                 <i data-lucide="refresh-cw"></i> <span data-i18n="updateParqet">Update Parqet</span>
                             </button>
-                            <button class="action-dropdown-item" id="btnTelegramReport" onclick="triggerReport()">
-                                <i data-lucide="send"></i> <span data-i18n="telegramReport">Telegram Report</span>
+                            <button class="action-dropdown-item" id="btnEmailContact" onclick="openEmailContact()">
+                                <i data-lucide="mail"></i> <span data-i18n="emailContact">Email Contact</span>
+                            </button>
+                            <button class="action-dropdown-item" id="btnApiSettings" onclick="showApiSettings()">
+                                <i data-lucide="key-round"></i> <span data-i18n="apiSettings">API Settings</span>
                             </button>
                             <div class="action-dropdown-divider"></div>
                             <button class="action-dropdown-item" id="btnRefresh" onclick="refreshData()">
@@ -434,7 +442,7 @@
             <div class="advisor-container">
                 <!-- Mode Toggle -->
                 <div class="advisor-mode-toggle">
-                    <button class="advisor-mode-btn active" id="advisorModeAnalyse" onclick="switchAdvisorMode('analyse')">
+                    <button class="advisor-mode-btn active" id="advisorModeAnalyse" data-personal-only="trade_advisor" onclick="switchAdvisorMode('analyse')">
                         <i data-lucide="search"></i> <span data-i18n="tradeAnalysis">Trade-Analyse</span>
                     </button>
                     <button class="advisor-mode-btn" id="advisorModeHoldings" onclick="switchAdvisorMode('holdings')">
@@ -446,7 +454,7 @@
                 </div>
 
                 <!-- Mode: Analysis -->
-                <div class="advisor-mode-content active" id="advisorAnalyseMode">
+                <div class="advisor-mode-content active" id="advisorAnalyseMode" data-personal-only="trade_advisor">
                     <div class="advisor-form-card">
                         <h2 class="section-title" data-i18n="aiTradeAdvisor">🧠 AI Trade Advisor</h2>
                         <p class="advisor-subtitle" data-i18n="advisorSubtitle">Evaluiere Kauf- und Verkaufsentscheidungen mit KI-gestützter Portfolio-Analyse</p>
@@ -830,6 +838,21 @@
                 </div>
             </div>
         </section>
+
+        <section class="tab-content" id="tab-evaluation">
+            <div class="section-header">
+                <div>
+                    <h2 data-i18n="evalTrace">Eval & Trace</h2>
+                    <p class="section-subtitle" data-i18n="evalTraceSubtitle">Prompt、质量、延迟、成本和人工审核指标</p>
+                </div>
+                <button class="btn btn-secondary" onclick="loadEvaluationDashboard()">
+                    <i data-lucide="refresh-cw"></i> <span data-i18n="refresh">刷新</span>
+                </button>
+            </div>
+            <div id="evaluationDashboard" class="evaluation-dashboard">
+                <div class="empty-state">Loading evaluation traces…</div>
+            </div>
+        </section>
     </main>
 
     </div> <!-- End .app-layout -->
@@ -965,6 +988,48 @@
         </div>
     </div>
 
+    <!-- API Settings Modal -->
+    <div class="slide-panel-overlay" id="apiSettingsOverlay" onclick="closeApiSettings()" style="display:none;"></div>
+    <div class="holdings-manager-modal api-settings-modal" id="apiSettingsModal" style="display:none;">
+        <button class="modal-close" onclick="closeApiSettings()">✕</button>
+        <h2 class="section-title" data-i18n="apiSettingsTitle">API Settings</h2>
+        <p class="advisor-subtitle" data-i18n="apiSettingsDesc">Configure local Qwen, FMP, and contact email settings. Secrets are saved to .env and are never shown again.</p>
+
+        <div class="api-settings-status" id="apiSettingsStatus">–</div>
+
+        <form class="holding-form api-settings-form" id="apiSettingsForm" onsubmit="saveApiSettings(event)">
+            <label>
+                <span data-i18n="apiQwenKey">Qwen API Key</span>
+                <input id="apiQwenKey" name="qwen_api_key" type="password" autocomplete="off" placeholder="sk-...">
+            </label>
+            <label>
+                <span data-i18n="apiQwenBaseUrl">Qwen Base URL</span>
+                <input id="apiQwenBaseUrl" name="qwen_base_url" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+            </label>
+            <label>
+                <span data-i18n="apiQwenModel">Qwen Model</span>
+                <input id="apiQwenModel" name="qwen_model" placeholder="qwen-plus">
+            </label>
+            <label>
+                <span data-i18n="apiQwenReasoningModel">Reasoning Model</span>
+                <input id="apiQwenReasoningModel" name="qwen_reasoning_model" placeholder="optional">
+            </label>
+            <label>
+                <span data-i18n="apiFmpKey">FMP API Key</span>
+                <input id="apiFmpKey" name="fmp_api_key" type="password" autocomplete="off" placeholder="optional">
+            </label>
+            <label>
+                <span data-i18n="contactEmail">Contact Email</span>
+                <input id="apiContactEmail" name="contact_email" type="email" placeholder="you@example.com">
+            </label>
+            <p class="api-settings-note" data-i18n="apiSettingsNote">Leave a secret field blank to keep the current value. Restarting the server is recommended after changing keys.</p>
+            <div class="holding-form-actions">
+                <button type="button" class="secondary-action-btn" onclick="closeApiSettings()" data-i18n="cancel">Cancel</button>
+                <button type="submit" class="advisor-submit-btn" id="apiSettingsSaveBtn" data-i18n="saveSettings">Save Settings</button>
+            </div>
+        </form>
+    </div>
+
     <!-- Mobile Bottom Navigation -->
     <nav class="bottom-nav" id="bottomNav">
         <div class="bottom-nav-inner">
@@ -980,7 +1045,7 @@
                 <i data-lucide="scale"></i>
                 <span data-i18n="rebalance">Rebalance</span>
             </button>
-            <button class="bottom-nav-item" data-tab="techpicks" onclick="switchTab('techpicks'); updateBottomNav(this);">
+            <button class="bottom-nav-item" data-tab="techpicks" data-personal-only="tech_picks" onclick="switchTab('techpicks'); updateBottomNav(this);">
                 <i data-lucide="rocket"></i>
                 <span data-i18n="picks">Picks</span>
             </button>
@@ -988,7 +1053,7 @@
                 <i data-lucide="brain"></i>
                 <span data-i18n="ai">AI</span>
             </button>
-            <button class="bottom-nav-item" data-tab="shadow" onclick="switchTab('shadow'); updateBottomNav(this);">
+            <button class="bottom-nav-item" data-tab="shadow" data-personal-only="shadow_agent" onclick="switchTab('shadow'); updateBottomNav(this);">
                 <i data-lucide="bot"></i>
                 <span data-i18n="shadowShort">Shadow</span>
             </button>
@@ -996,7 +1061,7 @@
     </nav>
 
     <script src="/static/translations.js"></script>
-    <script src="/static/app.js?v=2"></script>
+    <script src="/static/app.js?v=3"></script>
     <script>
         // Initialize Lucide icons and translations after DOM is ready
         document.addEventListener('DOMContentLoaded', () => {

@@ -219,7 +219,7 @@ async def _run_gemini_research(
     - Per-Stock Kommentare zu Top-Movern
     - Handlungsempfehlungen
     """
-    from services.vertex_ai import get_client, get_grounded_config, get_cached_content
+    from services.llm.compat import get_client, get_grounded_config, get_cached_content
 
     client = get_client()
 

@@ -85,7 +85,7 @@ async def _do_refresh():
             logger.warning(f"Fear&Greed nicht verfügbar: {e}")
 
         # Wechselkurse zentral laden
-        _set_progress("Lade Wechselkurse...", 5)
+        _set_progress("Loading exchange rates...", 5)
         converter = await CurrencyConverter.create()
         eur_usd_rate = converter.rates.eur_usd
         eur_cny_rate = converter.rates.eur_cny
@@ -387,7 +387,7 @@ async def _do_refresh():
         # Vertex AI Context Cache aktualisieren (spart Token-Kosten)
         if settings.gemini_configured:
             try:
-                from services.vertex_ai import cache_portfolio_context
+                from services.llm.compat import cache_portfolio_context
                 await asyncio.wait_for(
                     cache_portfolio_context(summary),
                     timeout=30.0
