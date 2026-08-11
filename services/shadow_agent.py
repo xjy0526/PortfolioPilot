@@ -24,13 +24,12 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from config import settings
 from services.display_currency import format_display_money
 
 logger = logging.getLogger(__name__)
-TZ_BERLIN = ZoneInfo("Europe/Berlin")
+from time_utils import utc_now
 
 # ── Agenten-Regeln ────────────────────────────────────────────
 MAX_POSITIONS = 20
@@ -213,7 +212,7 @@ async def _ensure_initialized(summary) -> bool:
         count += 1
 
     shadow_set_meta("initialized", "true")
-    shadow_set_meta("init_date", datetime.now(tz=TZ_BERLIN).isoformat())
+    shadow_set_meta("init_date", utc_now().isoformat())
     shadow_set_meta("start_capital_eur", str(round(cash + summary.total_value - _get_cash_position_value(summary), 2)))
 
     logger.info(f"✅ Shadow-Portfolio initialisiert: {count} Positionen + {format_display_money(cash, summary)} Cash")

@@ -6,11 +6,12 @@ Ersetzt die duplizierten _load_cache()/_save_cache() Funktionen in allen Fetcher
 import json
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 from config import settings
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,10 @@ class CacheManager:
             cached_at_str = data.pop("_cached_at", "")
             if cached_at_str:
                 cached_time = datetime.fromisoformat(cached_at_str)
-                if datetime.now() - cached_time < self.ttl:
+                if cached_time.tzinfo is None:
+                    # Compatibility for cache files written before PR-0.
+                    cached_time = cached_time.replace(tzinfo=UTC)
+                if utc_now() - cached_time < self.ttl:
                     self._memory = data
                     self._cached_at = cached_time
                     self._stale = False
@@ -87,7 +91,7 @@ class CacheManager:
                 self._stale = True
                 logger.debug(
                     f"Cache '{self.name}' abgelaufen seit "
-                    f"{(datetime.now() - cached_time).total_seconds():.0f}s "
+                    f"{(utc_now() - cached_time).total_seconds():.0f}s "
                     f"— nutze als Stale-Fallback ({len(data)} Einträge)"
                 )
                 return
@@ -131,7 +135,7 @@ class CacheManager:
 
             try:
                 data = dict(self._memory)
-                data["_cached_at"] = datetime.now().isoformat()
+                data["_cached_at"] = utc_now().isoformat()
                 self.file.write_text(
                     json.dumps(data, indent=2, default=str),
                     encoding="utf-8",
@@ -165,7 +169,7 @@ class CacheManager:
             self._ensure_loaded()
             if self._cached_at is None:
                 return None
-            return (datetime.now() - self._cached_at).total_seconds() / 3600
+            return (utc_now() - self._cached_at).total_seconds() / 3600
 
     def is_fresh(self, key: str, max_hours: float = 6.0) -> bool:
         """Prüft ob ein Cache-Eintrag existiert und der gesamte Cache frisch ist.
@@ -181,7 +185,7 @@ class CacheManager:
                 return False
             if self._cached_at is None:
                 return False
-            age = (datetime.now() - self._cached_at).total_seconds() / 3600
+            age = (utc_now() - self._cached_at).total_seconds() / 3600
             return age < max_hours
 
     # --- Statische Methoden für globale Cache-Operationen ---

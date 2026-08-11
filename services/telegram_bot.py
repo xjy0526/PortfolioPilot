@@ -18,6 +18,7 @@ from typing import Optional
 
 from config import settings
 from services.display_currency import format_display_money
+from time_utils import display_now
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ async def _cmd_news(chat_id: str):
     if not settings.gemini_configured:
         await send_message(
             "⚠️ Gemini API-Key nicht konfiguriert.\n"
-            "Bitte GEMINI_API_KEY in .env setzen.",
+            "Bitte QWEN_API_KEY in .env setzen.",
             chat_id=chat_id,
         )
         return
@@ -377,7 +378,7 @@ async def _cmd_news(chat_id: str):
         prompt_parts.append(
             "Halte dich prägnant (max 2000 Zeichen). Nutze Emojis für Übersichtlichkeit. "
             "Kein Markdown, nur Plain Text. Datum heute: "
-            + __import__("datetime").datetime.now().strftime("%d.%m.%Y")
+            + display_now().strftime("%d.%m.%Y")
         )
 
         prompt = "".join(prompt_parts)
@@ -894,7 +895,7 @@ async def _handle_voice_memo(chat_id: str, voice: dict, caption: str = ""):
     if not settings.gemini_configured:
         await send_message(
             "🎙️ Sprachnachrichten benötigen Gemini API.\n"
-            "Bitte GEMINI_API_KEY in .env setzen.",
+            "Bitte QWEN_API_KEY in .env setzen.",
             chat_id=chat_id,
         )
         return

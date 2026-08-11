@@ -1,167 +1,180 @@
-"""Tests für den AI compatibility service."""
-import sys
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+"""Tests for the provider-neutral LLM client and legacy import shim."""
+from __future__ import annotations
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from unittest.mock import MagicMock
 
 import pytest
 
-
-class TestGetClient:
-    """Tests für die Client-Erstellung."""
-
-    def setup_method(self):
-        """Reset daily counter between tests."""
-        from services import vertex_ai
-        vertex_ai._daily_call_count = 0
-        vertex_ai._daily_call_date = None
-
-    def test_qwen_client_when_configured(self):
-        """Qwen Client wird erstellt wenn QWEN_API_KEY gesetzt ist."""
-        from services.vertex_ai import get_client
-
-        with patch("services.vertex_ai.settings") as mock_settings:
-            mock_settings.QWEN_API_KEY = "test-qwen-key"
-            mock_settings.GEMINI_API_KEY = ""
-            mock_settings.QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            mock_settings.QWEN_MODEL = "qwen-plus"
-
-            client = get_client()
-
-        assert client.api_key == "test-qwen-key"
-        assert "dashscope" in client.base_url
-
-    def test_legacy_api_key_fallback(self):
-        """Legacy GEMINI_API_KEY darf als kompatibler API-Key weiterverwendet werden."""
-        from services.vertex_ai import get_client
-
-        with patch("services.vertex_ai.settings") as mock_settings:
-            mock_settings.QWEN_API_KEY = ""
-            mock_settings.GEMINI_API_KEY = "test-api-key"
-            mock_settings.QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            mock_settings.QWEN_MODEL = "qwen-plus"
-
-            client = get_client()
-
-        assert client.api_key == "test-api-key"
-
-    def test_raises_when_nothing_configured(self):
-        """RuntimeError wenn kein kompatibler API-Key konfiguriert ist."""
-        from services.vertex_ai import get_client
-
-        with patch("services.vertex_ai.settings") as mock_settings:
-            mock_settings.QWEN_API_KEY = ""
-            mock_settings.GEMINI_API_KEY = ""
-
-            with pytest.raises(RuntimeError, match="QWEN_API_KEY"):
-                get_client()
-
-    def test_daily_limit_blocks_after_max(self):
-        """Nach 100 Calls wird RuntimeError geworfen."""
-        from services import vertex_ai
-        vertex_ai._daily_call_count = 100  # Already at limit
-        vertex_ai._daily_call_date = vertex_ai.date.today()
-
-        with pytest.raises(RuntimeError, match="Tägliches AI-Call-Limit"):
-            vertex_ai.get_client()
-
-    def test_daily_limit_resets_at_midnight(self):
-        """Counter resettet sich an neuem Tag."""
-        from services import vertex_ai
-        from datetime import date, timedelta
-        vertex_ai._daily_call_count = 100
-        vertex_ai._daily_call_date = date.today() - timedelta(days=1)  # Yesterday
-
-        # Should NOT raise — new day resets counter
-        with patch("services.vertex_ai.settings") as mock_settings:
-            mock_settings.QWEN_API_KEY = "test-key"
-            mock_settings.GEMINI_API_KEY = "test-key"
-            mock_settings.QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            mock_settings.QWEN_MODEL = "qwen-plus"
-            vertex_ai.get_client()
-
-        assert vertex_ai._daily_call_count == 1
+from config import Settings
+from services import vertex_ai
+from services.llm import compat
+from services.llm_client import (
+    ChatMessage,
+    ChatRequest,
+    OpenAICompatibleClient,
+    QwenClient,
+    get_llm_client,
+)
 
 
-class TestGroundedConfig:
-    """Tests für Search Grounding Config."""
-
-    def test_returns_tools_config(self):
-        """Config enthält Google Search Tool."""
-        from services.vertex_ai import get_grounded_config
-
-        config = get_grounded_config()
-
-        assert "tools" in config
-        assert len(config["tools"]) == 1
-
-
-class TestContextCache:
-    """Tests für Context Caching."""
-
-    def test_get_cached_content_returns_none_initially(self):
-        """Ohne Cache → None."""
-        from services import vertex_ai
-        vertex_ai._active_cache_name = None
-
-        result = vertex_ai.get_cached_content()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_cache_skips_without_ai_key(self):
-        """Context Caching wird übersprungen ohne AI-Key."""
-        from services.vertex_ai import cache_portfolio_context
-
-        mock_summary = MagicMock()
-
-        with patch("services.vertex_ai.settings") as mock_settings:
-            mock_settings.gemini_configured = False
-
-            result = await cache_portfolio_context(mock_summary)
-
-        assert result is None
+def _settings(**overrides):
+    values = {
+        "AI_PROVIDER": "qwen",
+        "QWEN_API_KEY": "qwen-test-key",
+        "QWEN_BASE_URL": "https://dashscope.example/v1",
+        "QWEN_MODEL": "qwen-plus",
+        "OPENAI_COMPATIBLE_API_KEY": "",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
 
 
-class TestConfigSettings:
-    """Tests für die Vertex AI Config-Properties."""
+def test_builds_explicit_qwen_client():
+    client = get_llm_client(_settings())
 
-    def test_vertex_ai_configured_true(self):
-        """vertex_ai_configured ist True mit GCP_PROJECT_ID."""
-        with patch.dict("os.environ", {"GCP_PROJECT_ID": "test-project"}):
-            from config import Settings
-            s = Settings()
-            s.GCP_PROJECT_ID = "test-project"
-            assert s.vertex_ai_configured is True
+    assert isinstance(client, QwenClient)
+    assert client.provider_name == "qwen"
+    assert client.default_model == "qwen-plus"
 
-    def test_vertex_ai_configured_false(self):
-        """vertex_ai_configured ist False ohne GCP_PROJECT_ID."""
-        from config import Settings
-        s = Settings()
-        s.GCP_PROJECT_ID = ""
-        assert s.vertex_ai_configured is False
 
-    def test_gemini_configured_via_vertex(self):
-        """gemini_configured ist True wenn Vertex AI konfiguriert."""
-        from config import Settings
-        s = Settings()
-        s.GCP_PROJECT_ID = "test-project"
-        s.GEMINI_API_KEY = ""
-        assert s.gemini_configured is True
+@pytest.mark.asyncio
+async def test_qwen_request_preserves_openai_compatible_base_path(monkeypatch):
+    seen: dict[str, object] = {}
 
-    def test_qwen_configured_via_api_key(self):
-        """gemini_configured bleibt für Kompatibilität True wenn QWEN_API_KEY vorhanden."""
-        from config import Settings
-        s = Settings()
-        s.GCP_PROJECT_ID = ""
-        s.QWEN_API_KEY = "test-key"
-        assert s.gemini_configured is True
+    class FakeResponse:
+        status_code = 200
 
-    def test_gemini_configured_neither(self):
-        """gemini_configured ist False ohne Vertex AI und ohne API Key."""
-        from config import Settings
-        s = Settings()
-        s.GCP_PROJECT_ID = ""
-        s.QWEN_API_KEY = ""
-        s.GEMINI_API_KEY = ""
-        assert s.gemini_configured is False
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            seen["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def post(self, url, json):
+            seen["url"] = url
+            seen["payload"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr("services.llm_client.httpx.AsyncClient", FakeAsyncClient)
+    client = QwenClient(
+        api_key="qwen-test-key",
+        base_url="https://dashscope.example/compatible-mode/v1/",
+        default_model="qwen-plus",
+    )
+
+    response = await client.generate_chat(
+        ChatRequest(messages=[ChatMessage(role="user", content="analyze")])
+    )
+
+    assert seen["url"] == "https://dashscope.example/compatible-mode/v1/chat/completions"
+    assert response.text == "ok"
+
+
+def test_builds_explicit_openai_compatible_client():
+    client = get_llm_client(
+        _settings(
+            AI_PROVIDER="openai_compatible",
+            QWEN_API_KEY="",
+            OPENAI_COMPATIBLE_API_KEY="openai-test-key",
+            OPENAI_COMPATIBLE_BASE_URL="https://llm.example/v1",
+            OPENAI_COMPATIBLE_MODEL="research-model",
+        )
+    )
+
+    assert isinstance(client, OpenAICompatibleClient)
+    assert client.provider_name == "openai_compatible"
+    assert client.default_model == "research-model"
+
+
+def test_missing_qwen_key_is_not_silently_replaced():
+    with pytest.raises(RuntimeError, match="QWEN_API_KEY"):
+        get_llm_client(_settings(QWEN_API_KEY=""))
+
+
+def test_legacy_vertex_import_reexports_compatibility_surface():
+    assert vertex_ai.get_client is compat.get_client
+    assert vertex_ai.Content is compat.Content
+    assert vertex_ai.Part is compat.Part
+
+
+def test_legacy_adapter_uses_new_client(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.api_key = "test-key"
+    fake_client.base_url = "https://llm.example/v1"
+    monkeypatch.setattr(compat, "get_llm_client", lambda: fake_client)
+    compat._daily_call_count = 0
+    compat._daily_call_date = None
+
+    client = compat.get_client()
+
+    assert client.client is fake_client
+    assert client.api_key == "test-key"
+
+
+def test_legacy_inline_audio_converts_to_openai_compatible_content():
+    contents = [
+        compat.Content(
+            role="user",
+            parts=[
+                compat.Part(text="Transcribe this"),
+                compat.Part.from_bytes(data=b"audio-bytes", mime_type="audio/ogg"),
+            ],
+        )
+    ]
+
+    request = compat._legacy_request("qwen-audio", contents, {})
+    content = request.messages[0].content
+
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "Transcribe this"}
+    assert content[1]["type"] == "input_audio"
+    assert content[1]["input_audio"]["format"] == "ogg"
+
+
+def test_daily_limit_blocks_after_max(monkeypatch):
+    monkeypatch.setattr(compat, "_daily_call_count", compat._MAX_DAILY_CALLS)
+    monkeypatch.setattr(compat, "_daily_call_date", compat.utc_now().date())
+
+    with pytest.raises(RuntimeError, match="Daily AI call limit"):
+        compat.get_client()
+
+
+def test_grounded_config_does_not_fake_google_search():
+    assert compat.get_grounded_config() == {}
+
+
+@pytest.mark.asyncio
+async def test_context_cache_skips_without_real_ai_key(monkeypatch):
+    monkeypatch.setattr(compat.settings, "AI_PROVIDER", "qwen")
+    monkeypatch.setattr(compat.settings, "QWEN_API_KEY", "")
+
+    assert await compat.cache_portfolio_context(MagicMock()) is None
+
+
+def test_qwen_configuration_and_legacy_boolean_alias():
+    configured = _settings()
+    missing = _settings(QWEN_API_KEY="")
+
+    assert configured.ai_configured is True
+    assert configured.gemini_configured is True
+    assert missing.ai_configured is False
+    assert missing.gemini_configured is False
+
+
+def test_optional_extensions_are_disabled_by_default():
+    current = Settings(_env_file=None)
+
+    assert current.ENABLE_POLYMARKET is False
+    assert current.ENABLE_TELEGRAM is False
+    assert current.ENABLE_PARQET is False
+    assert current.ENABLE_SHADOW_AGENT is False

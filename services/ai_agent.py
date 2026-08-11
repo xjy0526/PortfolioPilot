@@ -8,7 +8,6 @@ Täglicher Analyse-Agent der:
 Fallback: Ohne Gemini-Key wird ein rein datenbasierter Report erstellt.
 """
 import logging
-from datetime import datetime
 from typing import Optional
 
 from config import settings
@@ -19,6 +18,7 @@ from models import (
     StockFullData,
 )
 from services.display_currency import format_display_money
+from time_utils import display_now
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def _build_telegram_report(
     ai_insights: str = "",
 ) -> str:
     """Baut den vollständigen Telegram-Report zusammen."""
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = display_now().strftime("%d.%m.%Y %H:%M")
     sections = []
 
     # Header

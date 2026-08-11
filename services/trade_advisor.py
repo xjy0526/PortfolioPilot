@@ -504,7 +504,7 @@ async def _call_gemini_with_tools(
         FunctionDeclaration(**td) for td in _build_tool_declarations()
     ]
 
-    # Config: eigene Tools (GoogleSearch kann nicht mit function_declarations kombiniert werden)
+    # Provider-neutral function tools. External search is handled separately.
     config = {
         "tools": [
             Tool(function_declarations=tool_declarations),

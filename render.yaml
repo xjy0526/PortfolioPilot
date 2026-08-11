@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     autoDeployTrigger: commit
-    healthCheckPath: /health
+    healthCheckPath: /health/live
     maxShutdownDelaySeconds: 120
     disk:
       name: portfolio-pilot-data
@@ -18,6 +18,16 @@ services:
         value: production
       - key: AI_PROVIDER
         value: qwen
+      - key: DISPLAY_TIMEZONE
+        value: Asia/Shanghai
+      - key: ENABLE_POLYMARKET
+        value: false
+      - key: ENABLE_TELEGRAM
+        value: false
+      - key: ENABLE_PARQET
+        value: false
+      - key: ENABLE_SHADOW_AGENT
+        value: false
       - key: QWEN_BASE_URL
         value: https://dashscope.aliyuncs.com/compatible-mode/v1
       - key: QWEN_MODEL
@@ -32,23 +42,11 @@ services:
         value: 12
       - key: QWEN_API_KEY
         sync: false
+      - key: DATABASE_URL
+        sync: false
       - key: FMP_API_KEY
         sync: false
       - key: DASHBOARD_USER
         sync: false
       - key: DASHBOARD_PASSWORD
-        sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: TELEGRAM_WEBHOOK_SECRET
-        generateValue: true
-      - key: PARQET_CLIENT_ID
-        sync: false
-      - key: PARQET_CLIENT_SECRET
-        sync: false
-      - key: PARQET_REFRESH_TOKEN
-        sync: false
-      - key: PARQET_PORTFOLIO_ID
         sync: false

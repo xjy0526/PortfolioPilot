@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import settings
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def run_backtest(lookback_days: int = 30, forward_days: int = 14) -> dict:
             for rating, changes in results_by_rating.items()
         },
         "tickers_analyzed": len(ticker_snapshots),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now().isoformat(),
     }
 
     # Cache speichern
@@ -145,7 +146,7 @@ def _load_cached_results() -> Optional[dict]:
         ts = data.get("timestamp", "")
         if ts:
             cached_date = datetime.fromisoformat(ts).date()
-            if cached_date == datetime.now().date():
+            if cached_date == utc_now().date():
                 return data
     except Exception:
         pass

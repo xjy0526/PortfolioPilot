@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from state import portfolio_data, YFINANCE_ALIASES
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ async def stream_prices(request: Request):
                 # Build SSE event — all prices in EUR
                 event_data = json.dumps({
                     "prices": diffs,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": utc_now().isoformat(),
                     "ws_connected": _is_ws_connected(),
                 })
                 yield f"data: {event_data}\n\n"

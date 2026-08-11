@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _shadow_mutation_disabled() -> JSONResponse | None:
+    if settings.shadow_agent_enabled:
+        return None
+    return JSONResponse(
+        {"error": "Shadow Agent extension is disabled"},
+        status_code=403,
+    )
+
+
 @router.get("/api/shadow-portfolio")
 async def get_shadow_portfolio():
     """Aktueller Shadow-Portfolio-Stand mit Positionen, Performance und Metadaten."""
@@ -35,13 +44,11 @@ async def run_shadow_agent():
     """Loest einen Shadow-Agent-Zyklus manuell aus.
 
     Der Agent analysiert das Portfolio, trifft Entscheidungen und fuehrt
-    Trades aus. Dauert 30-90 Sekunden (Gemini API + yFinance).
+    Trades aus. Dauert 30-90 Sekunden (configured LLM API + yFinance).
     """
-    if settings.fund_research_mode:
-        return JSONResponse(
-            {"error": "Shadow Agent is disabled in fund_research mode"},
-            status_code=403,
-        )
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from services.shadow_agent import run_shadow_agent_cycle
         result = await run_shadow_agent_cycle()
@@ -94,11 +101,9 @@ async def reset_shadow_portfolio():
     Konfiguration (Agenten-Regeln) bleibt erhalten.
     Nach dem Reset wird beim naechsten Zyklus neu initialisiert.
     """
-    if settings.fund_research_mode:
-        return JSONResponse(
-            {"error": "Shadow portfolio mutations are disabled in fund_research mode"},
-            status_code=403,
-        )
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from database import shadow_reset
         await __import__("asyncio").to_thread(shadow_reset)
@@ -130,11 +135,9 @@ async def save_shadow_config(payload: dict):
     Erwartet ein JSON-Objekt mit den zu aendernden Werten.
     Unbekannte Keys werden ignoriert, fehlende Keys behalten ihren aktuellen Wert.
     """
-    if settings.fund_research_mode:
-        return JSONResponse(
-            {"error": "Shadow Agent configuration is disabled in fund_research mode"},
-            status_code=403,
-        )
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from database import shadow_save_config, shadow_get_config
         shadow_save_config(payload)

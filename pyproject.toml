@@ -1,0 +1,29 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = ["venv", ".venv", "cache"]
+
+[tool.ruff.lint]
+# PR-0 starts with correctness-focused rules. Later phases can expand this set
+# without mixing a repository-wide formatting rewrite into the migration.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["services/llm_client.py", "time_utils.py", "app/db", "app/api", "app/workers"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["config"]
+# Pydantic's computed_field decorator is not yet understood by mypy without
+# its plugin. Keep PR-0 focused on the new typed service boundary.
+disable_error_code = ["prop-decorator"]
+
+[tool.pytest.ini_options]
+markers = [
+    "postgres: requires a PostgreSQL test database",
+]

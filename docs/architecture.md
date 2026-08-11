@@ -1,330 +1,156 @@
-# PortfolioPilot – Architektur
+# PortfolioPilot 当前架构
 
-## Übersicht
+## 产品定位
 
-PortfolioPilot ist ein intelligentes Aktienportfolio-Dashboard mit automatisierter Multi-Faktor-Analyse.
-Läuft lokal (Python) und auf Google Cloud Run (Docker).
+PortfolioPilot 是“面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台”。当前版本用于金融科技、AI 应用和后端工程研究演示，不连接券商，不执行真实交易，也不构成投资建议。
 
-```
-PortfolioPilot/
-├── main.py                 # FastAPI App + Lifespan + Scheduler
-├── config.py               # Pydantic Settings v2 (.env auto-loading)
-├── models.py               # 31 Pydantic-Datenmodelle
-├── state.py                # Globaler State + Refresh-Progress
-├── database.py             # SQLite Persistenz (WAL, Score-History, Snapshots)
-├── cache_manager.py        # Thread-safe Memory+Disk Cache
-├── logging_config.py       # structlog (JSON in Production, Console in Dev)
-├── run_job.py              # Cloud Run Job Entry Point (tägliche Analyse + Report)
-│
-├── routes/
-│   ├── portfolio.py        # GET /api/portfolio, /api/stock/{ticker}
-│   ├── refresh.py          # POST /api/refresh + GET /api/refresh/status
-│   ├── analysis.py         # POST /api/analysis/run, GET /api/analysis/latest
-│   ├── analytics.py        # Dividenden, Risiko, Korrelation, Attribution
-│   ├── demo.py             # POST /api/demo/activate|deactivate, GET /status
-│   ├── shadow_portfolio.py # GET/POST /api/shadow-portfolio (Paper Trading Agent)
-│   ├── parqet_oauth.py     # GET /api/parqet/authorize + /callback (OAuth2 PKCE)
-│   ├── streaming.py        # GET /api/prices/stream (SSE)
-│   └── telegram.py         # Telegram Webhook
-│
-├── services/
-│   ├── refresh.py          # Voller Refresh (mit Progress-Tracking)
-│   ├── data_loader.py      # Paralleles Batch-Loading (4er Batches)
-│   ├── currency_converter.py # Zentrale EUR-Konvertierung
-│   ├── portfolio_builder.py  # Parqet-Update + yFinance-Preise + calc_portfolio_totals()
-│   ├── ai_agent.py         # Gemini AI + Telegram Reports
-│   ├── telegram.py         # Telegram Bot API
-│   ├── telegram_bot.py     # Command-Router + Handler
-│   ├── vertex_ai.py        # Gemini Client + Daily Limit + Context Cache
-│   ├── earnings_ai.py      # Earnings-Analyse (Gemini Pro + Search)
-│   ├── score_commentary.py # AI Score-Kommentare (Flash)
-│   ├── weekly_digest.py    # Wöchentlicher Digest (Flash)
-│   ├── tech_radar_ai.py    # AI-gestützte Tech-Empfehlungen
-│   ├── trade_advisor.py    # AI Trade Advisor (Function Calling + Structured Output + Chat)
-│   ├── analyst_tracker.py  # Analysten Track Record Bewertung
-│   ├── shadow_agent.py     # Autonome Buy/Sell/Hold Engine (Paper Trading)
-│   ├── knowledge_data.py   # Wissens-Datenbank (Projekt-Fakten + tägliche Tipps)
-│   └── url_fetcher.py      # URL Content Fetcher (HTML→Text für AI Tools)
-│
-├── engine/
-│   ├── scorer.py           # 10-Faktor Scoring Engine v5
-│   ├── rebalancer.py       # Portfolio-Rebalancing
-│   ├── analysis.py         # Analyse-Reports → SQLite
-│   ├── analytics.py        # Korrelation, Risiko, Dividenden
-│   ├── attribution.py      # P&L Attribution (Sektor, Herfindahl-Index)
-│   ├── portfolio_history.py # Portfolio-Historie (Einzelaktien, Cash, Cost-Basis)
-│   ├── history.py          # Portfolio-Snapshots → SQLite
-│   ├── backtest.py         # Score-Backtest Engine
-│   └── sector_rotation.py  # Sektor-Rotation-Analyse (ETF-basiert)
-│
-├── fetchers/
-│   ├── parqet.py           # Parqet Connect API (Performance + Activities)
-│   ├── parqet_auth.py      # OAuth2 Token-Management (PKCE, Refresh)
-│   ├── fmp.py              # Financial Modeling Prep API
-│   ├── yfinance_data.py    # yFinance v1.2.0 (Recs, Insider, ESG, Altman Z, Piotroski, Earnings, Fundamentals)
-│   ├── yfinance_ws.py      # yFinance WebSocket (Echtzeit International)
-│   ├── technical.py        # RSI, SMA, MACD Berechnung
-│   ├── fear_greed.py       # CNN Fear & Greed Index
-│   ├── currency.py         # EUR/USD/DKK/GBP Wechselkurse
-│   ├── yfinance_screener.py # Tech-Aktien Screening (yfinance)
-│   └── demo_data.py        # Synthetische Demo-Daten
-│
-├── middleware/
-│   └── auth.py             # Basic Auth Middleware (Passwortschutz)
-│
-├── static/                 # Frontend (HTML/JS/CSS + i18n DE/EN)
-│   ├── index.html          # Modular HTML: Header, Tabs, Slide-Over, Bottom Nav
-│   ├── app.js              # ~3400 LOC: Rendering, SSE, Theme, Toast, Heatmap, Shadow Agent
-│   ├── translations.js     # i18n System (225 Keys, DE/EN) — t() Funktion + data-i18n
-│   └── styles.css          # ~3800 LOC: Design System, Dark/Light Mode, Glassmorphism
-└── tests/                  # 391 pytest Tests (22 Testdateien)
+本文件描述 PR-1 完成后的增量架构。PostgreSQL 异步持久化基础已经建立，旧业务仍保留 SQLite 读取和根目录模块；真实持仓切换到 transaction ledger 属于后续阶段。
+
+## 技术栈
+
+- Python 3.12、FastAPI、Pydantic v2
+- pandas、NumPy、yfinance/FMP 数据适配
+- Qwen 或通用 OpenAI-Compatible LLM API
+- PostgreSQL 16、pgvector、SQLAlchemy 2.x Async ORM、asyncpg、Alembic
+- SQLite 兼容读取、JSON 磁盘缓存和进程内状态
+- 原生 HTML、CSS、JavaScript
+- pytest、pytest-cov、Ruff、Mypy、Docker
+
+## 模块边界
+
+```text
+main.py                    FastAPI 创建、生命周期、调度器和路由注册
+config.py                  环境变量、功能开关和 Provider 配置
+time_utils.py              UTC 持久化时间与展示时区转换
+models.py                  现有 Pydantic API/业务模型
+database.py                旧 SQLite 兼容持久化层
+state.py                   兼容期内的进程内组合状态
+
+app/db/models/             SQLAlchemy 2.x Declarative Mapping
+app/db/repositories/       PostgreSQL 数据访问边界
+app/db/session.py          asyncpg engine 与独立 AsyncSession 工厂
+app/api/health.py          liveness/readiness 路由
+app/workers/               Worker 独立 Session 边界
+migrations/                Alembic async migration 环境
+scripts/                   显式 SQLite 到 PostgreSQL 迁移入口
+
+routes/                    HTTP API 兼容层
+services/                  组合构建、分析、Provider 编排
+services/llm_client.py     Qwen/OpenAI-Compatible 中立客户端
+services/llm/compat.py     旧 generate-content 调用适配层
+services/market_data/      历史行情 Provider 接口与质量元数据
+analytics/                 确定性风险计算
+portfolio_optimizer/       确定性权重研究算法
+rag/                       文档治理、切片和混合检索
+prompts/                   Prompt Registry 与输出契约
+workflows/                 受控研究报告工作流
+backtest/                  策略比较与研究演示报告
+evaluation/                Retrieval/Generation/Workflow 评测
+static/                    现有原生 Web 前端
 ```
 
-## Frontend-Architektur
-
-### Design System (`styles.css`)
-- **Theming**: Dark-Mode (default) + Light-Mode via `body.light-mode` class, auto-detect via `prefers-color-scheme`
-- **Variables**: 20+ CSS Custom Properties (colors, shadows, radii, transitions)
-- **Light-Mode Kontrast**: Text-Farben `#0a0a0a` / `#1a1a1a` / `#3a3a3a` für volle Lesbarkeit auf weißem Hintergrund
-
-### UI-Komponenten
-
-| Komponente | Funktion |
-|------------|----------|
-| **Action Dropdown** | `⋮ Aktionen` → Parqet Update, Score Refresh, Telegram, Demo Toggle |
-| **Skeleton Loading** | Shimmer-Placeholders nur beim ersten Seitenaufruf |
-| **Toast Notifications** | Slide-in Feedback-Cards (success/error/warning/info) |
-| **Slide-Over Panel** | Rechts-Seitenleiste für Stock-Details mit 4 Tabs |
-| **Treemap Heatmap** | CSS Grid (`auto-fill, minmax(90px, 1fr)`), sortiert nach Daily % |
-| **AI Insight Widget** | Gradient-Border Card mit Portfolio-Zusammenfassung |
-| **Mobile Bottom Nav** | Feste untere Navigation bei ≤768px Viewport |
-
-### Live-Updates (ohne Flicker)
-
-```
-SSE (/api/prices/stream) → applyPriceUpdates() → Gezielte DOM-Updates
-                                                    ├── updateHeaderValues()
-                                                    └── updateTablePrices()
-
-loadPortfolio() → renderDashboard() → requestAnimationFrame() → Batch-Paint
-                   (Skeleton nur beim ersten Aufruf)
-```
-
-### Daily-Change Sanity-Cap
-`quick_price_update()` in `yfinance_data.py` verwirft Tagesänderungen >±50% als Datenartefakte (Stock-Splits, Multi-Tages-Gaps, Währungskonvertierungsfehler). Log-Warning wird ausgegeben.
-
-## Stabilität & Concurrency
-
-Das Backend ist auf Ausfallsicherheit bei hängenden externen APIs ausgelegt:
-- **Timeouts & Netzwerk:** Alle asynchronen `httpx` Aufrufe und Hintergrund-Lade-Prozesse (wie `yfinance` Thread-Pools) haben strikte, garantierte Timeouts (meist 5s bis 30s), um `ThreadPoolExecutor`-Erschöpfung und Deadlocks zu verhindern.
-- **Background Tasks:** WebSocket-Streamer und Daten-Loads laufen isoliert via `asyncio.create_task()`. Startup-Prozesse lassen den Lifespan dank `asyncio.wait_for()` nicht hängen.
-- **I/O Threads:** Synchrone Datenbank-Operationen (z.B. SQLite-Migrationen) werden via `asyncio.to_thread()` aus dem Main-Event-Loop herausgehalten.
-
-## Datenfluss
+## 核心请求链路
 
 ```mermaid
-sequenceDiagram
-    participant U as User/Browser
-    participant R as routes/
-    participant S as services/refresh
-    participant DL as services/data_loader
-    participant F as fetchers/
-    participant E as engine/
-    participant DB as database.py
-    participant AI as Vertex AI
-
-    U->>R: POST /api/refresh
-    R->>S: _refresh_data()
-    S->>F: fetch_portfolio() [Parqet]
-    F-->>S: 20 Positionen (19 Aktien + Cash)
-    S->>DL: load_positions_batched()
-    DL->>F: FMP + yFinance + Technical (parallel)
-    F-->>DL: Fundamentals, Preise, Indikatoren
-    DL->>E: calculate_score() [10 Faktoren]
-    E-->>S: StockScore + StockFullData
-    S->>E: calculate_rebalancing()
-    S->>DB: save_snapshot() + save_analysis()
-    S->>AI: Score-Kommentare (Flash)
-    S->>AI: Daily Report (Pro)
-    S-->>R: PortfolioSummary
-    R-->>U: JSON Response
+flowchart LR
+    CSV[CSV 持仓] --> PB[Portfolio Builder]
+    MD[行情 Provider] --> PB
+    PB --> STATE[兼容期内存 State]
+    STATE --> RISK[确定性风险引擎]
+    MD --> RISK
+    DOCS[本地研究文档] --> RAG[Hybrid RAG]
+    RISK --> PROMPT[结构化 Prompt]
+    RAG --> PROMPT
+    PROMPT --> LLM[Qwen / OpenAI-Compatible]
+    LLM --> VALIDATE[Pydantic 校验与 Trace]
+    VALIDATE --> API[FastAPI JSON API]
 ```
 
-## Persistenz-Schichten
+风险数值和优化权重由确定性模块计算。LLM 只消费结构化风险结果和本次检索到的 evidence，并负责生成有证据约束的解释；输出不合法时会重试，最终回退到明确标记的安全模板。
 
-| Schicht | Technologie | Inhalt | Verlust bei Restart? |
-|---------|------------|--------|---------------------|
-| **SQLite** (`portfoliopilot.db`) | WAL-Modus | Score-History, Snapshots, Reports | Ja (Cloud Run) |
-| **JSON Cache** | Memory + Disk | FMP, yFinance, Parqet | Teilweise (volatile) |
-| **State** (`portfolio_data`) | In-Memory Dict | Aktuelles Portfolio, Activities | Ja |
+## LLM 架构
 
-> **Cloud Run Hinweis:** SQLite-Daten gehen bei Container-Restart verloren. Für Langzeit-Persistenz: Litestream → GCS Backup.
+新代码使用 `services/llm_client.py`：
 
-## Demo Mode
+- `QwenClient`：调用 DashScope OpenAI-Compatible Chat Completions。
+- `OpenAICompatibleClient`：调用显式配置的兼容端点。
+- `ChatRequest`、`ChatMessage`、`ToolDefinition`、`ChatResponse`：供应商中立契约。
+- `get_llm_client()`：只返回真实配置的 Provider；缺少 Key 时明确报错，不伪装为真实模型。
 
-Expliziter Demo-Toggle für externe Präsentationen — unabhängig von API-Keys.
+`services/vertex_ai.py` 仅保留弃用兼容导入。旧业务暂时经 `services/llm/compat.py` 适配，其内部仍可使用原有 `client.aio.models.generate_content(...)` 调用形状；新代码不得继续依赖该形状。
 
-| Endpoint | Funktion |
-|----------|----------|
-| `POST /api/demo/activate` | Baut Demo-Portfolio (12 fiktive Positionen) aus statischen Daten |
-| `POST /api/demo/deactivate` | Löscht Demo-Daten, startet echten Refresh |
-| `GET /api/demo/status` | Gibt Demo-Status zurück |
+结构化金融分析使用另一层轻量 `LLMProvider` 协议。无真实 Key 时返回的 mock/fallback 会携带 `source` 和 `ai_available=false`，不得作为真实模型输出展示。
 
-- **Kein API-Call** nötig — alle Daten aus `fetchers/demo_data.py`
-- **Komplettes Portfolio**: Fundamentals, Analysten, Technical, Scores, Rebalancing, Tech Picks
-- **Frontend**: 🎭 Demo-Button im Header, Banner, Badge
-- **History Privacy**: Endpunkte wie `/api/portfolio/history-detail` und `/api/benchmark` nutzen im Demo-Modus ausschließlich synthetische Verlaufsdaten. Echte Portfolio-Werte (aus SQLite) werden hier strikt verborgen.
+## 数据与持久化
 
-### Startup Port-Cleanup & Memory Limits
-- **Port Cleanup**: `_kill_port_occupants()` in `main.py` beendet automatisch alte Server-Instanzen auf dem konfigurierten Port vor dem Start. Verhindert Whitescreen durch Zombie-Prozesse.
-- **Speicherbedarf (RAM)**: Da `yfinance` intensiv `pandas` und `numpy` nutzt, muss der Cloud Run Container mit **mindestens 1024Mi (1 GB) RAM** betrieben werden (`--memory 1024Mi`). Startvorgänge unterhalb von 1GB führen durch Nebenläufigkeit bei der Kursdaten-Abfrage (`batch_size=2`) unweigerlich zu Out-Of-Memory (OOM) Abstürzen ("Truncated response body").
+当前存在四类状态：
 
-## AI-Architektur (Vertex AI)
+| 类型 | 当前实现 | 说明 |
+|---|---|---|
+| 新数据库基础 | PostgreSQL + pgvector | transaction ledger、行情、汇率、派生快照和运行追踪的首批表 |
+| 兼容业务持久化 | SQLite `cache/portfoliopilot.db` | 当前快照、评分、知识、Prompt、Trace、Workflow 和可选模拟组合 |
+| 外部数据缓存 | `cache/*.json` | 行情和外部 Provider 缓存，带 UTC `_cached_at` |
+| 在线状态 | `state.portfolio_data` | 当前组合与刷新状态，进程重启后重建 |
 
-```mermaid
-graph LR
-    A[vertex_ai.py] --> B{Konfiguriert?}
-    B -->|GCP_PROJECT_ID| C[Vertex AI Client FA]
-    B -->|GEMINI_API_KEY| D[API Key Fallback]
-    B -->|Weder noch| E[AI deaktiviert]
+PostgreSQL 使用 `TIMESTAMPTZ`，asyncpg 连接会话固定为 UTC；金额、价格、数量和汇率使用 `NUMERIC`，动态配置和运行快照使用 `JSONB`。`DISPLAY_TIMEZONE` 仅控制展示，默认 `Asia/Shanghai`。
 
-    C --> F[Daily Limit: 100/Tag]
-    D --> F
-    F --> G[Flash: Score-Kommentare]
-    F --> H[Flash: Weekly Digest]
-    F --> I[Pro + Search: Earnings]
-    F --> J[Pro + Search: Risk]
-    F --> K[Pro + Search: Chat]
-    F --> L[Pro + FC: Trade Advisor]
-```
+每个 FastAPI 请求通过应用级 dependency 创建独立 `AsyncSession`。Worker 每次任务调用独立进入 `worker_session()`；并发任务只共享 engine pool 和 sessionmaker，绝不共享 Session。Route 不直接执行 SQL，新 PostgreSQL 访问统一经过 Repository。
 
-## Caching-Strategie
+表结构只由 Alembic 管理。应用 import 不连接数据库、不执行建表；旧 SQLite schema 在 FastAPI lifespan 中显式初始化。
 
-### Cache-Typen
+当前真实组合仍主要通过 CSV 或可选 Parqet position 数据构建，尚未迁移为以 transactions 为唯一事实源；该迁移不属于 PR-1。
 
-| Cache-Typ | Verhalten | Beispiele |
-|-----------|-----------|-----------|
-| **Volatile** | Beim Start gelöscht | Technical |
-| **Persistent** | Bleibt erhalten | Parqet, Currency, FMP, yFinance, Fear&Greed |
-| **State-Level** | Im Memory nach Refresh | Activities, Portfolio Summary |
-| **Analytics** | In-Memory, 15min TTL, nach Refresh invalidiert | Korrelation, Risk, Benchmark |
+## 行情与风险
 
-### TTL pro Fetcher
+`services/market_data/` 为历史复权行情提供统一接口，返回：
 
-| Cache | TTL | Begründung |
-|-------|-----|------------|
-| FMP | 24h | Fundamentaldaten ändern sich selten |
-| yFinance | 24h | Recs, Insider, ESG, Altman Z, Piotroski, Earnings-Kalender, Fundamentals |
-| Parqet | 12h | Portfolio-Positionen (Stale-Fallback bei Ablauf) |
-| Currency | 12h | Wechselkurse (<0.5% Änderung/Tag) |
-| Fear & Greed | 6h | Sentiment-Index (persistent über Restarts) |
-| Technical | 4h | RSI, SMA, Momentum (volatile) |
-| Analytics | 15min | Korrelation, Risk, Benchmark (invalidiert nach Refresh) |
+- `source` 和 `as_of`
+- 实际起止日期
+- 缺失和陈旧 ticker
+- 资产覆盖率
 
-### Startup-Cleanup
+风险引擎计算收益、年化波动率、最大回撤、Sharpe、资产权重、行业集中度和资产类型敞口。样本不足时返回 unavailable/null 语义，不把未知风险写成零风险。
 
-- Volatile Caches (Technical) werden beim Start gelöscht
-- Verwaiste Dateien aus JSON→SQLite Migration werden aufgeräumt
-- Activities-Cache auf Disk begrenzt auf 500 Einträge (~12 Monate)
+yfinance 仅用于公开数据研究演示，不承诺实时性、完整性、公司行动口径或生产 SLA。
 
-## Sicherheit
+## RAG 与 Trace
 
-| Schutzmaßnahme | Konfiguration | Schützt |
-|----------------|---------------|---------|
-| **Basic Auth** | `DASHBOARD_USER` + `DASHBOARD_PASSWORD` in `.env` | Dashboard + alle API-Endpoints |
-| **Webhook Secret** | `TELEGRAM_WEBHOOK_SECRET` in `.env` | Telegram-Webhook (Secret im URL-Pfad) |
-| **Chat-ID Filter** | `TELEGRAM_CHAT_ID` in `.env` | Bot antwortet nur auf deine Chat-ID |
-| **timing-safe compare** | `secrets.compare_digest()` | Verhindert Timing-Attacks auf Passwort |
+RAG 支持 `txt`、`md`、`csv`、`pdf`，并包含文档版本、checksum、发布状态、有效期和权限组。检索顺序为 metadata/权限/时间过滤、BM25+dense、RRF、可选 reranker 和去重。
 
-- Auth-Middleware in `middleware/auth.py` (Starlette BaseHTTPMiddleware)
-- Ausgenommen: `/health` (Cloud Run Health Check), `/api/telegram/webhook/{secret}`
-- Ohne `DASHBOARD_USER`/`DASHBOARD_PASSWORD` → kein Passwortschutz (z.B. lokal)
+sentence-transformers 或 FAISS 不可用时，系统使用确定性 hashing embedding 和 NumPy 检索，并在能力边界内继续运行。没有可用文档时返回 `evidence_insufficient=true`。
 
-## Cloud Run Deployment
+LLM Trace 保存 Prompt 版本、Provider、模型、输入哈希、证据 ID、校验状态、延迟和 fallback 状态。当前 Trace 仍存储在 SQLite。
 
-### Service (Dashboard + Webhook)
-```
-Docker Image (python:3.12-slim, 1 Worker)
-  ├── App-Code + SQLite DB
-  ├── cache/ (Stale Cache Fallback)
-  └── Env-Vars (API Keys, OAuth2 Tokens, Auth)
+## 回测边界
 
-Konfiguration:
-  Memory:        1 Gi (min. für pandas/yfinance)
-  CPU:           1 + CPU Boost
-  Min Instances: 0 (Scale to Zero)
-  Max Instances: 1
-  Region:        europe-west1
-  CPU Throttling: Aus (--no-cpu-throttling)
-```
+`backtest/strategy_backtester.py` 已实现按再平衡日滚动估计、训练区间检查、交易成本、滑点和 OOS 区间报告。它仍不是生产级严格 point-in-time walk-forward 系统：缺少交易所日历、逐时点可得性数据库、完整公司行动/退市处理、不可变数据版本以及历史 LLM snapshot 的持续采集。
 
-### Keep-Alive (Cloud Scheduler)
-```
-Job:      portfoliopilot-keepalive
-Schedule: */10 8-22 * * 1-5 (alle 10min, Mo-Fr 08-22 CET)
-Target:   GET /health
-Zweck:    Hält den Container wach damit APScheduler
-          (Reports, Intraday-Updates) zuverlässig läuft.
-Kosten:   0 €/Monat (Free Tier: 3 Jobs kostenlos)
-```
+没有本地价格 CSV 时，CLI 可以生成固定种子的 mock 行情，报告必须标记 `mock_price_data_used=true`。机构研究结论不得使用 mock 报告。
 
-### Job (tägliche Analyse + Telegram Report)
-```
-Docker Image (Dockerfile.job, python:3.12-slim)
-  └── CMD: python run_job.py
+## 可选扩展
 
-Ablauf:
-  1. Full Refresh (Parqet, FMP, yfinance, Technicals, Scoring)
-  2. Daten-Validierung (Positionen + Scores vorhanden?)
-  3. Gemini AI Research → Telegram Report
+以下能力保留但默认关闭：
 
-Trigger: Cloud Scheduler → 15:45 CET täglich
-Kosten:  0 €/Monat (Free Tier)
-```
+| 扩展 | 开关 | 默认值 |
+|---|---|---|
+| Polymarket 示例资产处理 | `ENABLE_POLYMARKET` | `false` |
+| Telegram 报告与 Webhook | `ENABLE_TELEGRAM` | `false` |
+| Parqet OAuth/持仓同步 | `ENABLE_PARQET` | `false` |
+| Shadow Agent 模拟组合 | `ENABLE_SHADOW_AGENT` | `false` |
 
-### Scheduler (APScheduler)
+关闭扩展不会影响 CSV 导入、A 股/美股风险分析、RAG、结构化 LLM 分析和回测命令。Shadow Agent 只处理模拟资金，开启后仍不连接券商。
 
-| Job | Zeit | Funktion |
-|-----|------|----------|
-| Full Analyse | 16:15 CET | Refresh + Scoring + AI Report |
-| Shadow Agent | Mo-Fr 17:00 CET | Autonomer Paper-Trading-Zyklus (Gemini Pro) |
-| News-Kurator | Mo-Fr 09, 13, 17, 21 | Proaktive Portfolio-News-Alerts |
-| Intraday Kurse | alle 15min Mo-Fr 8-22h | yFinance Batch |
-| Weekly Digest | Freitag 22:30 | KI-Zusammenfassung |
-| Cloud Run Job | 15:45 CET (Cloud Scheduler) | Full Refresh → Telegram Report |
+## CI 与部署
 
-> **Wichtig:** Der APScheduler läuft in-process im Cloud Run Container. Ohne den `portfoliopilot-keepalive` Cloud Scheduler Job würde der Container bei Inaktivität abschalten und alle geplanten Jobs stoppen.
+`.github/workflows/ci.yml` 在 `main` 的 push 和 pull request 上执行：
 
-## Shadow Portfolio Agent
+1. `ruff check .`
+2. `mypy`
+3. pytest 与 coverage report
+4. Docker image build
 
-Autonomer AI-Agent der ein fiktives Paper-Trading-Portfolio verwaltet:
+`.github/workflows/deploy.yml` 不再包含个人 GCP 项目、旧项目名或旧集成 Secret。Cloud Run 项目、区域、Workload Identity Provider 和 Service Account 由 GitHub Variables 提供；默认部署只启用核心平台。
 
-```
-Perception → Echtes Portfolio + Marktdaten + Shadow-State lesen
-     ↓
-Reasoning  → Gemini 2.5 Pro (Function Calling) evaluiert Kandidaten
-     ↓
-Action     → Fiktive Trades in Shadow-DB ausführen (Buy/Sell/Hold)
-     ↓
-Reporting  → Performance-Tracking, Decision-Log, Telegram-Report
-```
+## 已知限制
 
-### Shadow SQLite-Schema (6 Tabellen)
-
-| Tabelle | Beschreibung |
-|---------|-------------|
-| `shadow_portfolio` | Aktuelle Positionen (Ticker, Shares, Avg Cost, Sektor) |
-| `shadow_transactions` | Kauf-/Verkaufshistorie mit AI-Begründung |
-| `shadow_performance` | Tägliche Performance-Snapshots (Shadow vs. Real) |
-| `shadow_decision_log` | AI-Entscheidungsprotokolle pro Zyklus |
-| `shadow_meta` | Key-Value Store (Init-Status, Cash, Startkapital) |
-| Config (in shadow_meta) | JSON-gespeicherte Agenten-Regeln (Strategy, Limits) |
-
-### Agenten-Regeln (konfigurierbar)
-- Max 20 Positionen, Max 10% Gewichtung/Position
-- Min 5% Cash-Reserve, Min 500 EUR Trade-Volumen
-- Max 3 Trades/Zyklus, Max 35% Sektor-Konzentration
-- 3 Strategie-Modi: Conservative, Balanced, Aggressive
-
-### Shadow API (`routes/shadow_portfolio.py`)
-8 Endpoints für Dashboard-Integration: Portfolio-Stand, Agent-Run, Transactions, Performance, Decision-Log, Reset, Config (GET/POST).
+完整限制和 mock/fallback 触发条件见 [current-limitations.md](current-limitations.md)。

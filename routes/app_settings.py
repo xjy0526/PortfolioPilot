@@ -71,8 +71,11 @@ def _public_settings() -> dict[str, Any]:
         "app_mode": settings.APP_MODE,
         "feature_flags": {
             "tech_picks": not settings.fund_research_mode,
-            "shadow_agent": not settings.fund_research_mode,
+            "shadow_agent": settings.shadow_agent_enabled,
             "trade_advisor": not settings.fund_research_mode,
+            "polymarket": settings.ENABLE_POLYMARKET,
+            "telegram": settings.ENABLE_TELEGRAM,
+            "parqet": settings.ENABLE_PARQET,
         },
         "contact_email": settings.CONTACT_EMAIL,
         "qwen_configured": bool(settings.QWEN_API_KEY),

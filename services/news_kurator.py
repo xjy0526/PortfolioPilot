@@ -12,10 +12,11 @@ Structured Output garantiert valides JSON von Gemini.
 """
 import json
 import logging
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
 from config import settings
+from time_utils import display_now
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ async def _fetch_news_alerts(tickers: list[str]) -> dict:
     client = get_client()
 
     ticker_list = ", ".join(tickers[:20])  # Max 20 Ticker
-    today_str = datetime.now().strftime("%d.%m.%Y")
+    today_str = display_now().strftime("%d.%m.%Y")
 
     prompt = (
         f"Datum heute: {today_str}\n\n"
@@ -259,7 +260,7 @@ def _format_alerts(alerts: list[dict], market_mood: str) -> str:
         "sonstiges": "📰",
     }
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = display_now().strftime("%d.%m.%Y %H:%M")
     lines = [
         "📡 *PortfolioPilot News-Alert*",
         f"_{now}_\n",

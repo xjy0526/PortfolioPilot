@@ -24,6 +24,8 @@ from state import YFINANCE_ALIASES
 
 import yfinance as yf
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +54,7 @@ async def load_position_data(
     if pos.ticker == "CASH":
         return StockFullData(position=pos, data_sources=DataSourceStatus(parqet=True))
 
-    if pos.asset_type == "prediction_market":
+    if pos.asset_type == "prediction_market" and settings.ENABLE_POLYMARKET:
         return _build_prediction_market_position(pos)
 
     ds = DataSourceStatus(fear_greed=fear_greed_data is not None)

@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -33,6 +33,8 @@ from routes.knowledge import router as knowledge_router
 from routes.prompts import router as prompts_router
 from routes.workflows import router as workflows_router
 from routes.evaluation import router as evaluation_router
+from app.api.health import router as health_router
+from app.db.session import dispose_async_engine, get_db_session
 
 # Structured Logging (JSON in production, colored console in dev)
 setup_logging(settings.ENVIRONMENT)
@@ -98,13 +100,14 @@ async def lifespan(app: FastAPI):
     # Verwaiste Dateien aus JSON→SQLite Migration aufräumen
     CacheManager.cleanup_stale_files()
 
-    # JSON → SQLite Migration (einmalig, idempotent)
+    # Legacy SQLite remains readable during the incremental migration. Schema
+    # initialization is explicit at startup, never a module-import side effect.
     try:
-        from database import migrate_json_to_sqlite
-        # Ausführen im Thread-Pool, da dies synchron den Event-Loop blockieren kann
+        from database import init_db, migrate_json_to_sqlite
+        await asyncio.to_thread(init_db)
         await asyncio.to_thread(migrate_json_to_sqlite)
     except Exception as e:
-        logger.debug(f"JSON-Migration übersprungen: {e}")
+        logger.debug(f"Legacy SQLite initialization skipped: {e}")
 
     # Fast startup: Parqet positions first, then yFinance prices
     _startup_done = asyncio.Event()
@@ -237,7 +240,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Shadow Agent Zyklus fehlgeschlagen: {e}")
 
-        if settings.gemini_configured and not settings.fund_research_mode:
+        if settings.ai_configured and settings.shadow_agent_enabled:
             scheduler.add_job(
                 _run_shadow_agent, "cron",
                 hour=17, minute=0,
@@ -260,7 +263,7 @@ async def lifespan(app: FastAPI):
                     service_url = os.getenv("CLOUD_RUN_URL", "").rstrip("/")
                     if not service_url:
                         k_service = os.getenv("K_SERVICE", "")
-                        k_region = os.getenv("CLOUD_RUN_REGION", settings.GCP_LOCATION)
+                        k_region = os.getenv("CLOUD_RUN_REGION", "asia-east1")
                         project_number = os.getenv("GOOGLE_CLOUD_PROJECT_NUMBER", "")
                         if k_service and project_number:
                             service_url = f"https://{k_service}-{project_number}.{k_region}.run.app"
@@ -320,7 +323,8 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(yf_streamer.stop(), timeout=3.0)
     except Exception as e:
         logger.debug(f"yFinance WS Shutdown ignoriert: {e}")
-        
+
+    await dispose_async_engine()
     logger.info("PortfolioPilot beendet.")
 
 
@@ -330,6 +334,7 @@ app = FastAPI(
     description="Aktienportfolio Dashboard & Advisor",
     version="1.0.0",
     lifespan=lifespan,
+    dependencies=[Depends(get_db_session)],
 )
 
 # GZip-Kompression für alle Responses (>500 Bytes)
@@ -366,6 +371,7 @@ app.include_router(knowledge_router)
 app.include_router(prompts_router)
 app.include_router(workflows_router)
 app.include_router(evaluation_router)
+app.include_router(health_router)
 
 
 # Health Check (für Cloud Run Startup/Liveness Probes)

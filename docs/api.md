@@ -2,6 +2,14 @@
 
 Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), sofern nicht anders angegeben.
 
+## Health (`app/api/health.py`)
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/health` | 旧版兼容健康检查 |
+| GET | `/health/live` | 仅检查 FastAPI 进程存活，不查询外部依赖 |
+| GET | `/health/ready` | 通过 Repository 执行 PostgreSQL readiness 查询；不可用时返回 503 |
+
 ## Portfolio (`routes/portfolio.py`)
 
 | Methode | Pfad | Beschreibung |

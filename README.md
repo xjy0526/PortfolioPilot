@@ -1,24 +1,37 @@
 # PortfolioPilot
 
-PortfolioPilot 是一个基于 FastAPI、SQLite 和原生 Web 前端的双模式投资组合研究平台：
+PortfolioPilot 是一个面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台。当前版本基于 FastAPI、PostgreSQL 数据库基础、SQLite 兼容读取和原生 Web 前端，并提供两种使用模式：
 
-- `personal`：个人投资组合看板，保留 Tech Picks、Shadow Agent 和个人研究辅助功能。
-- `fund_research`：面向公募基金投研流程，隐藏交易化入口，使用中性研究表达，并提供知识治理、Prompt 治理、模型 Trace、受控报告工作流和 point-in-time 回测。
+- `personal`：个人投资组合看板和研究辅助功能。
+- `fund_research`：面向受控投研流程，使用中性研究表达，并提供知识治理、Prompt 治理、模型 Trace 和人工审核工作流。
 
-项目支持全球股票、中国 A 股和模拟的 Polymarket 持仓。所有分析与报告仅用于研究和软件演示，不构成投资建议、交易指令或收益承诺；受控 Agent Workflow 不执行真实交易。
+核心链路聚焦 A 股、美股和 ETF。Polymarket、Telegram、Parqet 与 Shadow Agent 作为可选扩展保留且默认关闭。所有分析与报告仅用于研究和软件演示，不构成投资建议、交易指令或收益承诺。
+
+## 项目导览
+
+**核心定位：** PortfolioPilot 的重点不是“让 LLM 推荐股票”，而是把多市场持仓、确定性风险计算、证据检索、结构化生成、人工审核和评测组织成一条可追溯的研究链路。
+
+**快速体验：**
+
+1. 导入示例组合，查看收益、波动、回撤和行情覆盖率。
+2. 切换到 `fund_research`，运行一份受控研究报告。
+3. 从报告引用回看知识片段、Prompt 版本和模型 Trace。
+4. 展示人工审核与发布状态，再打开 Evaluation 页面说明如何定位 badcase。
+
+**设计主线：** 数据质量 -> 确定性风险计算 -> Hybrid RAG -> 结构化输出校验 -> Human-in-the-loop。项目可在无真实账户和付费模型时离线演示，但所有 mock/fallback 都必须显式标记。
 
 ## 核心能力
 
 | 领域 | 当前能力 |
 |---|---|
-| 组合数据 | CSV 导入、全球股票/A 股/预测市场持仓、币种与行业字段 |
+| 组合数据 | CSV 导入、A 股/美股/ETF 持仓、币种与行业字段 |
 | 风险分析 | 复权历史行情、收益/波动/回撤/Sharpe、覆盖率、陈旧与缺失行情语义 |
 | 知识库 | `txt/md/csv/pdf` 接入、版本、checksum 去重、发布/失效、权限与有效期过滤 |
 | 检索 | Query intent、metadata/permission/temporal filter、BM25、dense、RRF、可插拔 reranker |
 | LLM | Provider 抽象、Prompt Registry、严格 Pydantic 输出、ticker/引用/数字一致性校验 |
 | Workflow | 固定节点、工具 allowlist、幂等运行、人工审核、规则校验、审计记录、受控发布 |
 | Evaluation | Retrieval、Generation、Workflow 三层评测，Trace、badcase 与前端指标页面 |
-| 回测 | Point-in-time Walk-Forward、成本/滑点、基准、主动风险、压力测试与泄漏检查 |
+| 回测 | 基础滚动窗口/OOS 比较、成本/滑点、基准、主动风险和压力测试；尚非生产级 point-in-time 系统 |
 
 ## 快速开始
 
@@ -31,6 +44,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+docker compose up -d postgres
+alembic upgrade head
 python3 main.py
 ```
 
@@ -41,6 +56,8 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
+docker compose up -d postgres
+alembic upgrade head
 python main.py
 ```
 
@@ -48,9 +65,39 @@ python main.py
 
 - Dashboard：<http://localhost:8000>
 - Swagger API：<http://localhost:8000/docs>
-- 健康检查：<http://localhost:8000/health>
+- 兼容健康检查：<http://localhost:8000/health>
+- 存活检查：<http://localhost:8000/health/live>
+- PostgreSQL 就绪检查：<http://localhost:8000/health/ready>
 
 未配置模型 API Key 时，项目仍可通过安全 fallback、hashing retrieval 和可复现 mock 行情运行。fallback 结果不会冒充真实模型或真实历史策略。
+
+## PostgreSQL 数据库基础
+
+PR-1 新增 PostgreSQL 16、pgvector、SQLAlchemy 2.x Async ORM、asyncpg 和 Alembic。启动数据库并应用 migration：
+
+```bash
+docker compose up -d postgres
+alembic upgrade head
+```
+
+默认连接配置：
+
+```env
+DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot
+```
+
+首批表包括 `users`、`portfolios`、`securities`、`provider_symbols`、`transactions`、`price_bars`、`fx_rates`、`position_snapshots`、`sync_runs` 和 `risk_runs`。表结构只允许通过 Alembic 变更，应用 import 和 startup 都不会调用 `Base.metadata.create_all()`。
+
+每个 FastAPI 请求和每个 Worker 任务使用独立 `AsyncSession`。Repository 负责数据访问，Session 的事务边界由请求或 Worker unit of work 管理。
+
+旧 SQLite 数据库继续提供兼容读取。应用 migration 后可以显式迁移支持的数据：
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py \
+  --sqlite-path cache/portfoliopilot.db
+```
+
+脚本当前幂等迁移旧组合总览快照和可选 Shadow 模拟交易；知识库、Prompt、Workflow 等 SQLite 数据将在后续阶段按独立数据契约迁移。
 
 ## 应用模式
 
@@ -65,13 +112,26 @@ APP_MODE=personal
 |---|:---:|:---:|
 | 个人组合分析 | ✓ | ✓ |
 | Tech Picks | ✓ | 隐藏 |
-| Shadow Agent | ✓，仅模拟 | 禁用入口与定时运行 |
+| Shadow Agent | 默认关闭，可选模拟扩展 | 禁用入口与定时运行 |
 | 自动交易类入口 | 保留原个人功能 | 隐藏 |
 | 中性研究表达 | 部分 | 强制 |
 | 受控研究报告 Workflow | ✓ | ✓，推荐流程 |
 | 当前模式标识 | ✓ | ✓ |
 
 `fund_research` 中的建议会表述为“研究关注”“维持观察”“降低风险暴露”“人工复核”等，不提供 Buy/Sell 式执行指令。
+
+## 可选扩展
+
+以下扩展默认关闭，需要在 `.env` 中显式启用：
+
+```env
+ENABLE_POLYMARKET=false
+ENABLE_TELEGRAM=false
+ENABLE_PARQET=false
+ENABLE_SHADOW_AGENT=false
+```
+
+关闭扩展不影响 CSV 导入、A 股/美股风险分析、RAG、结构化 LLM 分析和回测命令。
 
 ## AI Provider 配置
 
@@ -281,7 +341,7 @@ curl -X POST http://localhost:8000/api/reviews/<review_id>/approve \
 
 也可使用 `/reject` 或 `/request-changes`。报告发布前必须通过数值、引用、权限和禁用表达检查。LLM 不能跳过规则检查或人工审核，工具 allowlist 不包含 Shadow Trading 或真实交易工具。
 
-## Point-in-time Walk-Forward 回测
+## 策略回测（研究演示）
 
 ```bash
 python -m backtest.run_backtest \
@@ -296,7 +356,7 @@ python -m backtest.run_backtest \
   --turnover-limit 1.0
 ```
 
-每个调仓日只能使用此前数据估计收益、协方差和风险标签，并保存训练区间、输入哈希和权重快照。报告默认写入 `cache/backtest_report.json`，包含：
+当前实现按再平衡日使用此前窗口估计收益、协方差和风险标签，并保存训练区间、输入哈希和权重快照。报告默认写入 `cache/backtest_report.json`，包含：
 
 - 方法论、训练/持有窗口、调仓日期、成本假设和置信区间；
 - benchmark return、active return、tracking error、information ratio、beta、alpha；
@@ -305,6 +365,8 @@ python -m backtest.run_backtest \
 - `out_of_sample` 与 `data_leakage_checks`。
 
 没有逐时点 Prompt、evidence 和 model snapshot 时，只允许运行 `rule_risk_adjusted`；`llm_historical_adjusted` 会拒绝缺少历史快照的请求。未提供价格 CSV 时会使用固定种子的 mock 行情，并在报告中明确标记。
+
+该模块尚不是生产级严格 point-in-time walk-forward 系统，具体边界见 [当前限制](docs/current-limitations.md)。
 
 ## Evaluation 与 Trace 页面
 
@@ -341,6 +403,8 @@ GET /api/evaluation/traces
 
 ```bash
 pytest -q
+TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
+  pytest -m postgres -q
 python -m compileall -q analytics backtest evaluation prompts rag routes services workflows
 node --check static/app.js
 pip check
@@ -353,7 +417,7 @@ pip check
 仓库包含 [Dockerfile](Dockerfile) 和 [render.yaml](render.yaml)。使用 Render Blueprint 时建议：
 
 1. 连接 GitHub 仓库并读取 `render.yaml`；
-2. 配置 `QWEN_API_KEY`、`FMP_API_KEY`、`DASHBOARD_USER` 和 `DASHBOARD_PASSWORD`；
+2. 配置托管 PostgreSQL 的 `DATABASE_URL`，并设置 `QWEN_API_KEY`、`FMP_API_KEY`、`DASHBOARD_USER` 和 `DASHBOARD_PASSWORD`；
 3. 将 Persistent Disk 挂载到 `/app/cache`；
 4. 将真实组合、SQLite、行情和运行报告保存在持久化目录；
 5. 生产环境使用受信任的权限主体生成知识库 permission groups。
@@ -366,7 +430,8 @@ pip check
 - 不要提交真实持仓、内部研报、实习单位文件、API Key 或客户数据。
 - `cache/`、`portfolio.csv`、`rag_documents/` 和 `.env` 默认不进入 Git。
 - Knowledge API 中客户端传入的权限组仅适合本地开发；生产环境必须由认证网关注入可信权限上下文。
-- Shadow Agent 仅为 `personal` 模式下的模拟能力，不连接券商，也不属于受控研究报告 Workflow。
+- Shadow Agent 是默认关闭的模拟扩展，不连接券商，也不属于受控研究报告 Workflow。
+- SQLite、行情许可、回测和 fallback 边界见 [docs/current-limitations.md](docs/current-limitations.md)。
 - 机构差距与整改状态见 [docs/audits/institutional_gap_analysis.md](docs/audits/institutional_gap_analysis.md)。
 - 完整 API 列表见 [docs/api.md](docs/api.md)。
 
@@ -374,13 +439,19 @@ pip check
 
 ```text
 analytics/             风险与组合指标
-backtest/              Walk-Forward 回测与报告
+app/db/                SQLAlchemy Async ORM、Session 和 Repository
+app/api/               新增 API 路由与依赖
+app/workers/           Worker 独立 Session 边界
+backtest/              策略比较与研究演示报告
 evaluation/            Retrieval / Generation / Workflow 评测
 portfolio_optimizer/   组合权重研究策略
 prompts/               Prompt 模型、Registry 与输出契约
 rag/                   文档、版本、解析、检索与权限过滤
 routes/                FastAPI 路由
-services/llm/          Provider 抽象与兼容层
+migrations/            Alembic async migration 环境与版本
+scripts/               SQLite 兼容迁移等运维入口
+services/llm_client.py Qwen/OpenAI-Compatible 中立客户端
+services/llm/          结构化 Provider 与旧调用兼容层
 services/market_data/  历史价格 Provider 与统一服务
 static/                Dashboard 前端
 workflows/             受控研究报告状态机

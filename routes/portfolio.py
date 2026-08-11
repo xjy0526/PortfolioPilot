@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from state import portfolio_data
 from config import settings
 from models import PortfolioSummary, SectorAllocation
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +388,7 @@ async def delete_csv_position_route(ticker: str):
     else:
         portfolio_data["summary"] = PortfolioSummary(display_currency="USD")
         portfolio_data["source"] = "csv"
-        portfolio_data["last_refresh"] = datetime.now()
+        portfolio_data["last_refresh"] = utc_now()
 
     return {
         "status": "ok",
