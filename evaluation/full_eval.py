@@ -11,7 +11,7 @@ from evaluation.llm_eval import run_llm_evaluation_sync
 from evaluation.retrieval_eval import run_retrieval_evaluation
 from prompts.registry import PromptRegistry
 from rag.parsers import parse_document, structured_chunks
-from workflows.research_report import ALLOWLISTED_TOOLS
+from workflows.research_report import ALLOWLISTED_TOOLS, ensure_workflow_schema
 
 
 BADCASE_LABELS = (
@@ -99,6 +99,7 @@ def evaluation_dashboard(limit: int = 100) -> dict[str, Any]:
 
 def _workflow_metrics() -> dict[str, Any]:
     conn = _get_conn()
+    ensure_workflow_schema(conn)
     completed_steps = conn.execute("SELECT COUNT(*) FROM workflow_steps WHERE status='COMPLETED'").fetchone()[0]
     total_steps = conn.execute("SELECT COUNT(*) FROM workflow_steps").fetchone()[0]
     step_rows = conn.execute("SELECT step_name, status FROM workflow_steps").fetchall()

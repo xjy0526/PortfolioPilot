@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+import evaluation.full_eval as full_eval_module
 from evaluation.full_eval import BADCASE_LABELS, run_full_evaluation
 from prompts.registry import PromptRegistry
 from services.financial_analysis import analyze_portfolio_with_llm
@@ -24,6 +25,25 @@ def test_full_evaluation_has_three_layers_golden_sets_and_badcase_taxonomy(tmp_p
     assert set(report["test_sets"]["chunk_statistics"]) == {"zh", "en"}
     assert set(report["badcase_distribution"]) == set(BADCASE_LABELS)
     assert all("expected_evidence" in case and "expected_decision" in case for case in report["layers"]["retrieval"]["cases"])
+
+
+def test_workflow_metrics_initialize_a_fresh_legacy_sqlite_schema(monkeypatch):
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    monkeypatch.setattr(full_eval_module, "_get_conn", lambda: connection)
+
+    result = full_eval_module._workflow_metrics()
+
+    assert result["run_count"] == 0
+    assert result["metrics"]["failure_rate"] == 0.0
+    tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert {"workflow_runs", "workflow_steps", "review_tasks"}.issubset(tables)
+    connection.close()
 
 
 @pytest.mark.asyncio
