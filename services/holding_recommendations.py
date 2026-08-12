@@ -324,7 +324,9 @@ async def _call_qwen_for_holding_recommendations(base_report: dict[str, Any], la
         f"Create portfolio-level holding recommendations in {language}. "
         "Use the provided rule-based baseline as the source of truth. "
         "Do not invent new tickers. Keep every holding in the recommendations array. "
-        "You may improve rationale, risk wording, summary and key actions, but keep numeric fields realistic.\n\n"
+        "You may improve rationale, risk wording, summary and key actions. "
+        "Deterministic rules own all target_weight_pct values: repeat them unchanged and never "
+        "calculate or modify allocation weights.\n\n"
         f"Baseline JSON:\n{json.dumps(base_report, ensure_ascii=False)}"
     )
 
@@ -361,7 +363,7 @@ def _normalize_ai_report(ai_report: dict[str, Any], base_report: dict[str, Any],
     for base_item in base_report.get("recommendations", []):
         ai_item = next((item for item in ai_recs if item.get("ticker") == base_item["ticker"]), {})
         merged = dict(base_item)
-        for key in ("action", "priority", "confidence", "target_weight_pct", "rationale", "risk"):
+        for key in ("rationale", "risk"):
             if key in ai_item and ai_item[key] not in (None, ""):
                 merged[key] = ai_item[key]
         normalized_recs.append(merged)
@@ -369,12 +371,13 @@ def _normalize_ai_report(ai_report: dict[str, Any], base_report: dict[str, Any],
     result = dict(base_report)
     result.update({
         "summary": ai_report.get("summary") or base_report["summary"],
-        "portfolio_score": ai_report.get("portfolio_score", base_report["portfolio_score"]),
-        "portfolio_view": ai_report.get("portfolio_view") or base_report["portfolio_view"],
+        "portfolio_score": base_report["portfolio_score"],
+        "portfolio_view": base_report["portfolio_view"],
         "key_actions": ai_report.get("key_actions") or base_report["key_actions"],
         "risk_warnings": ai_report.get("risk_warnings") or base_report["risk_warnings"],
         "recommendations": normalized_recs,
         "next_review": ai_report.get("next_review") or _txt(lang, "next_review"),
+        "target_weight_owner": "deterministic_rules",
     })
     missing = set(base_by_ticker) - {item["ticker"] for item in normalized_recs}
     if missing:

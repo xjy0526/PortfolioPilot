@@ -58,7 +58,9 @@ def run_retrieval_evaluation(
                 f"recall_at_{top_k}": _average(ranking_cases, "recall_at_k"),
                 f"precision_at_{top_k}": _average(ranking_cases, "precision_at_k"),
                 "mrr": _average(ranking_cases, "reciprocal_rank"),
-                "citation_hit_rate": _ratio(case_results, "valid_citation_count", "retrieved_count"),
+                "citation_reference_validity": _ratio(
+                    case_results, "valid_citation_count", "retrieved_count"
+                ),
                 "expired_document_hit_rate": _ratio(case_results, "expired_hit_count", "retrieved_count"),
                 "unauthorized_document_hit_count": sum(item["unauthorized_hit_count"] for item in case_results),
             },

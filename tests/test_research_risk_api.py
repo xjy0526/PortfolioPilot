@@ -105,3 +105,17 @@ def test_ai_analysis_api_embeds_same_risk_schema(monkeypatch):
     assert risk["portfolio_metrics"]["sharpe_ratio"] is not None
     assert risk["metric_status"]["sharpe_ratio"] == "valid"
     assert risk["data_quality"]["source"] == "test_adjusted_close"
+
+
+def test_rebalance_api_uses_deterministic_optimizer_only(monkeypatch):
+    app = _app(monkeypatch)
+
+    response = TestClient(app).get("/api/portfolio/rebalance")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["llm_used"] is False
+    assert payload["allocation_research"]["method"] == "deterministic_inverse_volatility"
+    assert payload["allocation_research"]["target_weight_owner"] == "deterministic_optimizer"
+    assert payload["rebalance"] == payload["allocation_research"]
+    assert "rebalance" in payload["deprecated_fields"]

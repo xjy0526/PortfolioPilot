@@ -32,7 +32,7 @@ PortfolioPilot 是一个面向 A 股与美股的多市场投资组合风险分�
 | LLM | Provider 抽象、Prompt Registry、严格 Pydantic 输出、ticker/引用/数字一致性校验 |
 | Workflow | 固定节点、工具 allowlist、幂等运行、人工审核、规则校验、审计记录、受控发布 |
 | Evaluation | Retrieval、Generation、Workflow 三层评测，Trace、badcase 与前端指标页面 |
-| 回测 | 基础滚动窗口/OOS 比较、成本/滑点、基准、主动风险和压力测试；尚非生产级 point-in-time 系统 |
+| 回测 | t-1 估计/t 收盘成交/t+1 生效、逐日漂移、成本、可用性矩阵、Benchmark 与 PostgreSQL provenance；尚非生产级完整 walk-forward 系统 |
 
 ## 快速开始
 
@@ -419,7 +419,15 @@ python -m backtest.run_backtest \
   --turnover-limit 1.0
 ```
 
-当前实现按再平衡日使用此前窗口估计收益、协方差和风险标签，并保存训练区间、输入哈希和权重快照。报告默认写入 `cache/backtest_report.json`，包含：
+第一版成交口径固定为：`t-1` 收盘后仅使用当时可得数据估计权重，订单在 `t` 收盘成交，新权重从 `t+1` 的收盘到收盘收益开始生效。报告的 `execution_convention` 保存该口径，新权重不会取得成交前或成交日已经发生的收益。
+
+引擎逐日更新 NAV 与漂移权重。报告中的 `turnover` 比较 `pre_trade_weights` 与 `target_weights`；`executed_turnover` 比较成交前与实际成交权重，并作为成本计提依据。每次调仓保存 `pre_trade_weights`、`target_weights`、`executed_weights`、下一有效收益日的 `post_return_weights`、两种换手率和 `costs`。策略名称严格区分：
+
+- `buy_and_hold`：初始持仓随收益漂移，不做周期调仓；
+- `periodic_rebalanced_original`：周期恢复原始配比，属于 constant-mix，不称为 buy-and-hold；
+- `equal_weight`、`risk_parity`、`minimum_variance`、`mean_variance`：确定性优化策略。
+
+报告默认写入 `cache/backtest_report.json`，还包含：
 
 - 方法论、训练/持有窗口、调仓日期、成本假设和置信区间；
 - benchmark return、active return、tracking error、information ratio、beta、alpha；
@@ -427,7 +435,19 @@ python -m backtest.run_backtest \
 - 股票市场、科技行业、利率和汇率压力情景；
 - `out_of_sample` 与 `data_leakage_checks`。
 
-没有逐时点 Prompt、evidence 和 model snapshot 时，只允许运行 `rule_risk_adjusted`；`llm_historical_adjusted` 会拒绝缺少历史快照的请求。未提供价格 CSV 时会使用固定种子的 mock 行情，并在报告中明确标记。
+缺失行情不会无条件当作 0 收益。长表价格 CSV 可增加 `availability_status`，取值包括 `observed`、`exchange_closed`、`suspended`、`data_missing`、`not_listed`。只有明确的休市或停牌可合法持价，收益率本身不前向填充；覆盖率不足的资产会记录在每个调仓日的 `excluded_assets`，并退出协方差估计。Benchmark 采用同一日期对齐，覆盖不足时相关指标返回 `null`。
+
+LLM 不参与目标权重计算。`/api/portfolio/rebalance` 返回确定性的 allocation research；LLM 只通过 `research_observations` 和 `review_priorities` 解释风险与证据，旧 `rebalance_suggestions` 保留为空数组并标记 deprecated。未提供价格 CSV 时使用固定种子的 mock 行情，并明确标记 `mock_price_data_used=true` 与 `run_mode=synthetic_smoke`。
+
+显式持久化回测 provenance：
+
+```bash
+python -m backtest.run_backtest --persist \
+  --portfolio-id <postgres-portfolio-uuid> \
+  --portfolio-snapshot-id <valuation-snapshot-uuid>
+```
+
+`backtest_runs`、`backtest_rebalance_snapshots` 和 `backtest_strategy_results` 保存数据截止时间、代码版本、组合快照、价格来源、配置和输入哈希、成交口径、成本、调仓审计与指标。缓存键由组合快照、价格数据、配置和代码版本共同决定。
 
 该模块尚不是生产级严格 point-in-time walk-forward 系统，具体边界见 [当前限制](docs/current-limitations.md)。
 
@@ -439,21 +459,31 @@ python -m backtest.run_backtest \
 python -m evaluation.run_retrieval_eval
 ```
 
-输出 `cache/retrieval_evaluation_report.json`，包括 Recall@K、Precision@K、MRR、citation hit rate、过期命中率和未授权命中数。
+输出 `cache/retrieval_evaluation_report.json`，包括 Recall@K、Precision@K、MRR、`citation_reference_validity`、过期命中率和未授权命中数。该引用指标只证明引用 Chunk 存在；`claim_support_rate` 另行评估 Claim 是否由引用证据支持。
 
 运行三层完整评测：
 
 ```bash
-python -m evaluation.run_full_eval
+python -m evaluation.run_full_eval --mode synthetic_smoke
+```
+
+CI 只运行可复现的 `synthetic_smoke`。真实 Qwen 评测必须显式运行，且没有 `QWEN_API_KEY` 时直接失败，不会回退到 mock：
+
+```bash
+python -m evaluation.run_full_eval --mode live_model
 ```
 
 输出 `cache/full_evaluation_report.json`，覆盖：
 
 - Retrieval：召回、排序、权限泄漏和过期证据；
 - Generation：JSON、风险识别、数字一致性、Groundedness、引用与幻觉；
-- Workflow：工具调用、规则校验、人工采纳/修改、延迟、成本与失败率；
+- Workflow：`workflow_allowlist_completion_rate`、真实工具调用的 selection/required arguments/argument values/execution success、规则校验、人工采纳/修改、延迟、成本与失败率；
 - 20 条组合风险用例、公开检索 golden set、权限/过期/证据不足/冲突证据；
 - 中英文切片统计及标准 badcase 标签。
+
+评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和 `production_monitoring`。后两类必须接入人工标注或生产观测后才能执行，不能用 mock 冒充。版本化黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，全部为本项目自行构造的公开培训夹具，不包含真实持仓、授权研报或私有数据。
+
+Prompt Registry 当前的 `static_render_success_rate` 和 `static_expected_token_hit_rate` 仅是模板静态检查，不是模型效果 A/B。真实 Prompt A/B 必须使用相同模型、相同测试集、相同温度及其他采样参数。
 
 Dashboard 的 `Eval & Trace` 页面展示 Prompt 版本对比、badcase、延迟/成本和人工采纳率。只读接口包括：
 

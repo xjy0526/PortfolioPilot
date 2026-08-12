@@ -1,4 +1,7 @@
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from evaluation.llm_eval import (
     aggregate_metrics,
@@ -29,7 +32,9 @@ def test_mock_llm_response_is_valid_schema_json():
     assert parsed["portfolio_summary"]
     assert parsed["main_risks"]
     assert parsed["evidence_used"]
-    assert parsed["rebalance_suggestions"]
+    assert parsed["research_observations"]
+    assert parsed["review_priorities"]
+    assert parsed["rebalance_suggestions"] == []
 
 
 def test_run_llm_evaluation_mock_writes_report(tmp_path):
@@ -43,9 +48,11 @@ def test_run_llm_evaluation_mock_writes_report(tmp_path):
     assert saved["metrics"]["json_valid_rate"] == 1.0
     assert saved["metrics"]["risk_detection_rate"] == 1.0
     assert saved["metrics"]["evidence_usage_rate"] == 1.0
-    assert saved["metrics"]["rebalance_explainability_rate"] == 1.0
+    assert saved["metrics"]["review_priority_explainability_rate"] == 1.0
+    assert saved["metrics"]["claim_support_rate"] == 1.0
     assert saved["metrics"]["hallucination_flag_rate"] == 0.0
-    assert report["mode"] == "mock"
+    assert report["mode"] == "synthetic_smoke"
+    assert report["data_classification"] == "synthetic"
 
 
 def test_aggregate_metrics_handles_hallucination_flag_rate():
@@ -54,14 +61,16 @@ def test_aggregate_metrics_handles_hallucination_flag_rate():
             "json_valid": True,
             "risk_detected": True,
             "evidence_used": True,
-            "rebalance_explainable": True,
+            "review_priority_explainable": True,
+            "refusal_correct": True,
             "hallucination_flag": False,
         },
         {
             "json_valid": True,
             "risk_detected": False,
             "evidence_used": False,
-            "rebalance_explainable": False,
+            "review_priority_explainable": False,
+            "refusal_correct": False,
             "hallucination_flag": True,
         },
     ])
@@ -69,3 +78,30 @@ def test_aggregate_metrics_handles_hallucination_flag_rate():
     assert metrics["json_valid_rate"] == 1.0
     assert metrics["risk_detection_rate"] == 0.5
     assert metrics["hallucination_flag_rate"] == 0.5
+    assert metrics["refusal_correct_rate"] == 0.5
+
+
+def test_refusal_correct_is_derived_instead_of_constant():
+    from evaluation.llm_eval import _is_refusal_correct
+
+    assert _is_refusal_correct({}, "refuse_insufficient_evidence") is True
+    assert _is_refusal_correct(
+        {"portfolio_summary": "Evidence proves this outcome."},
+        "refuse_insufficient_evidence",
+    ) is False
+    assert _is_refusal_correct(
+        {"portfolio_summary": "证据不足，无法评估。"},
+        "human_review",
+    ) is False
+
+
+def test_live_model_eval_never_silently_falls_back_to_mock(monkeypatch):
+    import evaluation.llm_eval as module
+
+    monkeypatch.setattr(
+        module,
+        "settings",
+        SimpleNamespace(qwen_configured=False, QWEN_MODEL="qwen-test"),
+    )
+    with pytest.raises(RuntimeError, match="requires an explicit QWEN_API_KEY"):
+        run_llm_evaluation_sync(mode="live_model_eval")

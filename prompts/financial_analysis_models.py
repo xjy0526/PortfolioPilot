@@ -21,6 +21,7 @@ class AssetLevelComment(BaseModel):
 
 
 class RebalanceSuggestion(BaseModel):
+    """Deprecated compatibility shape; it never owns allocation weights."""
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["buy", "hold", "reduce", "watch"]
@@ -32,6 +33,32 @@ class RebalanceSuggestion(BaseModel):
     @classmethod
     def uppercase_ticker(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class ResearchObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str | None = None
+    observation: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("ticker")
+    @classmethod
+    def uppercase_ticker(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+
+class ReviewPriority(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Literal["low", "medium", "high"]
+    ticker: str | None = None
+    reason: str
+
+    @field_validator("ticker")
+    @classmethod
+    def uppercase_ticker(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
 
 
 class EvidenceReference(BaseModel):
@@ -48,7 +75,17 @@ class FinancialAnalysisOutput(BaseModel):
     risk_score: float = Field(ge=1.0, le=10.0)
     main_risks: list[str]
     asset_level_comments: list[AssetLevelComment]
-    rebalance_suggestions: list[RebalanceSuggestion]
+    research_observations: list[ResearchObservation]
+    review_priorities: list[ReviewPriority]
+    rebalance_suggestions: list[RebalanceSuggestion] = Field(
+        default_factory=list,
+        description=(
+            "Deprecated compatibility field. Use research_observations and review_priorities; "
+            "allocation is deterministic."
+        ),
+        json_schema_extra={"deprecated": True},
+    )
+    deprecated_fields: list[str] = Field(default_factory=lambda: ["rebalance_suggestions"])
     evidence_used: list[EvidenceReference]
     disclaimer: str
 
@@ -63,6 +100,26 @@ def validate_financial_analysis_output(
     evidence: list[dict[str, Any]] | None = None,
 ) -> FinancialAnalysisOutput:
     normalized = dict(payload)
+    normalized.setdefault("rebalance_suggestions", [])
+    normalized.setdefault("deprecated_fields", ["rebalance_suggestions"])
+    if "research_observations" not in normalized:
+        normalized["research_observations"] = [
+            {
+                "ticker": item.get("ticker"),
+                "observation": item.get("comment", ""),
+                "evidence_ids": [],
+            }
+            for item in normalized.get("asset_level_comments", [])
+        ]
+    if "review_priorities" not in normalized:
+        normalized["review_priorities"] = [
+            {
+                "priority": "high" if item.get("action") in {"reduce", "watch"} else "medium",
+                "ticker": item.get("ticker"),
+                "reason": item.get("reason", ""),
+            }
+            for item in normalized.get("rebalance_suggestions", [])
+        ]
     normalized["evidence_used"] = [_normalize_reference(item) for item in payload.get("evidence_used", [])]
     output = FinancialAnalysisOutput.model_validate(normalized)
     if portfolio_risk_summary is not None:
@@ -86,7 +143,13 @@ def _normalize_reference(value: Any) -> dict[str, str]:
 def _validate_tickers(output: FinancialAnalysisOutput, summary: dict[str, Any]) -> None:
     allowed = {str(value).upper() for value in (summary.get("asset_metrics") or {}).keys()}
     generated = {
-        item.ticker for item in [*output.asset_level_comments, *output.rebalance_suggestions]
+        item.ticker
+        for item in [
+            *output.asset_level_comments,
+            *output.research_observations,
+            *output.review_priorities,
+            *output.rebalance_suggestions,
+        ]
         if item.ticker
     }
     unknown = sorted(generated - allowed)
@@ -119,6 +182,8 @@ def _validate_financial_numbers(output: FinancialAnalysisOutput, summary: dict[s
         allowed.add(round(number * 100.0, 6))
     texts = [output.portfolio_summary, output.disclaimer, *output.main_risks]
     texts.extend(item.comment for item in output.asset_level_comments)
+    texts.extend(item.observation for item in output.research_observations)
+    texts.extend(item.reason for item in output.review_priorities)
     texts.extend(item.reason for item in output.rebalance_suggestions)
     ticker_labels = sorted(
         (str(value) for value in (summary.get("asset_metrics") or {}).keys()),

@@ -53,5 +53,8 @@ def test_safe_template_has_required_shape():
 
     assert result["portfolio_summary"]
     assert result["main_risks"]
-    assert result["rebalance_suggestions"][0]["ticker"] == "AAPL"
+    assert result["research_observations"][0]["ticker"] == "AAPL"
+    assert result["review_priorities"][0]["ticker"] == "AAPL"
+    assert result["rebalance_suggestions"] == []
+    assert "rebalance_suggestions" in result["deprecated_fields"]
     assert "投资建议" in result["disclaimer"]

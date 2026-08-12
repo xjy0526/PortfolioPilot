@@ -16,7 +16,8 @@ SYSTEM_INSTRUCTION = (
     "You are a careful buy-side portfolio risk research assistant. "
     "The system only provides research analysis and risk warnings. "
     "It does not provide personalized investment advice, trading instructions, "
-    "or guarantees of future returns. Return only valid JSON."
+    "or guarantees of future returns. Deterministic optimizers alone own target weights. "
+    "Never create or modify target_weight. Return only valid JSON."
 )
 
 DEFAULT_TEMPLATE = """Write the response in {language}.
@@ -32,7 +33,9 @@ Retrieved citation objects:
 Return exactly one JSON object matching the registered output schema.
 Every ticker must come from the portfolio input. Every evidence_used item must contain an exact
 document_id and chunk_id from the retrieved citation objects. Do not introduce financial numbers
-that cannot be mapped to the structured portfolio input. {retry_instruction}"""
+that cannot be mapped to the structured portfolio input. Express interpretation only through
+research_observations and review_priorities. Do not calculate or propose allocation weights.
+The deprecated rebalance_suggestions field must be an empty array. {retry_instruction}"""
 
 INPUT_SCHEMA = {
     "type": "object",
@@ -50,11 +53,20 @@ INPUT_SCHEMA = {
 def ensure_financial_analysis_prompt(registry: PromptRegistry | None = None) -> PromptVersion:
     registry = registry or PromptRegistry()
     published = registry.get_published_by_scene(FINANCIAL_ANALYSIS_SCENE)
-    if published:
+    if published and _has_current_analysis_contract(published.output_schema):
         return published
     existing = registry.get_prompt(FINANCIAL_ANALYSIS_PROMPT_ID)
     if existing:
-        target = registry.get_version(existing.prompt_id, existing.current_version)
+        target = registry.create_version(existing.prompt_id, {
+            "template": DEFAULT_TEMPLATE,
+            "variables": ["language", "portfolio_risk_summary_json", "evidence_text", "retry_instruction"],
+            "input_schema": INPUT_SCHEMA,
+            "output_schema": FINANCIAL_ANALYSIS_JSON_SCHEMA,
+            "model": settings.QWEN_MODEL,
+            "temperature": 0.2,
+            "owner": "Research Platform",
+            "change_log": "Move allocation ownership to deterministic optimizers",
+        })
         assert target is not None
         registry.publish(existing.prompt_id, target.version)
         return registry.get_version(existing.prompt_id, target.version) or target
@@ -73,6 +85,11 @@ def ensure_financial_analysis_prompt(registry: PromptRegistry | None = None) -> 
     })
     registry.publish(version.prompt_id, version.version)
     return registry.get_version(version.prompt_id, version.version) or version
+
+
+def _has_current_analysis_contract(schema: dict[str, Any]) -> bool:
+    properties = schema.get("properties", {})
+    return {"research_observations", "review_priorities"}.issubset(properties)
 
 
 def build_financial_analysis_prompt(

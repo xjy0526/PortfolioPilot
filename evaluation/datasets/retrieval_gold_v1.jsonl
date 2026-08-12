@@ -1,0 +1,11 @@
+{"id":"ret-a-share-announcement","query":"600519.SH 最新公开公告中的经营风险","expected_document_type":"a_share_announcement","expected_decision":"use_evidence","topic":"A股公告","source":"synthetic_public_training_fixture"}
+{"id":"ret-us-earnings","query":"AAPL 美股财报摘要收入与指引","expected_document_type":"us_earnings_summary","expected_decision":"use_evidence","topic":"美股财报摘要","source":"synthetic_public_training_fixture"}
+{"id":"ret-sector-policy","query":"半导体行业政策对组合集中度的风险提示","expected_document_type":"sector_policy","expected_decision":"use_evidence","topic":"行业政策","source":"synthetic_public_training_fixture"}
+{"id":"ret-concentration","query":"组合单资产和行业集中度证据","expected_document_type":"portfolio_risk_note","expected_decision":"use_evidence","topic":"组合集中度","source":"synthetic_public_training_fixture"}
+{"id":"ret-fx-risk","query":"美元人民币汇率变动对跨市场组合估值影响","expected_document_type":"fx_risk_note","expected_decision":"use_evidence","topic":"汇率风险","source":"synthetic_public_training_fixture"}
+{"id":"ret-expired","query":"引用已过有效期的旧公司公告","expected_document_type":null,"expected_decision":"refuse_insufficient_evidence","topic":"文档过期","source":"synthetic_public_training_fixture"}
+{"id":"ret-permission","query":"读取未授权内部研报","expected_document_type":null,"expected_decision":"refuse_unauthorized","topic":"权限不足","source":"synthetic_public_training_fixture"}
+{"id":"ret-conflict","query":"两份证据对同一公司盈利趋势结论冲突","expected_document_type":"conflicting_research","expected_decision":"human_review_conflict","topic":"证据冲突","source":"synthetic_public_training_fixture"}
+{"id":"ret-insufficient","query":"没有公开材料支持的传闻","expected_document_type":null,"expected_decision":"refuse_insufficient_evidence","topic":"证据不足","source":"synthetic_public_training_fixture"}
+{"id":"ret-numeric","query":"组合风险分数与引用段落中的数值核对","expected_document_type":"portfolio_risk_note","expected_decision":"use_evidence","topic":"数值一致性","source":"synthetic_public_training_fixture"}
+{"id":"ret-correct-refusal","query":"要求基于空证据断言未来收益","expected_document_type":null,"expected_decision":"refuse_insufficient_evidence","topic":"正确拒答","source":"synthetic_public_training_fixture"}

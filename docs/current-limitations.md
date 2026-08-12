@@ -12,12 +12,12 @@
 
 ## 2. 当前还不是生产级严格 walk-forward 回测
 
-当前策略回测已经按再平衡日使用此前窗口估计权重，并输出 OOS 区间和 leakage checks，但仍不能按生产级 point-in-time walk-forward 系统宣传，原因包括：
+当前策略回测已经落实 point-in-time 成交边界：仅使用 `t-1` 前数据估计，在 `t` 收盘成交，并从 `t+1` 开始应用新权重；逐日 NAV、权重漂移、换手率、成本和调仓 lineage 均可审计。但仍不能按生产级完整 walk-forward 系统宣传，原因包括：
 
-- 没有交易所交易日历和跨市场统一可交易时点；
-- 没有逐时点行情可得性、公司行动、退市和停牌数据库；
+- 当前支持显式可用性矩阵，但尚未集成完整交易所交易日历和跨市场统一可交易时点；
+- 尚无生产级公司行动、退市和停牌数据库；
 - 输入文件和报告尚未进入不可变对象存储；
-- 历史 Prompt、模型和 evidence snapshot 需要调用方自行提供，尚未持续采集；
+- LLM 已退出权重计算；历史 Prompt、模型和 evidence snapshot 仍需在解释评测中持续采集；
 - 示例 CSV 只适合流程验证，不能代表可交易回测结果。
 
 ## 3. yfinance 仅用于研究演示
@@ -35,6 +35,7 @@ yfinance 是非授权的公开数据接口适配，不提供生产 SLA。它可�
 | 结构化 LLM 分析 | 没有匹配 `AI_PROVIDER` 的 API Key | 使用安全模板或 mock provider，`ai_available=false`，`source=mock/fallback` |
 | LLM 输出校验 | JSON/Schema 校验重试后仍失败 | 返回安全模板，记录失败 Trace 和 fallback 状态 |
 | 回测行情 | 解析后没有可用真实价格 CSV | 生成固定种子 mock 行情，`mock_price_data_used=true`、`data_source=mock_price_data` |
+| 完整模型评测 | 显式使用 `--mode live_model` 且缺少 Qwen Key | 直接失败，不回退 mock，也不生成伪 live 报告 |
 | RAG embedding | sentence-transformers 不可用 | 使用确定性 hashing embedding |
 | RAG 向量索引 | FAISS 不可用 | 使用 NumPy 相似度检索 |
 | RAG evidence | 配置目录无文档时存在仓库示例文档 | 本地演示可读取 `data/research_docs/`；结果仍携带 evidence ID 和来源 |

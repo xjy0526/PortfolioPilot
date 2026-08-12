@@ -34,6 +34,8 @@ app/providers/market_data/  Tushare/yfinance 统一 Provider 合同
 app/services/               账本、导入、持仓重建、估值、兼容适配
 app/workers/                独立 Session、互斥锁和可追踪任务入口
 analytics/                  确定性风险指标
+backtest/                   point-in-time 回测、权重漂移与可用性矩阵
+evaluation/                 分模式评测与版本化公开培训黄金集
 rag/                        当前 SQLite-backed 知识治理与混合检索
 workflows/                  当前 SQLite-backed 受控研究工作流
 migrations/                 PostgreSQL schema 唯一变更入口
@@ -139,3 +141,11 @@ POST /api/market-data/sync
 ## 尚未迁移的数据
 
 知识库、Prompt Registry、LLM Trace、Workflow 审批和部分可选扩展仍使用 SQLite。它们不参与持仓、现金、行情或估值事实计算。完整边界见 [current-limitations.md](current-limitations.md)。
+
+## 回测与 LLM 分工
+
+回测使用 `t-1` 收盘后估计、`t` 收盘成交、`t+1` 收益生效的固定口径。策略逐日按资产收益漂移权重，调仓换手率比较成交前漂移权重与执行权重。价格状态区分 observed、休市、停牌、数据缺失和尚未上市；只有休市和停牌允许持价，收益率不前向填充。
+
+`backtest_runs` 保存数据、代码、配置和组合快照 provenance；`backtest_rebalance_snapshots` 保存每次调仓前后权重、eligible universe、排除原因和成本；`backtest_strategy_results` 保存策略指标与 NAV。相同组合快照、价格数据、配置和代码版本生成相同缓存键。
+
+确定性优化器独占 `target_weight`。LLM 合同只输出 `research_observations` 与 `review_priorities`，旧 `rebalance_suggestions` 仅为 deprecated 兼容字段。评测明确区分 synthetic smoke、live model、human gold 与 production monitoring，CI 不调用真实模型。

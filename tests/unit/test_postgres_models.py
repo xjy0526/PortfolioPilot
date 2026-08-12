@@ -27,6 +27,9 @@ EXPECTED_TABLES = {
     "position_snapshots",
     "sync_runs",
     "risk_runs",
+    "backtest_runs",
+    "backtest_rebalance_snapshots",
+    "backtest_strategy_results",
 }
 
 
@@ -57,6 +60,8 @@ def test_financial_columns_are_numeric_and_never_float():
         "portfolio_valuation_snapshots": {
             "total_market_value", "total_cost_basis", "cash_value", "unrealized_pnl",
         },
+        "backtest_rebalance_snapshots": {"turnover", "executed_turnover"},
+        "backtest_strategy_results": {"turnover", "total_costs"},
     }
     for table_name, column_names in numeric_columns.items():
         table = Base.metadata.tables[table_name]
@@ -84,6 +89,19 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("risk_runs", "config_snapshot"),
         ("risk_runs", "result_snapshot"),
         ("risk_runs", "evidence_ids"),
+        ("backtest_runs", "cost_assumptions"),
+        ("backtest_runs", "config_snapshot"),
+        ("backtest_runs", "output_metrics"),
+        ("backtest_rebalance_snapshots", "eligible_universe"),
+        ("backtest_rebalance_snapshots", "excluded_assets"),
+        ("backtest_rebalance_snapshots", "pre_trade_weights"),
+        ("backtest_rebalance_snapshots", "target_weights"),
+        ("backtest_rebalance_snapshots", "executed_weights"),
+        ("backtest_rebalance_snapshots", "post_return_weights"),
+        ("backtest_rebalance_snapshots", "costs"),
+        ("backtest_strategy_results", "metrics"),
+        ("backtest_strategy_results", "final_weights"),
+        ("backtest_strategy_results", "nav_series"),
     }
     for table_name, column_name in json_columns:
         assert isinstance(Base.metadata.tables[table_name].c[column_name].type, JSONB)

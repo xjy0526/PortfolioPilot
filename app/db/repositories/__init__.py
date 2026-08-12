@@ -1,5 +1,6 @@
 """Repository layer exports."""
 
+from app.db.repositories.backtest import BacktestRunRepository
 from app.db.repositories.health import HealthRepository
 from app.db.repositories.identity import PortfolioRepository, UserRepository
 from app.db.repositories.market import (
@@ -17,6 +18,7 @@ from app.db.repositories.portfolio import (
 from app.db.repositories.runs import RiskRunRepository, SyncRunRepository
 
 __all__ = [
+    "BacktestRunRepository",
     "FxRateRepository",
     "HealthRepository",
     "ImportBatchRepository",

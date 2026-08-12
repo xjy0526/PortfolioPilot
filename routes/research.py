@@ -14,13 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db_session
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from analytics.risk_metrics import build_portfolio_risk_summary
-from backtest.strategy_backtester import BacktestConfig, resolve_prices_csv, run_strategy_backtest
+from backtest.strategy_backtester import (
+    EXECUTION_CONVENTION,
+    STRATEGY_NAMES,
+    BacktestConfig,
+    resolve_prices_csv,
+    run_strategy_backtest,
+)
 from config import BASE_DIR, settings
-from portfolio_optimizer import llm_risk_adjusted_weighting
+from portfolio_optimizer import risk_parity_simple
 from rag import PermissionContext, retrieve_evidence, retrieve_evidence_with_status
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
-    safe_financial_analysis_template,
 )
 from services.market_data.postgres_provider import PostgresPriceHistoryProvider
 from services.market_data.price_history_service import PriceHistoryService
@@ -131,7 +136,7 @@ async def get_portfolio_rebalance(
     portfolio_id: uuid.UUID | None = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """Return explainable LLM-risk-adjusted target weights without trading."""
+    """Return deterministic allocation research without placing trades."""
     context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
     if context is None or not context.summary.stocks:
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
@@ -142,25 +147,32 @@ async def get_portfolio_rebalance(
             session=session,
             as_of=context.valuation.as_of,
         )
-        analysis = safe_financial_analysis_template(risk_summary, evidence=[], language="zh")
-
-        result = llm_risk_adjusted_weighting(
+        allocations = risk_parity_simple(
             current_weights=risk_summary.get("asset_weights", {}),
             asset_risk_metrics=risk_summary.get("asset_metrics", {}),
-            llm_risk_score=float(analysis.get("risk_score", risk_summary.get("risk_score", 5.0)) or 5.0),
-            asset_level_comments=analysis.get("asset_level_comments", []),
-            sector_exposure=risk_summary.get("sector_concentration", {}),
         )
+        sector_warnings = [
+            f"行业 {sector} 权重为 {float(data.get('weight', 0.0)):.1%}，超过 40% 研究阈值。"
+            for sector, data in risk_summary.get("sector_concentration", {}).items()
+            if float(data.get("weight", 0.0) or 0.0) > 0.40
+        ]
+        result = {
+            "method": "deterministic_inverse_volatility",
+            "target_weight_owner": "deterministic_optimizer",
+            "suggestions": allocations,
+            "sector_warnings": sector_warnings,
+        }
         return {
             "status": "ok",
-            "analysis_source": "deterministic_fallback",
+            "analysis_source": "deterministic_optimizer",
             "llm_used": False,
             "rebalance": result,
-            "risk_score": analysis.get("risk_score", risk_summary.get("risk_score")),
-            "disclaimer": analysis.get(
-                "disclaimer",
-                "Research output only. Not investment advice or trading instruction.",
-            ),
+            "allocation_research": result,
+            "research_observations": sector_warnings,
+            "review_priorities": [item["ticker"] for item in allocations if item["weight_change"] < 0],
+            "deprecated_fields": ["rebalance"],
+            "risk_score": risk_summary.get("risk_score"),
+            "disclaimer": "仅用于配置研究与风险提示，不构成投资建议或交易指令。",
         }
     except Exception as exc:
         logger.exception("Portfolio rebalance endpoint failed")
@@ -174,7 +186,15 @@ async def get_strategy_backtest_report(force: bool = False):
     try:
         if output_path.exists() and not force:
             cached = json.loads(output_path.read_text(encoding="utf-8"))
-            if cached.get("out_of_sample") is True and cached.get("data_leakage_checks", {}).get("status") == "passed":
+            cached_strategies = {
+                item.get("strategy") for item in cached.get("strategies", [])
+            }
+            if (
+                cached.get("out_of_sample") is True
+                and cached.get("data_leakage_checks", {}).get("status") == "passed"
+                and cached.get("execution_convention") == EXECUTION_CONVENTION
+                and cached_strategies == set(STRATEGY_NAMES)
+            ):
                 return cached
 
         report = run_strategy_backtest(

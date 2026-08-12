@@ -139,6 +139,6 @@ def test_retrieval_evaluation_reports_quality_and_safety_metrics(tmp_path):
     assert output.exists()
     assert report["metrics"]["recall_at_5"] == 1.0
     assert report["metrics"]["mrr"] == 1.0
-    assert report["metrics"]["citation_hit_rate"] == 1.0
+    assert report["metrics"]["citation_reference_validity"] == 1.0
     assert report["metrics"]["expired_document_hit_rate"] == 0.0
     assert report["metrics"]["unauthorized_document_hit_count"] == 0

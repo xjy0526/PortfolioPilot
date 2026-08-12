@@ -376,7 +376,10 @@ def _ensure_trace_columns(conn: sqlite3.Connection) -> None:
 
 def _evaluate_prompt(version: PromptVersion, cases: list[dict[str, Any]]) -> dict[str, float]:
     if not cases:
-        return {"render_success_rate": 0.0, "expected_token_hit_rate": 0.0}
+        return {
+            "static_render_success_rate": 0.0,
+            "static_expected_token_hit_rate": 0.0,
+        }
     rendered = 0
     token_hits = 0
     token_total = 0
@@ -390,8 +393,10 @@ def _evaluate_prompt(version: PromptVersion, cases: list[dict[str, Any]]) -> dic
         except (KeyError, ValueError):
             continue
     return {
-        "render_success_rate": round(rendered / len(cases), 6),
-        "expected_token_hit_rate": round(token_hits / token_total, 6) if token_total else 1.0,
+        "static_render_success_rate": round(rendered / len(cases), 6),
+        "static_expected_token_hit_rate": (
+            round(token_hits / token_total, 6) if token_total else 1.0
+        ),
     }
 
 

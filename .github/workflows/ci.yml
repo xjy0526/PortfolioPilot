@@ -51,6 +51,9 @@ jobs:
       - name: Apply database migrations
         run: alembic upgrade head
 
+      - name: Synthetic evaluation smoke
+        run: python -m evaluation.run_full_eval --mode synthetic_smoke --output cache/ci_evaluation.json
+
       - name: Pytest with coverage
         run: python -m pytest --cov=. --cov-report=term-missing --cov-report=xml
 

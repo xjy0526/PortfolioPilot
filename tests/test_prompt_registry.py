@@ -99,9 +99,9 @@ def test_compare_versions_uses_same_test_set(registry):
         second.version,
         [{"variables": {"portfolio_json": "{}"}, "expected_tokens": ["CONTROL"]}],
     )
-    assert result.metrics_a["expected_token_hit_rate"] == 0.0
-    assert result.metrics_b["expected_token_hit_rate"] == 1.0
-    assert result.metric_delta["expected_token_hit_rate"] == 1.0
+    assert result.metrics_a["static_expected_token_hit_rate"] == 0.0
+    assert result.metrics_b["static_expected_token_hit_rate"] == 1.0
+    assert result.metric_delta["static_expected_token_hit_rate"] == 1.0
 
 
 def _valid_financial_payload():

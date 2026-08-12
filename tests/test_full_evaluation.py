@@ -24,6 +24,17 @@ def test_full_evaluation_has_three_layers_golden_sets_and_badcase_taxonomy(tmp_p
     assert report["test_sets"]["includes_conflicting_evidence_case"] is True
     assert set(report["test_sets"]["chunk_statistics"]) == {"zh", "en"}
     assert set(report["badcase_distribution"]) == set(BADCASE_LABELS)
+    workflow_metrics = report["layers"]["workflow"]["metrics"]
+    assert "workflow_allowlist_completion_rate" in workflow_metrics
+    assert {
+        "tool_selection_accuracy",
+        "required_argument_accuracy",
+        "argument_value_accuracy",
+        "tool_execution_success_rate",
+    }.issubset(workflow_metrics)
+    assert "citation_reference_validity" in report["layers"]["retrieval"]["metrics"]
+    assert "citation_hit_rate" not in report["layers"]["retrieval"]["metrics"]
+    assert report["mock_response_used"] is True
     assert all("expected_evidence" in case and "expected_decision" in case for case in report["layers"]["retrieval"]["cases"])
 
 

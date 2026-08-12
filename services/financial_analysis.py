@@ -181,7 +181,8 @@ def safe_financial_analysis_template(
         no_flag = "No major concentration flag is detected, but market and fundamental risks still require review."
 
     comments = []
-    suggestions = []
+    observations = []
+    priorities = []
     for ticker, data in asset_metrics.items():
         level = str(data.get("risk_level", "medium"))
         level = level if level in {"low", "medium", "high"} else "medium"
@@ -195,15 +196,23 @@ def safe_financial_analysis_template(
                 f"{ticker} is classified as {level} risk with about {weight:.1f}% portfolio weight."
             ),
         })
-        suggestions.append({
-            "action": "watch" if level == "high" else "hold",
+        observations.append({
+            "ticker": ticker,
+            "observation": (
+                f"{ticker} 风险等级为 {level}，应结合外部证据复核其风险驱动因素。"
+                if language == "zh" else
+                f"{ticker} is {level} risk; review its risk drivers against external evidence."
+            ),
+            "evidence_ids": [],
+        })
+        priorities.append({
+            "priority": "high" if level == "high" else "medium" if level == "medium" else "low",
             "ticker": ticker,
             "reason": (
-                f"{ticker} 风险等级为 {level}，建议先作为研究观察项并结合外部证据复核。"
+                f"优先复核 {ticker} 的波动、回撤与集中度来源。"
                 if language == "zh" else
-                f"{ticker} is {level} risk; keep it under research review with external evidence."
+                f"Review the volatility, drawdown and concentration drivers for {ticker}."
             ),
-            "confidence": 0.55 if level == "high" else 0.5,
         })
     references = [
         {
@@ -217,7 +226,10 @@ def safe_financial_analysis_template(
         "risk_score": risk_score,
         "main_risks": [str(item) for item in (flags or [no_flag])],
         "asset_level_comments": comments,
-        "rebalance_suggestions": suggestions,
+        "research_observations": observations,
+        "review_priorities": priorities,
+        "rebalance_suggestions": [],
+        "deprecated_fields": ["rebalance_suggestions"],
         "evidence_used": references,
         "disclaimer": disclaimer,
     }
@@ -260,7 +272,8 @@ def _contract_fields(payload: dict[str, Any]) -> dict[str, Any]:
         key: payload[key]
         for key in (
             "portfolio_summary", "risk_score", "main_risks", "asset_level_comments",
-            "rebalance_suggestions", "evidence_used", "disclaimer",
+            "research_observations", "review_priorities", "rebalance_suggestions",
+            "deprecated_fields", "evidence_used", "disclaimer",
         )
     }
 

@@ -9,16 +9,25 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect, select, text
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.db.models import Base, Portfolio, Transaction, User
+from app.db.models import (
+    BacktestRebalanceSnapshot,
+    BacktestRun,
+    BacktestStrategyResult,
+    Base,
+    Portfolio,
+    Transaction,
+    User,
+)
 from app.db.repositories import (
     PortfolioRepository,
     TransactionRepository,
     UserRepository,
 )
 from scripts.migrate_sqlite_to_postgres import LEGACY_USER_EMAIL, migrate
+from app.services.backtest_persistence import BacktestPersistenceService
 
 pytestmark = pytest.mark.postgres
 
@@ -127,6 +136,77 @@ async def test_external_transaction_repository_is_idempotent_and_uses_decimal():
             await session.flush()
             await session.delete(user)
             await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_backtest_report_persistence_is_idempotent_and_keeps_rebalance_lineage():
+    engine, factory = await _factory()
+    input_hash = uuid.uuid4().hex + uuid.uuid4().hex
+    report = {
+        "input_hash": input_hash,
+        "data_as_of": "2026-06-30T23:59:59+00:00",
+        "code_version": "integration-test",
+        "config_hash": "c" * 64,
+        "price_source": "historical_csv",
+        "execution_convention": "t close execution; effective from t+1",
+        "cost_assumptions": {"transaction_cost_bps": 5.0},
+        "config": {"train_window": 20},
+        "status": "completed",
+        "mock_price_data_used": False,
+        "benchmark": {"name": "SPY"},
+        "rebalance_snapshots": [
+            {
+                "execution_date": "2026-06-01",
+                "effective_from": "2026-06-02",
+                "eligible_universe": ["AAPL"],
+                "excluded_assets": {"MSFT": "insufficient_observations"},
+                "input_hash": "s" * 64,
+                "strategies": {
+                    "equal_weight": {
+                        "pre_trade_weights": {"AAPL": 1.0},
+                        "target_weights": {"AAPL": 1.0},
+                        "executed_weights": {"AAPL": 1.0},
+                        "post_return_weights": {"AAPL": 1.0},
+                        "turnover": 0.0,
+                        "executed_turnover": 0.0,
+                        "costs": {"amount": 0.0},
+                    }
+                },
+            }
+        ],
+        "strategies": [
+            {
+                "strategy": "equal_weight",
+                "annual_return": 0.1,
+                "weights": {"AAPL": 1.0},
+                "nav_series": [{"date": "2026-06-02", "nav": 1_000_000}],
+                "turnover": 0.0,
+                "total_costs": 0.0,
+            }
+        ],
+    }
+    try:
+        async with factory() as session:
+            async with session.begin():
+                service = BacktestPersistenceService(session)
+                first, replayed_first = await service.persist(report)
+                second, replayed_second = await service.persist(report)
+                assert first.id == second.id
+                assert replayed_first is False
+                assert replayed_second is True
+                assert await session.scalar(
+                    select(func.count()).select_from(BacktestRebalanceSnapshot).where(
+                        BacktestRebalanceSnapshot.backtest_run_id == first.id
+                    )
+                ) == 1
+                assert await session.scalar(
+                    select(func.count()).select_from(BacktestStrategyResult).where(
+                        BacktestStrategyResult.backtest_run_id == first.id
+                    )
+                ) == 1
+                await session.delete(first)
     finally:
         await engine.dispose()
 

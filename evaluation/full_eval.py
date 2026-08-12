@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from database import _get_conn
-from evaluation.llm_eval import run_llm_evaluation_sync
+from evaluation.llm_eval import EVALUATION_MODES, run_llm_evaluation_sync
 from evaluation.retrieval_eval import run_retrieval_evaluation
 from prompts.registry import PromptRegistry
 from rag.parsers import parse_document, structured_chunks
@@ -19,15 +19,30 @@ BADCASE_LABELS = (
     "numeric_error", "citation_error", "prompt_error", "tool_error",
     "model_hallucination", "workflow_error",
 )
+DATASET_DIR = Path(__file__).resolve().parent / "datasets"
 
 
-def run_full_evaluation(output_path: str | Path | None = None, *, top_k: int = 5) -> dict[str, Any]:
+def run_full_evaluation(
+    output_path: str | Path | None = None,
+    *,
+    top_k: int = 5,
+    mode: str = "synthetic_smoke",
+) -> dict[str, Any]:
+    if mode not in EVALUATION_MODES:
+        raise ValueError(f"Unsupported evaluation mode: {mode}")
+    if mode not in {"synthetic_smoke", "live_model_eval"}:
+        raise ValueError(
+            "human_gold_eval and production_monitoring require externally supplied reviewed outputs"
+        )
     retrieval = run_retrieval_evaluation(top_k=top_k)
-    generation = run_llm_evaluation_sync(use_mock=True)
+    generation = run_llm_evaluation_sync(mode=mode)
     workflow = _workflow_metrics()
     badcases = _build_badcases(retrieval, generation)
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "evaluation_mode_taxonomy": sorted(EVALUATION_MODES),
+        "mock_response_used": mode == "synthetic_smoke",
         "layers": {
             "retrieval": {
                 "metrics": retrieval["metrics"],
@@ -44,6 +59,8 @@ def run_full_evaluation(output_path: str | Path | None = None, *, top_k: int = 5
                     "citation_completeness": generation["metrics"]["citation_completeness"],
                     "hallucination_rate": generation["metrics"]["hallucination_flag_rate"],
                     "refusal_correct_rate": generation["metrics"]["refusal_correct_rate"],
+                    "citation_reference_validity": generation["metrics"]["citation_reference_validity"],
+                    "claim_support_rate": generation["metrics"]["claim_support_rate"],
                 },
                 "case_count": generation["test_case_count"],
                 "cases": generation["cases"],
@@ -58,6 +75,7 @@ def run_full_evaluation(output_path: str | Path | None = None, *, top_k: int = 5
             "includes_insufficient_evidence_case": True,
             "includes_conflicting_evidence_case": True,
             "chunk_statistics": _chunk_statistics(),
+            "versioned_gold_datasets": _gold_dataset_statistics(),
         },
         "badcases": badcases,
         "badcase_distribution": {label: sum(item["label"] == label for item in badcases) for label in BADCASE_LABELS},
@@ -121,7 +139,10 @@ def _workflow_metrics() -> dict[str, Any]:
     failed = sum(row["status"] == "FAILED" for row in runs)
     return {
         "metrics": {
-            "tool_call_accuracy": round(allowed_steps / total_steps, 4) if total_steps else 0.0,
+            "workflow_allowlist_completion_rate": (
+                round(allowed_steps / total_steps, 4) if total_steps else 0.0
+            ),
+            **_tool_call_metrics(),
             "rule_validation_pass_rate": round(rule_passes / rule_attempts, 4) if rule_attempts else 0.0,
             "human_adoption_rate": round(approved / decision_count, 4) if decision_count else 0.0,
             "modification_rate": round(changes / decision_count, 4) if decision_count else 0.0,
@@ -131,6 +152,61 @@ def _workflow_metrics() -> dict[str, Any]:
         },
         "run_count": run_count,
     }
+
+
+def _tool_call_metrics() -> dict[str, float]:
+    cases = _load_jsonl(DATASET_DIR / "tool_call_gold_v1.jsonl")
+    if not cases:
+        return {
+            "tool_selection_accuracy": 0.0,
+            "required_argument_accuracy": 0.0,
+            "argument_value_accuracy": 0.0,
+            "tool_execution_success_rate": 0.0,
+            "tool_call_accuracy": 0.0,
+        }
+    selection = []
+    required = []
+    values = []
+    execution = []
+    for case in cases:
+        expected = case["expected_tool_call"]
+        actual = case["actual_tool_call"]
+        selection.append(actual.get("tool") == expected.get("tool"))
+        required_names = expected.get("required_arguments", [])
+        actual_args = actual.get("arguments", {})
+        expected_args = expected.get("arguments", {})
+        required.append(all(name in actual_args for name in required_names))
+        values.append(all(actual_args.get(name) == value for name, value in expected_args.items()))
+        execution.append(bool(case.get("execution_success")))
+
+    def ratio(flags: list[bool]) -> float:
+        return round(sum(flags) / len(flags), 4)
+
+    components = [ratio(selection), ratio(required), ratio(values), ratio(execution)]
+    return {
+        "tool_selection_accuracy": components[0],
+        "required_argument_accuracy": components[1],
+        "argument_value_accuracy": components[2],
+        "tool_execution_success_rate": components[3],
+        "tool_call_accuracy": round(sum(components) / len(components), 4),
+    }
+
+
+def _gold_dataset_statistics() -> dict[str, int]:
+    return {
+        path.name: len(_load_jsonl(path))
+        for path in sorted(DATASET_DIR.glob("*_gold_v1.jsonl"))
+    }
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _build_badcases(retrieval: dict[str, Any], generation: dict[str, Any]) -> list[dict[str, Any]]:

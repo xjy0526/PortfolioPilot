@@ -14,7 +14,7 @@
 | P0-1 历史行情与缺失语义 | 已整改 | 两个风险 API 经统一行情服务传入复权价格；不足样本返回 `null`、`metric_status`、`data_quality` 与 `as_of`。 |
 | P0-2 样本内回测偏差 | 已整改 | 回测改为 point-in-time walk-forward，保存逐调仓快照、成本、基准、压力测试和 leakage checks。 |
 | P0-3 Agent 控制 | 机构流程已整改 | 新研究报告 Workflow 强制规则校验与人工审核，具备幂等键、节点日志和预算限制；旧 Shadow Agent 仅保留给 `personal` 模式，尚未升级为企业级交易执行系统，也不得用于真实交易。 |
-| P1-1 历史 LLM 策略 | 已整改 | 固定 `6.5` 已移除；无历史 Prompt/Evidence/Model snapshot 时只能运行 `rule_risk_adjusted`。 |
+| P1-1 历史 LLM 策略 | 已整改 | LLM 权重策略已移除；当前回测只运行六种确定性策略，LLM 仅解释风险与证据。 |
 | P1-2 知识库治理 | 已整改 | SQLite 文档、版本、chunk、ingestion job 模型及检索前权限/时效过滤已落地。 |
 | P1-3 Prompt 治理 | 已整改 | Prompt Registry 支持草稿、版本、发布、回滚、同测试集比较及调用 Trace。 |
 | P1-4 治理数据库 | 已整改 | 已新增 Prompt、知识版本、模型 Trace、工作流、审核和发布报告相关幂等表结构。 |

@@ -421,11 +421,35 @@ def _summarize_context(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _contract_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    observations = payload.get("research_observations") or [
+        {
+            "ticker": item.get("ticker"),
+            "observation": item.get("comment", ""),
+            "evidence_ids": [],
+        }
+        for item in payload.get("asset_level_comments", [])
+    ]
+    priorities = payload.get("review_priorities") or [
+        {
+            "priority": "high" if item.get("action") in {"watch", "reduce"} else "medium",
+            "ticker": item.get("ticker"),
+            "reason": item.get("reason", ""),
+        }
+        for item in payload.get("rebalance_suggestions", [])
+    ]
+    normalized = {
+        **payload,
+        "research_observations": observations,
+        "review_priorities": priorities,
+        "rebalance_suggestions": payload.get("rebalance_suggestions", []),
+        "deprecated_fields": payload.get("deprecated_fields", ["rebalance_suggestions"]),
+    }
     fields = (
         "portfolio_summary", "risk_score", "main_risks", "asset_level_comments",
-        "rebalance_suggestions", "evidence_used", "disclaimer",
+        "research_observations", "review_priorities", "rebalance_suggestions",
+        "deprecated_fields", "evidence_used", "disclaimer",
     )
-    return {field: payload[field] for field in fields}
+    return {field: normalized[field] for field in fields}
 
 
 def _decode_json_fields(payload: dict[str, Any], *fields: str) -> dict[str, Any]:
