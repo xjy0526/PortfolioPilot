@@ -2,155 +2,140 @@
 
 ## 产品定位
 
-PortfolioPilot 是“面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台”。当前版本用于金融科技、AI 应用和后端工程研究演示，不连接券商，不执行真实交易，也不构成投资建议。
+PortfolioPilot 是“面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台”。系统只用于研究与软件演示，不连接券商、不执行真实交易，也不构成投资建议。
 
-本文件描述 PR-1 完成后的增量架构。PostgreSQL 异步持久化基础已经建立，旧业务仍保留 SQLite 读取和根目录模块；真实持仓切换到 transaction ledger 属于后续阶段。
+## 核心原则
+
+1. PostgreSQL `transactions` 是组合持仓与现金的唯一事实源。
+2. `position_snapshots` 和 `portfolio_valuation_snapshots` 是可删除、可重建的派生结果。
+3. 原始行情保留证券原币；FX 作为独立历史事实存储，估值时转换到组合基准币种。
+4. 风险指标和调仓权重由确定性模块计算；LLM 只解释结构化数字和本次检索证据。
+5. 每次同步、估值、风险和 LLM 运行保留数据截止时间、代码/模型版本、输入哈希和证据 lineage。
+6. mock、research-only 和 fallback 必须显式标记，不得伪装成真实行情或真实模型输出。
 
 ## 技术栈
 
 - Python 3.12、FastAPI、Pydantic v2
-- pandas、NumPy、yfinance/FMP 数据适配
-- Qwen 或通用 OpenAI-Compatible LLM API
-- PostgreSQL 16、pgvector、SQLAlchemy 2.x Async ORM、asyncpg、Alembic
-- SQLite 兼容读取、JSON 磁盘缓存和进程内状态
-- 原生 HTML、CSS、JavaScript
-- pytest、pytest-cov、Ruff、Mypy、Docker
+- PostgreSQL 16、SQLAlchemy 2.x Async ORM、asyncpg、Alembic
+- pandas、NumPy
+- Tushare Pro 与 yfinance Provider Adapter
+- Qwen/OpenAI-Compatible LLM API
+- SQLite 兼容层，用于尚未迁移的知识、Prompt、Trace 和 Workflow 数据
+- pytest、pytest-asyncio、pytest-cov、Ruff、Mypy、Docker Compose
 
-## 模块边界
+## 目录与职责
 
 ```text
-main.py                    FastAPI 创建、生命周期、调度器和路由注册
-config.py                  环境变量、功能开关和 Provider 配置
-time_utils.py              UTC 持久化时间与展示时区转换
-models.py                  现有 Pydantic API/业务模型
-database.py                旧 SQLite 兼容持久化层
-state.py                   兼容期内的进程内组合状态
-
-app/db/models/             SQLAlchemy 2.x Declarative Mapping
-app/db/repositories/       PostgreSQL 数据访问边界
-app/db/session.py          asyncpg engine 与独立 AsyncSession 工厂
-app/api/health.py          liveness/readiness 路由
-app/workers/               Worker 独立 Session 边界
-migrations/                Alembic async migration 环境
-scripts/                   显式 SQLite 到 PostgreSQL 迁移入口
-
-routes/                    HTTP API 兼容层
-services/                  组合构建、分析、Provider 编排
-services/llm_client.py     Qwen/OpenAI-Compatible 中立客户端
-services/llm/compat.py     旧 generate-content 调用适配层
-services/market_data/      历史行情 Provider 接口与质量元数据
-analytics/                 确定性风险计算
-portfolio_optimizer/       确定性权重研究算法
-rag/                       文档治理、切片和混合检索
-prompts/                   Prompt Registry 与输出契约
-workflows/                 受控研究报告工作流
-backtest/                  策略比较与研究演示报告
-evaluation/                Retrieval/Generation/Workflow 评测
-static/                    现有原生 Web 前端
+app/api/                    DB-backed portfolio、import、market-data、health API
+app/db/models/              SQLAlchemy Declarative Mapping
+app/db/repositories/        SQL 查询与原子 upsert 边界
+app/domain/                 不依赖 HTTP 的账本结果模型
+app/providers/market_data/  Tushare/yfinance 统一 Provider 合同
+app/services/               账本、导入、持仓重建、估值、兼容适配
+app/workers/                独立 Session、互斥锁和可追踪任务入口
+analytics/                  确定性风险指标
+rag/                        当前 SQLite-backed 知识治理与混合检索
+workflows/                  当前 SQLite-backed 受控研究工作流
+migrations/                 PostgreSQL schema 唯一变更入口
+scripts/                    初始化与兼容迁移工具
 ```
 
-## 核心请求链路
+## 数据主链路
 
 ```mermaid
 flowchart LR
-    CSV[CSV 持仓] --> PB[Portfolio Builder]
-    MD[行情 Provider] --> PB
-    PB --> STATE[兼容期内存 State]
-    STATE --> RISK[确定性风险引擎]
-    MD --> RISK
-    DOCS[本地研究文档] --> RAG[Hybrid RAG]
-    RISK --> PROMPT[结构化 Prompt]
-    RAG --> PROMPT
-    PROMPT --> LLM[Qwen / OpenAI-Compatible]
-    LLM --> VALIDATE[Pydantic 校验与 Trace]
-    VALIDATE --> API[FastAPI JSON API]
+    CSV[交易流水 CSV] --> IMPORT[TransactionCsvImporter]
+    LEGACY[旧持仓 CSV] --> OPENING[opening_balance / opening cash]
+    OPENING --> IMPORT
+    IMPORT --> TX[(PostgreSQL transactions)]
+
+    TS[Tushare Pro] --> SYNC[MarketDataSyncService]
+    YF[yfinance research-only] --> SYNC
+    SYNC --> PB[(price_bars)]
+    SYNC --> FX[(fx_rates)]
+
+    TX --> REBUILD[PositionRebuilder]
+    REBUILD --> VAL[PortfolioValuationService]
+    PB --> VAL
+    FX --> VAL
+    VAL --> VS[(valuation + position snapshots)]
+
+    VS --> LEGACY_ADAPTER[LegacyPortfolioAdapter]
+    LEGACY_ADAPTER --> UI[旧 PortfolioSummary API]
+    VS --> RISK[确定性风险引擎]
+    PB --> RISK
+    RISK --> LLM[证据约束的 Qwen 解释]
 ```
 
-风险数值和优化权重由确定性模块计算。LLM 只消费结构化风险结果和本次检索到的 evidence，并负责生成有证据约束的解释；输出不合法时会重试，最终回退到明确标记的安全模板。
+旧持仓 CSV 不会被描述成完整交易历史。证券行转换为 `opening_balance`，现金行转换为 opening cash `deposit`，导入响应返回 `history_completeness=opening_balance_only`。
 
-## LLM 架构
+## 交易账本
 
-新代码使用 `services/llm_client.py`：
+`TransactionLedgerService` 使用以下语义：
 
-- `QwenClient`：调用 DashScope OpenAI-Compatible Chat Completions。
-- `OpenAICompatibleClient`：调用显式配置的兼容端点。
-- `ChatRequest`、`ChatMessage`、`ToolDefinition`、`ChatResponse`：供应商中立契约。
-- `get_llm_client()`：只返回真实配置的 Provider；缺少 Key 时明确报错，不伪装为真实模型。
+- `quantity`、`gross_amount`、`fees`、`taxes` 均为非负绝对值；
+- `transaction_type` 决定现金和数量方向；
+- `buy` 减少现金，`sell`、`dividend` 增加现金；
+- `deposit/withdrawal` 与 `transfer_in/transfer_out` 改变分币种现金账本；
+- `split` 只改变数量和单位成本；
+- 第一版成本法固定为 `weighted_average`；
+- 任意卖出导致负持仓时，整笔写入或整批导入回滚。
 
-`services/vertex_ai.py` 仅保留弃用兼容导入。旧业务暂时经 `services/llm/compat.py` 适配，其内部仍可使用原有 `client.aio.models.generate_content(...)` 调用形状；新代码不得继续依赖该形状。
+交易按 `occurred_at, created_at, id` 稳定排序。重建输出证券持仓、分币种现金、warning、最后交易时间和历史完整性。
 
-结构化金融分析使用另一层轻量 `LLMProvider` 协议。无真实 Key 时返回的 mock/fallback 会携带 `source` 和 `ai_available=false`，不得作为真实模型输出展示。
+## 证券主数据与 Provider
 
-## 数据与持久化
+币种、交易所、市场和国家来自 `securities`，不通过 ticker 后缀猜测币种。`provider_symbols` 保存显式映射，例如：
 
-当前存在四类状态：
+| Canonical | Tushare | yfinance | FMP |
+|---|---|---|---|
+| `600519.SH` | `600519.SH` | `600519.SS` | - |
+| `AAPL` | - | `AAPL` | `AAPL` |
 
-| 类型 | 当前实现 | 说明 |
-|---|---|---|
-| 新数据库基础 | PostgreSQL + pgvector | transaction ledger、行情、汇率、派生快照和运行追踪的首批表 |
-| 兼容业务持久化 | SQLite `cache/portfoliopilot.db` | 当前快照、评分、知识、Prompt、Trace、Workflow 和可选模拟组合 |
-| 外部数据缓存 | `cache/*.json` | 行情和外部 Provider 缓存，带 UTC `_cached_at` |
-| 在线状态 | `state.portfolio_data` | 当前组合与刷新状态，进程重启后重建 |
+`MarketDataProvider` 统一提供 security master、日频 OHLCV、FX 和 corporate action 查询。Tushare 是 A 股事实源；yfinance 面向美股与 ETF 研究演示，所有落库记录使用 `source=yfinance_research` 且 `raw_payload.research_only=true`。FMP 不参与价格事实源优先级。
 
-PostgreSQL 使用 `TIMESTAMPTZ`，asyncpg 连接会话固定为 UTC；金额、价格、数量和汇率使用 `NUMERIC`，动态配置和运行快照使用 `JSONB`。`DISPLAY_TIMEZONE` 仅控制展示，默认 `Asia/Shanghai`。
+## 估值与可追溯性
 
-每个 FastAPI 请求通过应用级 dependency 创建独立 `AsyncSession`。Worker 每次任务调用独立进入 `worker_session()`；并发任务只共享 engine pool 和 sessionmaker，绝不共享 Session。Route 不直接执行 SQL，新 PostgreSQL 访问统一经过 Repository。
+估值公式：
 
-表结构只由 Alembic 管理。应用 import 不连接数据库、不执行建表；旧 SQLite schema 在 FastAPI lifespan 中显式初始化。
+```text
+native_market_value = quantity * native_price
+market_value_base = native_market_value * valuation_fx_rate
+```
 
-当前真实组合仍主要通过 CSV 或可选 Parqet position 数据构建，尚未迁移为以 transactions 为唯一事实源；该迁移不属于 PR-1。
+`PortfolioValuationService` 只读取 `as_of` 之前、且在知识截止时间前可得的有效行情和 FX。每个 position snapshot 保存 `price_bar_id`、`fx_rate_id`、原币价格、估值 FX、基准币种市值、成本和未实现盈亏。
 
-## 行情与风险
+输入交易、行情、FX 和组合配置被规范化后计算 `input_hash`。相同 `portfolio_id + as_of + source` 重复运行会更新同一快照，并产生相同 input hash。
 
-`services/market_data/` 为历史复权行情提供统一接口，返回：
+## Session 与 Worker
 
-- `source` 和 `as_of`
-- 实际起止日期
-- 缺失和陈旧 ticker
-- 资产覆盖率
+每个 FastAPI 请求使用独立 `AsyncSession`。每次 Worker 调用也创建自己的 Session，不跨并发任务共享。Worker 使用 PostgreSQL advisory transaction lock 防止同类同步并发执行，并在 `sync_runs` 中记录 started/completed/failed、计数、重试、错误摘要、代码版本与 data cutoff。
 
-风险引擎计算收益、年化波动率、最大回撤、Sharpe、资产权重、行业集中度和资产类型敞口。样本不足时返回 unavailable/null 语义，不把未知风险写成零风险。
+```bash
+python -m app.workers.run_market_sync
+python -m app.workers.run_position_rebuild
+python -m app.workers.run_daily_pipeline
+```
 
-yfinance 仅用于公开数据研究演示，不承诺实时性、完整性、公司行动口径或生产 SLA。
+Web 进程不再运行 APScheduler，也不会在启动时自动请求行情或修改组合状态；定时调度应由 cron、CI scheduler、Cloud Scheduler 或独立任务平台调用 Worker。
 
-## RAG 与 Trace
+## API 与兼容层
 
-RAG 支持 `txt`、`md`、`csv`、`pdf`，并包含文档版本、checksum、发布状态、有效期和权限组。检索顺序为 metadata/权限/时间过滤、BM25+dense、RRF、可选 reranker 和去重。
+新的 DB API：
 
-sentence-transformers 或 FAISS 不可用时，系统使用确定性 hashing embedding 和 NumPy 检索，并在能力边界内继续运行。没有可用文档时返回 `evidence_insufficient=true`。
+```text
+GET  /api/portfolios
+GET  /api/portfolios/{id}
+GET  /api/portfolios/{id}/transactions
+POST /api/portfolios/{id}/imports/transactions
+GET  /api/portfolios/{id}/positions?as_of=
+GET  /api/portfolios/{id}/valuation?as_of=
+POST /api/portfolios/{id}/rebuild?as_of=
+POST /api/market-data/sync
+```
 
-LLM Trace 保存 Prompt 版本、Provider、模型、输入哈希、证据 ID、校验状态、延迟和 fallback 状态。当前 Trace 仍存储在 SQLite。
+旧 `/api/portfolio`、行业和资产分布接口仍返回原 `PortfolioSummary` 结构，但数据由 `LegacyPortfolioAdapter` 从 PostgreSQL valuation snapshot 生成，不再以 `state.portfolio_data` 作为真实组合来源。显式 demo 数据仍保留 `is_demo=true`。
 
-## 回测边界
+## 尚未迁移的数据
 
-`backtest/strategy_backtester.py` 已实现按再平衡日滚动估计、训练区间检查、交易成本、滑点和 OOS 区间报告。它仍不是生产级严格 point-in-time walk-forward 系统：缺少交易所日历、逐时点可得性数据库、完整公司行动/退市处理、不可变数据版本以及历史 LLM snapshot 的持续采集。
-
-没有本地价格 CSV 时，CLI 可以生成固定种子的 mock 行情，报告必须标记 `mock_price_data_used=true`。机构研究结论不得使用 mock 报告。
-
-## 可选扩展
-
-以下能力保留但默认关闭：
-
-| 扩展 | 开关 | 默认值 |
-|---|---|---|
-| Polymarket 示例资产处理 | `ENABLE_POLYMARKET` | `false` |
-| Telegram 报告与 Webhook | `ENABLE_TELEGRAM` | `false` |
-| Parqet OAuth/持仓同步 | `ENABLE_PARQET` | `false` |
-| Shadow Agent 模拟组合 | `ENABLE_SHADOW_AGENT` | `false` |
-
-关闭扩展不会影响 CSV 导入、A 股/美股风险分析、RAG、结构化 LLM 分析和回测命令。Shadow Agent 只处理模拟资金，开启后仍不连接券商。
-
-## CI 与部署
-
-`.github/workflows/ci.yml` 在 `main` 的 push 和 pull request 上执行：
-
-1. `ruff check .`
-2. `mypy`
-3. pytest 与 coverage report
-4. Docker image build
-
-`.github/workflows/deploy.yml` 不再包含个人 GCP 项目、旧项目名或旧集成 Secret。Cloud Run 项目、区域、Workload Identity Provider 和 Service Account 由 GitHub Variables 提供；默认部署只启用核心平台。
-
-## 已知限制
-
-完整限制和 mock/fallback 触发条件见 [current-limitations.md](current-limitations.md)。
+知识库、Prompt Registry、LLM Trace、Workflow 审批和部分可选扩展仍使用 SQLite。它们不参与持仓、现金、行情或估值事实计算。完整边界见 [current-limitations.md](current-limitations.md)。

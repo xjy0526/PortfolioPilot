@@ -20,8 +20,10 @@ EXPECTED_TABLES = {
     "securities",
     "provider_symbols",
     "transactions",
+    "import_batches",
     "price_bars",
     "fx_rates",
+    "portfolio_valuation_snapshots",
     "position_snapshots",
     "sync_runs",
     "risk_runs",
@@ -45,12 +47,15 @@ def test_financial_columns_are_numeric_and_never_float():
             "quantity", "price", "gross_amount", "fees", "taxes", "fx_rate_to_base"
         },
         "price_bars": {
-            "open", "high", "low", "close", "adjusted_close", "volume"
+            "open", "high", "low", "close", "adjusted_close", "adjustment_factor", "volume"
         },
         "fx_rates": {"rate"},
         "position_snapshots": {
-            "quantity", "average_cost", "market_price", "market_value", "cost_basis",
-            "unrealized_pnl", "weight",
+            "quantity", "average_cost", "native_price", "valuation_fx_rate",
+            "market_value_base", "cost_basis_base", "unrealized_pnl_base", "weight",
+        },
+        "portfolio_valuation_snapshots": {
+            "total_market_value", "total_cost_basis", "cash_value", "unrealized_pnl",
         },
     }
     for table_name, column_names in numeric_columns.items():
@@ -67,9 +72,13 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("securities", "security_metadata"),
         ("provider_symbols", "mapping_metadata"),
         ("transactions", "raw_payload"),
+        ("import_batches", "error_summary"),
         ("price_bars", "raw_payload"),
         ("fx_rates", "raw_payload"),
         ("position_snapshots", "snapshot_data"),
+        ("portfolio_valuation_snapshots", "cash_balances"),
+        ("portfolio_valuation_snapshots", "warnings"),
+        ("portfolio_valuation_snapshots", "config_snapshot"),
         ("sync_runs", "config_snapshot"),
         ("sync_runs", "result_snapshot"),
         ("risk_runs", "config_snapshot"),
@@ -82,12 +91,13 @@ def test_jsonb_runtime_and_configuration_snapshots():
 
 def test_required_idempotency_constraints_are_present():
     price_constraints = {constraint.name for constraint in Base.metadata.tables["price_bars"].constraints}
-    transaction_constraints = {
-        constraint.name for constraint in Base.metadata.tables["transactions"].constraints
+    transaction_indexes = {
+        index.name for index in Base.metadata.tables["transactions"].indexes
     }
 
     assert "uq_price_bars_security_id_trade_date_source" in price_constraints
-    assert "uq_transactions_portfolio_id_source_external_id" in transaction_constraints
+    assert "uq_transactions_external_id_not_null" in transaction_indexes
+    assert "uq_transactions_source_record_hash_not_null" in transaction_indexes
 
 
 def test_legacy_database_module_has_no_import_time_init_call():

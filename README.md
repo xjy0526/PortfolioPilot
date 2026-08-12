@@ -24,8 +24,9 @@ PortfolioPilot 是一个面向 A 股与美股的多市场投资组合风险分�
 
 | 领域 | 当前能力 |
 |---|---|
-| 组合数据 | CSV 导入、A 股/美股/ETF 持仓、币种与行业字段 |
-| 风险分析 | 复权历史行情、收益/波动/回撤/Sharpe、覆盖率、陈旧与缺失行情语义 |
+| 组合数据 | PostgreSQL 交易账本、标准流水/旧持仓 CSV 导入、任意 `as_of` 持仓重建 |
+| 市场数据 | Tushare A 股、yfinance 美股/ETF 研究行情、历史 FX、Provider symbol 映射 |
+| 风险分析 | PostgreSQL 复权行情、收益/波动/回撤/Sharpe、覆盖率、陈旧与缺失行情语义 |
 | 知识库 | `txt/md/csv/pdf` 接入、版本、checksum 去重、发布/失效、权限与有效期过滤 |
 | 检索 | Query intent、metadata/permission/temporal filter、BM25、dense、RRF、可插拔 reranker |
 | LLM | Provider 抽象、Prompt Registry、严格 Pydantic 输出、ticker/引用/数字一致性校验 |
@@ -46,6 +47,7 @@ pip install -r requirements.txt
 cp .env.example .env
 docker compose up -d postgres
 alembic upgrade head
+python scripts/bootstrap_portfolio.py --base-currency CNY
 python3 main.py
 ```
 
@@ -58,6 +60,7 @@ pip install -r requirements.txt
 copy .env.example .env
 docker compose up -d postgres
 alembic upgrade head
+python scripts/bootstrap_portfolio.py --base-currency CNY
 python main.py
 ```
 
@@ -69,11 +72,11 @@ python main.py
 - 存活检查：<http://localhost:8000/health/live>
 - PostgreSQL 就绪检查：<http://localhost:8000/health/ready>
 
-未配置模型 API Key 时，项目仍可通过安全 fallback、hashing retrieval 和可复现 mock 行情运行。fallback 结果不会冒充真实模型或真实历史策略。
+未配置模型 API Key 时，结构化分析会明确返回 `ai_available=false` 的安全 fallback。市场同步不会生成 mock 行情；Provider 不可用时 `sync_run` 失败并保留错误摘要。仅独立回测 CLI 在没有价格 CSV 时允许生成显式标记的可复现 mock 行情。
 
-## PostgreSQL 数据库基础
+## PostgreSQL 交易账本与估值
 
-PR-1 新增 PostgreSQL 16、pgvector、SQLAlchemy 2.x Async ORM、asyncpg 和 Alembic。启动数据库并应用 migration：
+核心组合链路使用 PostgreSQL 16、SQLAlchemy 2.x Async ORM、asyncpg 和 Alembic。启动数据库并应用 migration：
 
 ```bash
 docker compose up -d postgres
@@ -86,7 +89,7 @@ alembic upgrade head
 DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot
 ```
 
-首批表包括 `users`、`portfolios`、`securities`、`provider_symbols`、`transactions`、`price_bars`、`fx_rates`、`position_snapshots`、`sync_runs` 和 `risk_runs`。表结构只允许通过 Alembic 变更，应用 import 和 startup 都不会调用 `Base.metadata.create_all()`。
+核心表包括 `users`、`portfolios`、`securities`、`provider_symbols`、`transactions`、`import_batches`、`price_bars`、`fx_rates`、`portfolio_valuation_snapshots`、`position_snapshots`、`sync_runs` 和 `risk_runs`。表结构只允许通过 Alembic 变更，应用 import 和 startup 都不会调用 `Base.metadata.create_all()`。
 
 每个 FastAPI 请求和每个 Worker 任务使用独立 `AsyncSession`。Repository 负责数据访问，Session 的事务边界由请求或 Worker unit of work 管理。
 
@@ -97,7 +100,67 @@ python scripts/migrate_sqlite_to_postgres.py \
   --sqlite-path cache/portfoliopilot.db
 ```
 
-脚本当前幂等迁移旧组合总览快照和可选 Shadow 模拟交易；知识库、Prompt、Workflow 等 SQLite 数据将在后续阶段按独立数据契约迁移。
+脚本当前幂等迁移旧组合总览快照和可选 Shadow 模拟交易；知识库、Prompt、Workflow 等 SQLite 数据仍按原数据契约保留。
+
+### 交易流水导入
+
+先运行 bootstrap 脚本并记录输出的 `portfolio_id`，再导入标准流水：
+
+```bash
+curl -X POST \
+  "http://localhost:8000/api/portfolios/<portfolio_id>/imports/transactions" \
+  -F "file=@data/portfolios/example_transactions.csv"
+```
+
+标准字段：
+
+```csv
+external_id,transaction_type,ticker,exchange,trade_date,settlement_date,quantity,price,fees,taxes,currency,note
+```
+
+`quantity`、本金、费用和税均使用非负绝对值，方向由 `transaction_type` 决定。证券买卖的本金由 `quantity * price` 计算；现金类流水在当前 CSV 合同中使用 `quantity` 表示现金绝对金额。重复文件按 SHA256 返回 `idempotent_replay=true`，错误行可通过响应中的 `error_report_url` 下载。
+
+旧 `ticker,shares,buy_price,...` 持仓 CSV 仍可上传，但证券只会转换成 `opening_balance`，现金行转换成 opening cash deposit，响应明确返回：
+
+```json
+{"history_completeness":"opening_balance_only"}
+```
+
+这类数据只表示缺少完整交易历史的期初状态。
+
+### 行情同步与估值
+
+yfinance 默认仅同步美股/ETF 研究行情。同步 A 股前配置 `TUSHARE_TOKEN` 和 `MARKET_DATA_PROVIDERS=tushare,yfinance`：
+
+```bash
+python -m app.workers.run_market_sync --start 2025-01-01 --end 2026-08-12
+python -m app.workers.run_position_rebuild \
+  --portfolio-id <portfolio_id> \
+  --as-of 2026-08-12T15:00:00+08:00
+```
+
+也可以顺序运行完整日任务：
+
+```bash
+python -m app.workers.run_daily_pipeline --portfolio-id <portfolio_id>
+```
+
+每次任务使用独立 Session、PostgreSQL advisory lock 和 `sync_run` 状态。Web API 不运行 APScheduler；生产调度应调用这些 Worker 入口。
+
+核心 API：
+
+```text
+GET  /api/portfolios
+GET  /api/portfolios/{id}
+GET  /api/portfolios/{id}/transactions?as_of=
+POST /api/portfolios/{id}/imports/transactions
+GET  /api/portfolios/{id}/positions?as_of=
+GET  /api/portfolios/{id}/valuation?as_of=
+POST /api/portfolios/{id}/rebuild?as_of=
+POST /api/market-data/sync
+```
+
+估值接口不会使用 `as_of` 之后的交易、行情或 FX。响应包含 snapshot ID、`input_hash`、`data_as_of`、价格/FX ID、warning 和 `history_completeness`。
 
 ## 应用模式
 
@@ -155,7 +218,7 @@ OPENAI_COMPATIBLE_MODEL=your-model
 
 业务层仅依赖 `LLMProvider`，内置 `QwenProvider`、`MockProvider` 和 `OptionalOpenAICompatibleProvider`。本地还可以在 Dashboard 的“操作 → API 设置”中保存千问、FMP 和联系邮箱配置；该入口只允许 localhost 或已启用 Dashboard 认证的请求使用，密钥不会在页面回显。
 
-## 投资组合 CSV
+## 旧持仓 CSV 兼容
 
 推荐字段如下：
 
@@ -166,19 +229,19 @@ AAPL,15,142.50,,2024-03-15,USD,Technology,Apple Inc.,equity,US,NASDAQ,US
 POLY-BTC-150K-2026,80,0.31,0.36,2026-01-05,USD,Prediction Markets,BTC above 150k in 2026?,prediction_market,Polymarket,Polymarket,WEB3
 ```
 
-- `ticker`、`shares`、`buy_price`：核心持仓字段。
+- `ticker`、`shares`、`buy_price`：旧期初持仓字段。
 - `current_price`：可选；预测市场持仓建议显式提供。
 - `currency`：如 `USD`、`EUR`、`CNY`。
 - `asset_type`：如 `equity`、`cn_equity`、`prediction_market`。
 - 其他字段用于展示、行业聚合和研究过滤。
 
-上传后的标准化组合默认保存到 `portfolio.csv`，可通过 `PARQET_PORTFOLIO_CSV` 修改。真实持仓文件已被 `.gitignore` 排除。
+通过新的 transaction import API 上传后，这些行会原子写入 PostgreSQL ledger，不再把 `portfolio.csv` 或 `state.portfolio_data` 作为核心组合事实源。`PARQET_PORTFOLIO_CSV` 仅保留给默认关闭的旧兼容扩展。
 
 仓库中的 `data/portfolios/test_*.csv` 均为模拟数据，可用于验证不同风险场景，不代表真实持仓或投资观点。
 
-## 历史行情与风险指标
+## PostgreSQL 历史行情与风险指标
 
-风险 API 使用统一 adjusted-close 历史行情服务：
+核心风险 API 从 PostgreSQL `price_bars` 读取 `as_of` 之前可得的 adjusted close，并返回数据 lineage。以下旧 Provider 配置仍供尚未迁移的非核心页面使用：
 
 ```env
 PRICE_HISTORY_PROVIDER=yfinance
@@ -189,7 +252,7 @@ PRICE_HISTORY_STALE_AFTER_DAYS=5
 RISK_MIN_OBSERVATIONS=20
 ```
 
-Provider 统一返回价格矩阵以及 `source`、`as_of`、起止日期、`missing_tickers`、`stale_tickers` 和 `coverage_ratio`。
+PostgreSQL price history adapter 返回价格矩阵以及 `source=postgres_price_bars`、`as_of`、起止日期、`missing_tickers`、`stale_tickers` 和 `coverage_ratio`。A 股优先 `tushare`，美股/ETF 优先显式标记的 `yfinance_research`。
 
 当历史数据不足时：
 
@@ -201,11 +264,11 @@ Provider 统一返回价格矩阵以及 `source`、`as_of`、起止日期、`mis
 主要接口：
 
 ```bash
-curl http://localhost:8000/api/portfolio/risk-summary
+curl "http://localhost:8000/api/portfolio/risk-summary?portfolio_id=<portfolio_id>"
 
 curl -X POST http://localhost:8000/api/ai/analyze-portfolio \
   -H "Content-Type: application/json" \
-  -d '{"lang":"zh","top_k":5,"permission_groups":["public"]}'
+  -d '{"portfolio_id":"<portfolio_id>","lang":"zh","top_k":5,"permission_groups":["public"]}'
 ```
 
 ## 轻量企业知识库与 Hybrid RAG
@@ -402,10 +465,12 @@ GET /api/evaluation/traces
 ## 测试与质量检查
 
 ```bash
-pytest -q
+python -m pytest -q
 TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
-  pytest -m postgres -q
-python -m compileall -q analytics backtest evaluation prompts rag routes services workflows
+  python -m pytest -m postgres -q
+ruff check .
+mypy
+python -m compileall -q app analytics backtest evaluation prompts rag routes services workflows
 node --check static/app.js
 pip check
 ```
@@ -440,8 +505,11 @@ pip check
 ```text
 analytics/             风险与组合指标
 app/db/                SQLAlchemy Async ORM、Session 和 Repository
-app/api/               新增 API 路由与依赖
-app/workers/           Worker 独立 Session 边界
+app/api/               DB-backed portfolio、import、market-data、health API
+app/domain/            账本重建的不可变领域结果
+app/providers/         Tushare/yfinance 市场数据适配器
+app/services/          账本、CSV 导入、持仓重建、估值和旧 API 适配
+app/workers/           独立 Session、advisory lock 与任务入口
 backtest/              策略比较与研究演示报告
 evaluation/            Retrieval / Generation / Workflow 评测
 portfolio_optimizer/   组合权重研究策略
@@ -452,7 +520,7 @@ migrations/            Alembic async migration 环境与版本
 scripts/               SQLite 兼容迁移等运维入口
 services/llm_client.py Qwen/OpenAI-Compatible 中立客户端
 services/llm/          结构化 Provider 与旧调用兼容层
-services/market_data/  历史价格 Provider 与统一服务
+services/market_data/  PostgreSQL 风险价格适配与旧历史价格兼容服务
 static/                Dashboard 前端
 workflows/             受控研究报告状态机
 tests/                 单元与 API 集成测试

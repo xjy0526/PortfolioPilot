@@ -9,12 +9,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from analytics.risk_metrics import build_portfolio_risk_summary
 from config import settings
 from rag import PermissionContext, retrieve_evidence_with_status
 from services.financial_analysis import analyze_portfolio_with_llm
-from services.market_data import get_price_history_service
-from state import portfolio_data
 from workflows.models import ReviewDecision, ReviewTask, WorkflowRun
 
 
@@ -237,21 +234,25 @@ class ResearchReportWorkflow:
                 raise ValueError("user_id is required")
             context["input_valid"] = True
         elif node == "load_portfolio":
-            summary = portfolio_data.get("summary")
-            if not summary or not getattr(summary, "stocks", None):
-                raise ValueError("No portfolio data available")
-            context["portfolio_tickers"] = [stock.position.ticker for stock in summary.stocks]
+            db_portfolio = context["request"].get("_db_portfolio") or {}
+            if not db_portfolio.get("valuation_snapshot_id"):
+                raise ValueError("No PostgreSQL valuation snapshot available")
+            context["portfolio_tickers"] = list(db_portfolio.get("tickers") or [])
+            context["portfolio_lineage"] = {
+                key: db_portfolio.get(key)
+                for key in (
+                    "portfolio_id",
+                    "valuation_snapshot_id",
+                    "valuation_input_hash",
+                    "as_of",
+                )
+            }
         elif node == "calculate_risk":
-            summary = portfolio_data["summary"]
-            tickers = [ticker for ticker in context["portfolio_tickers"] if ticker != "CASH"]
-            history = await get_price_history_service().get_history(
-                tickers, lookback_days=settings.PRICE_HISTORY_LOOKBACK_DAYS,
-            )
-            context["risk_summary"] = build_portfolio_risk_summary(
-                summary.stocks, price_data=history.adjusted_close,
-                min_observations=settings.RISK_MIN_OBSERVATIONS,
-                market_data_quality=history.data_quality(), as_of=history.as_of,
-            )
+            db_portfolio = context["request"].get("_db_portfolio") or {}
+            risk_summary = db_portfolio.get("risk_summary")
+            if not isinstance(risk_summary, dict):
+                raise ValueError("Database-backed risk summary is required")
+            context["risk_summary"] = risk_summary
         elif node == "retrieve_evidence":
             query = str(context["request"].get("query") or "public fund portfolio risk policy evidence")
             result = retrieve_evidence_with_status(

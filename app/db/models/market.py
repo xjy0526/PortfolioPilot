@@ -98,8 +98,14 @@ class PriceBar(UUIDTimestampMixin, Base):
     low: Mapped[Decimal | None] = mapped_column(PRICE_NUMERIC, nullable=True)
     close: Mapped[Decimal] = mapped_column(PRICE_NUMERIC, nullable=False)
     adjusted_close: Mapped[Decimal | None] = mapped_column(PRICE_NUMERIC, nullable=True)
+    adjustment_factor: Mapped[Decimal | None] = mapped_column(RATE_NUMERIC, nullable=True)
     volume: Mapped[Decimal | None] = mapped_column(QUANTITY_NUMERIC, nullable=True)
     data_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sync_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    quality_status: Mapped[str] = mapped_column(String(40), nullable=False, default="valid")
     raw_payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
@@ -126,6 +132,9 @@ class FxRate(UUIDTimestampMixin, Base):
     source: Mapped[str] = mapped_column(String(80), nullable=False)
     rate: Mapped[Decimal] = mapped_column(RATE_NUMERIC, nullable=False)
     data_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sync_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     raw_payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,

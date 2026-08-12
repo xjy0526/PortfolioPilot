@@ -16,14 +16,13 @@ SQLAlchemy[asyncio]>=2.0.36,<2.1
 asyncpg>=0.30.0,<1.0
 alembic>=1.16.0,<2.0
 pgvector>=0.3.6,<1.0
+python-multipart>=0.0.20,<1.0
 
 # Finanzdaten
 yfinance>=1.2.0
+tushare>=1.4.0,<2.0
 lxml>=5.0  # Required by yfinance for earnings_dates (pd.read_html)
 websockets==14.1
-
-# Scheduling
-apscheduler==3.10.4
 
 # Logging
 structlog>=24.0

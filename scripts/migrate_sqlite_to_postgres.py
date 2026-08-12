@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import sqlite3
 import sys
 from datetime import UTC, date, datetime
@@ -17,10 +19,10 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db.models import PositionSnapshot, Transaction
+from app.db.models import PortfolioValuationSnapshot, Transaction
 from app.db.repositories import (
     PortfolioRepository,
-    PositionSnapshotRepository,
+    PortfolioValuationRepository,
     SecurityRepository,
     TransactionRepository,
     UserRepository,
@@ -120,30 +122,42 @@ async def migrate(
                 portfolio_settings={"source": "sqlite", "migration_version": 1},
             )
 
-            snapshot_repository = PositionSnapshotRepository(session)
+            snapshot_repository = PortfolioValuationRepository(session)
             for row in snapshots:
                 as_of = _utc_datetime(row.get("timestamp"), fallback_date=row.get("date"))
-                snapshot = PositionSnapshot(
+                source = "legacy_sqlite_portfolio_snapshot"
+                existing = await snapshot_repository.find_unique(
+                    portfolio.id,
+                    as_of,
+                    source,
+                )
+                payload_hash = hashlib.sha256(
+                    json.dumps(row, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+                snapshot = PortfolioValuationSnapshot(
                     portfolio_id=portfolio.id,
-                    security_id=None,
                     as_of=as_of,
-                    source="legacy_sqlite_portfolio_snapshot",
-                    quantity=Decimal("1"),
-                    average_cost=_decimal(row.get("total_cost")),
-                    market_price=_decimal(row.get("total_value")),
-                    market_value=_decimal(row.get("total_value")),
-                    cost_basis=_decimal(row.get("total_cost")),
-                    unrealized_pnl=_decimal(row.get("total_pnl")),
-                    weight=Decimal("1"),
+                    valuation_date=as_of.date(),
                     base_currency=base_currency.upper(),
-                    snapshot_data={
+                    total_market_value=_decimal(row.get("total_value")),
+                    total_cost_basis=_decimal(row.get("total_cost")),
+                    cash_value=Decimal("0"),
+                    unrealized_pnl=_decimal(row.get("total_pnl")),
+                    data_as_of=as_of,
+                    source=source,
+                    input_hash=payload_hash,
+                    history_completeness="unknown",
+                    cash_balances={},
+                    warnings=["legacy_aggregate_has_no_position_lineage"],
+                    config_snapshot={
                         "legacy_aggregate": True,
                         "num_positions": row.get("num_positions", 0),
                         "eur_usd_rate": row.get("eur_usd_rate"),
                         "source_table": "portfolio_snapshots",
                     },
                 )
-                _, created = await snapshot_repository.add_idempotent(snapshot)
+                await snapshot_repository.upsert(snapshot)
+                created = existing is None
                 key = "snapshots_created" if created else "snapshots_existing"
                 counts[key] += 1
 

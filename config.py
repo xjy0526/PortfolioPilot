@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     CONTACT_EMAIL: str = ""
     APP_MODE: Literal["personal", "fund_research"] = "personal"
     DISPLAY_TIMEZONE: str = "Asia/Shanghai"
+    DEFAULT_PORTFOLIO_ID: str = ""
 
     # Optional extensions are opt-in. Core CSV, risk, RAG and backtest flows do
     # not depend on these integrations.
@@ -67,6 +68,16 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
     DATABASE_POOL_TIMEOUT_SECONDS: int = 30
+
+    # Transaction import and ledger workers
+    MAX_TRANSACTION_IMPORT_BYTES: int = 5 * 1024 * 1024
+    CODE_VERSION: str = "unknown"
+
+    # Market-data providers. Tushare is the preferred A-share source;
+    # yfinance remains a research-only source for US equities and ETFs.
+    TUSHARE_TOKEN: str = ""
+    MARKET_SYNC_LOOKBACK_DAYS: int = 365
+    MARKET_DATA_PROVIDERS: str = "yfinance"
 
     # Scheduler
     DAILY_REFRESH_TIME: str = "06:00"

@@ -1,11 +1,16 @@
 """Controlled research workflow, human review and published report APIs."""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_db_session
+from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
+from routes.research import _build_portfolio_risk_summary
 from workflows import ResearchReportWorkflow
 
 
@@ -17,9 +22,33 @@ def get_workflow_service() -> ResearchReportWorkflow:
 
 
 @router.post("/api/workflows/research-report")
-async def start_research_report(payload: dict[str, Any] = Body(...)):
+async def start_research_report(
+    payload: dict[str, Any] = Body(...),
+    session: AsyncSession = Depends(get_db_session),
+):
     try:
-        result = await get_workflow_service().start(payload)
+        raw_portfolio_id = payload.get("portfolio_id")
+        portfolio_id = uuid.UUID(str(raw_portfolio_id)) if raw_portfolio_id else None
+        context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+        if context is None or not context.summary.stocks:
+            return JSONResponse(
+                {"error": "No PostgreSQL valuation snapshot available"}, status_code=503
+            )
+        risk_summary = await _build_portfolio_risk_summary(
+            context.summary,
+            session=session,
+            as_of=context.valuation.as_of,
+        )
+        workflow_payload = dict(payload)
+        workflow_payload["_db_portfolio"] = {
+            "portfolio_id": str(context.portfolio.id),
+            "valuation_snapshot_id": str(context.valuation.id),
+            "valuation_input_hash": context.valuation.input_hash,
+            "as_of": context.valuation.as_of.isoformat(),
+            "tickers": [item.position.ticker for item in context.summary.stocks],
+            "risk_summary": risk_summary,
+        }
+        result = await get_workflow_service().start(workflow_payload)
         status_code = 200 if result.get("idempotent_replay") else 201
         return JSONResponse(result, status_code=status_code)
     except Exception as exc:

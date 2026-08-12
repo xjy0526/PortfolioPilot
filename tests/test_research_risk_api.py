@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pandas as pd
 from fastapi import FastAPI
@@ -7,12 +8,13 @@ from fastapi.testclient import TestClient
 from models import PortfolioPosition, PortfolioSummary, StockFullData
 from routes import research
 from services.market_data.base import PriceHistoryResult
-from state import portfolio_data
 
 
 class _StubPriceHistoryService:
-    def __init__(self, result: PriceHistoryResult):
-        self.result = result
+    result: PriceHistoryResult
+
+    def __init__(self, *args, **kwargs):
+        pass
 
     async def get_history(self, tickers, *, lookback_days=365, as_of=None):
         return self.result
@@ -44,11 +46,27 @@ def _summary() -> PortfolioSummary:
     return PortfolioSummary(stocks=stocks, scores=[], num_positions=2, total_value=2300)
 
 
-def test_risk_summary_api_schema_and_real_price_metadata(monkeypatch):
-    monkeypatch.setattr(research, "get_price_history_service", lambda: _StubPriceHistoryService(_history_result()))
-    monkeypatch.setitem(portfolio_data, "summary", _summary())
+def _app(monkeypatch) -> FastAPI:
+    async def load(self, **kwargs):
+        return SimpleNamespace(
+            summary=_summary(),
+            valuation=SimpleNamespace(as_of=datetime(2026, 7, 15, tzinfo=timezone.utc)),
+        )
+
+    async def db_session():
+        yield object()
+
+    _StubPriceHistoryService.result = _history_result()
+    monkeypatch.setattr(research.LegacyPortfolioAdapter, "load", load)
+    monkeypatch.setattr(research, "PriceHistoryService", _StubPriceHistoryService)
     app = FastAPI()
     app.include_router(research.router)
+    app.dependency_overrides[research.get_db_session] = db_session
+    return app
+
+
+def test_risk_summary_api_schema_and_real_price_metadata(monkeypatch):
+    app = _app(monkeypatch)
 
     payload = TestClient(app).get("/api/portfolio/risk-summary").json()
 
@@ -62,7 +80,6 @@ def test_risk_summary_api_schema_and_real_price_metadata(monkeypatch):
 
 
 def test_ai_analysis_api_embeds_same_risk_schema(monkeypatch):
-    monkeypatch.setattr(research, "get_price_history_service", lambda: _StubPriceHistoryService(_history_result()))
     monkeypatch.setattr(research, "retrieve_evidence", lambda **kwargs: [])
 
     async def _analysis(risk_summary, evidence, language="zh"):
@@ -77,9 +94,7 @@ def test_ai_analysis_api_embeds_same_risk_schema(monkeypatch):
         }
 
     monkeypatch.setattr(research, "analyze_portfolio_with_llm", _analysis)
-    monkeypatch.setitem(portfolio_data, "summary", _summary())
-    app = FastAPI()
-    app.include_router(research.router)
+    app = _app(monkeypatch)
 
     response = TestClient(app).post("/api/ai/analyze-portfolio", json={"lang": "en"})
     payload = response.json()

@@ -26,6 +26,7 @@ class SyncRun(UUIDTimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     data_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     code_version: Mapped[str] = mapped_column(String(120), nullable=False, default="unknown")
+    retry_count: Mapped[int] = mapped_column(nullable=False, default=0)
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )

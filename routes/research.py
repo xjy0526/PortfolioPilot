@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_db_session
+from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from analytics.risk_metrics import build_portfolio_risk_summary
 from backtest.strategy_backtester import BacktestConfig, resolve_prices_csv, run_strategy_backtest
 from config import BASE_DIR, settings
@@ -18,8 +22,8 @@ from services.financial_analysis import (
     analyze_portfolio_with_llm,
     safe_financial_analysis_template,
 )
-from services.market_data import get_price_history_service
-from state import portfolio_data
+from services.market_data.postgres_provider import PostgresPriceHistoryProvider
+from services.market_data.price_history_service import PriceHistoryService
 
 logger = logging.getLogger(__name__)
 
@@ -27,31 +31,50 @@ router = APIRouter()
 
 
 @router.get("/api/portfolio/risk-summary")
-async def get_portfolio_risk_summary():
+async def get_portfolio_risk_summary(
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+):
     """Return structured portfolio risk metrics for frontend and LLM usage."""
-    summary = portfolio_data.get("summary")
-    if not summary or not getattr(summary, "stocks", None):
+    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if context is None or not context.summary.stocks:
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
 
     try:
-        return await _build_portfolio_risk_summary(summary)
+        return await _build_portfolio_risk_summary(
+            context.summary,
+            session=session,
+            as_of=context.valuation.as_of,
+        )
     except Exception as exc:
         logger.exception("Risk summary calculation failed")
         return JSONResponse({"error": "Risk summary calculation failed", "detail": str(exc)}, status_code=500)
 
 
 @router.post("/api/ai/analyze-portfolio")
-async def analyze_portfolio_endpoint(data: dict[str, Any] | None = Body(default=None)):
+async def analyze_portfolio_endpoint(
+    data: dict[str, Any] | None = Body(default=None),
+    session: AsyncSession = Depends(get_db_session),
+):
     """Run structured LLM portfolio analysis with optional RAG evidence."""
-    summary = portfolio_data.get("summary")
-    if not summary or not getattr(summary, "stocks", None):
+    data = data or {}
+    raw_portfolio_id = data.get("portfolio_id")
+    try:
+        portfolio_id = uuid.UUID(str(raw_portfolio_id)) if raw_portfolio_id else None
+    except ValueError:
+        return JSONResponse({"error": "Invalid portfolio_id"}, status_code=422)
+    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if context is None or not context.summary.stocks:
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
 
-    data = data or {}
     language = data.get("lang") or data.get("language") or "zh"
     try:
-        risk_summary = await _build_portfolio_risk_summary(summary)
-        query = data.get("query") or _default_rag_query(summary, risk_summary)
+        risk_summary = await _build_portfolio_risk_summary(
+            context.summary,
+            session=session,
+            as_of=context.valuation.as_of,
+        )
+        query = data.get("query") or _default_rag_query(context.summary, risk_summary)
         top_k = int(data.get("top_k", getattr(settings, "RAG_TOP_K", 5)) or 5)
         evidence = retrieve_evidence(
             query=query,
@@ -59,7 +82,6 @@ async def analyze_portfolio_endpoint(data: dict[str, Any] | None = Body(default=
             permission_context=_permission_context_from_data(data),
         )
         analysis = await analyze_portfolio_with_llm(risk_summary, evidence, language=language)
-        portfolio_data["last_structured_ai_analysis"] = analysis
         return {
             "status": "ok",
             "analysis": analysis,
@@ -105,17 +127,22 @@ async def rag_retrieve_endpoint(data: dict[str, Any] | None = Body(default=None)
 
 
 @router.get("/api/portfolio/rebalance")
-async def get_portfolio_rebalance():
+async def get_portfolio_rebalance(
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+):
     """Return explainable LLM-risk-adjusted target weights without trading."""
-    summary = portfolio_data.get("summary")
-    if not summary or not getattr(summary, "stocks", None):
+    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if context is None or not context.summary.stocks:
         return JSONResponse({"error": "No portfolio data available"}, status_code=503)
 
     try:
-        risk_summary = await _build_portfolio_risk_summary(summary)
-        analysis = portfolio_data.get("last_structured_ai_analysis")
-        if not analysis:
-            analysis = safe_financial_analysis_template(risk_summary, evidence=[], language="zh")
+        risk_summary = await _build_portfolio_risk_summary(
+            context.summary,
+            session=session,
+            as_of=context.valuation.as_of,
+        )
+        analysis = safe_financial_analysis_template(risk_summary, evidence=[], language="zh")
 
         result = llm_risk_adjusted_weighting(
             current_weights=risk_summary.get("asset_weights", {}),
@@ -126,6 +153,8 @@ async def get_portfolio_rebalance():
         )
         return {
             "status": "ok",
+            "analysis_source": "deterministic_fallback",
+            "llm_used": False,
             "rebalance": result,
             "risk_score": analysis.get("risk_score", risk_summary.get("risk_score")),
             "disclaimer": analysis.get(
@@ -184,15 +213,25 @@ def _permission_context_from_data(data: dict[str, Any]) -> PermissionContext:
     )
 
 
-async def _build_portfolio_risk_summary(summary: Any) -> dict[str, Any]:
+async def _build_portfolio_risk_summary(
+    summary: Any,
+    *,
+    session: AsyncSession,
+    as_of,
+) -> dict[str, Any]:
     tickers = [
         stock.position.ticker
         for stock in getattr(summary, "stocks", [])
         if getattr(stock.position, "ticker", "") and getattr(stock.position, "ticker", "") != "CASH"
     ]
-    history = await get_price_history_service().get_history(
+    history_service = PriceHistoryService(
+        PostgresPriceHistoryProvider(session, as_of=as_of),
+        stale_after_days=settings.PRICE_HISTORY_STALE_AFTER_DAYS,
+    )
+    history = await history_service.get_history(
         tickers,
         lookback_days=settings.PRICE_HISTORY_LOOKBACK_DAYS,
+        as_of=as_of,
     )
     return build_portfolio_risk_summary(
         summary.stocks,

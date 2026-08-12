@@ -2,12 +2,12 @@
 
 本文记录当前代码边界，避免把研究演示能力描述成生产级金融基础设施。所有分析仅用于研究和软件演示，不构成投资建议。
 
-## 1. PostgreSQL 基础已建立，旧业务仍保留 SQLite
+## 1. 核心组合已使用 PostgreSQL，研究治理仍保留 SQLite
 
-- PostgreSQL 已具备 async engine、Repository、Alembic 和首批核心表，但当前在线持仓构建、评分、知识文档、Prompt、LLM Trace、Workflow 和可选 Shadow 数据仍主要使用 `cache/portfoliopilot.db`。
+- PostgreSQL `transactions` 已是核心组合持仓和现金的唯一事实源；持仓与估值快照由账本、历史行情和 FX 派生。
+- 知识文档、Prompt、LLM Trace、Workflow 审批、部分评分历史和可选 Shadow 数据仍主要使用 `cache/portfoliopilot.db`。
 - SQLite 访问主要是同步 `sqlite3`，部分调用通过线程池避免阻塞事件循环，但不具备 PostgreSQL 的并发、迁移、备份和权限能力。
-- 当前组合在线状态仍保存在 `state.portfolio_data`，进程重启后需要从 CSV、缓存或外部 Provider 重建。
-- PostgreSQL `transactions` 与 `position_snapshots` 表已经创建，但真实组合尚未切换为 transactions 唯一事实源；该业务迁移属于后续阶段。
+- `state.portfolio_data` 仍被部分非核心旧模块引用，但当前组合页、DB API、风险汇总、AI 分析、调仓研究和 Workflow 的组合输入已来自 PostgreSQL valuation snapshot。
 - `scripts/migrate_sqlite_to_postgres.py` 只迁移明确支持的旧总览快照和 Shadow 模拟交易，不会把其他 SQLite 表静默映射到不兼容结构。
 
 ## 2. 当前还不是生产级严格 walk-forward 回测
@@ -40,8 +40,9 @@ yfinance 是非授权的公开数据接口适配，不提供生产 SLA。它可�
 | RAG evidence | 配置目录无文档时存在仓库示例文档 | 本地演示可读取 `data/research_docs/`；结果仍携带 evidence ID 和来源 |
 | RAG evidence | 没有任何可用或有权限文档 | 返回空 citations 和 `evidence_insufficient=true` |
 | 风险历史行情 | Provider 失败、覆盖率不足或样本不足 | 指标返回 unavailable/null 及数据质量状态，不生成 mock 风险值 |
-| 本地组合 | 无持久化 CSV，且处于 demo 条件 | 可读取仓库示例组合，来源标记为 `sample_csv` |
-| 历史图表 | CSV 只有当前快照 | 可生成明确标记为 estimated 的展示序列，不作为真实历史业绩 |
+| 显式 Demo 页面 | 测试或演示代码构造 `is_demo=true` 组合 | 返回标记为 demo 的固定数据，不写入真实账本 |
+| 核心组合 | PostgreSQL 没有交易或估值快照 | 返回 empty/error state；不从本地 CSV state 自动伪造真实组合 |
+| 行情同步 | Tushare Token、Provider 依赖或网络不可用 | 本次 `sync_run` 标记 failed；不生成 mock `price_bars` |
 
 Mock、sample、estimated 和 fallback 结果不得用于收益承诺、模型效果宣传或真实投资决策。
 
@@ -52,6 +53,8 @@ Polymarket、Telegram、Parqet 和 Shadow Agent 分别由 `ENABLE_POLYMARKET`、
 ## 6. 其他工程限制
 
 - 当前认证仍是可选 Basic Auth，尚未接入 OIDC、RBAC/ABAC 和个人审计身份。
-- 原生前端与根目录模块仍依赖部分全局状态，尚未迁移到目标 `app/` 分层结构。
+- 原生前端与部分根目录旧接口仍依赖全局状态；核心组合路径已迁移，但完整模块归档尚未完成。
+- Tushare 与 yfinance 当前按 Provider 逐证券串行获取，尚未实现生产级限流、断点续传、交易所级增量游标和授权行情 SLA。
+- Corporate action 已有 Provider 查询契约，但尚未独立落库和自动生成账本事件；当前复权主要通过 `adjusted_close` 与 `adjustment_factor` 保存 lineage。
 - 当前本地虚拟环境可能不是 Python 3.12；CI 和 Docker 使用 Python 3.12 作为验收环境。
 - 示例持仓、价格和研究文档均为公开或模拟内容，不代表真实持仓或投资观点。

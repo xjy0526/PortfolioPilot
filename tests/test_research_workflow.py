@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -8,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from models import PortfolioPosition, PortfolioSummary, StockFullData
 from services.market_data.base import PriceHistoryResult
-from state import portfolio_data
 from prompts.registry import PromptRegistry
 from routes import workflows as workflow_routes
 from workflows import research_report as workflow_module
@@ -64,12 +64,32 @@ def _draft(risk_summary, evidence):
     }
 
 
+def _db_request(**values):
+    payload = {
+        "user_id": "analyst-1",
+        "_db_portfolio": {
+            "portfolio_id": "00000000-0000-0000-0000-000000000001",
+            "valuation_snapshot_id": "00000000-0000-0000-0000-000000000002",
+            "valuation_input_hash": "a" * 64,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "tickers": ["AAPL"],
+            "risk_summary": {
+                "risk_score": 5.0,
+                "asset_metrics": {
+                    "AAPL": {"weight": 1.0, "risk_level": "medium"}
+                },
+                "concentration_flags": ["single_asset:AAPL:100.0%"],
+            },
+        },
+    }
+    payload.update(values)
+    return payload
+
+
 @pytest.fixture
 def workflow(monkeypatch):
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     service = ResearchReportWorkflow(connection)
-    monkeypatch.setitem(portfolio_data, "summary", _summary())
-    monkeypatch.setattr(workflow_module, "get_price_history_service", lambda: StubHistory())
     monkeypatch.setattr(
         workflow_module,
         "retrieve_evidence_with_status",
@@ -92,7 +112,7 @@ def workflow(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_workflow_requires_human_review_then_publishes(workflow):
-    result = await workflow.start({"user_id": "analyst-1", "idempotency_key": "run-once"})
+    result = await workflow.start(_db_request(idempotency_key="run-once"))
 
     assert result["status"] == "PENDING_REVIEW"
     assert len(result["steps"]) == 9
@@ -119,8 +139,8 @@ async def test_workflow_requires_human_review_then_publishes(workflow):
 
 @pytest.mark.asyncio
 async def test_workflow_is_idempotent_and_reject_does_not_publish(workflow):
-    first = await workflow.start({"user_id": "analyst-1", "idempotency_key": "same"})
-    second = await workflow.start({"user_id": "analyst-1", "idempotency_key": "same"})
+    first = await workflow.start(_db_request(idempotency_key="same"))
+    second = await workflow.start(_db_request(idempotency_key="same"))
     assert first["run_id"] == second["run_id"]
 
     rejected = await workflow.decide(
@@ -133,7 +153,7 @@ async def test_workflow_is_idempotent_and_reject_does_not_publish(workflow):
 
 @pytest.mark.asyncio
 async def test_request_changes_creates_new_review_iteration(workflow):
-    first = await workflow.start({"user_id": "analyst-1"})
+    first = await workflow.start(_db_request())
     revised = await workflow.decide(
         first["review_tasks"][0]["review_id"], "request_changes",
         reviewer_id="reviewer", feedback="Clarify concentration risk",
@@ -146,7 +166,7 @@ async def test_request_changes_creates_new_review_iteration(workflow):
 
 @pytest.mark.asyncio
 async def test_workflow_limits_fail_closed(workflow):
-    result = await workflow.start({"user_id": "analyst-1", "max_steps": 2})
+    result = await workflow.start(_db_request(max_steps=2))
     assert result["status"] == "FAILED"
     assert result["error_type"] == "WorkflowLimitError"
     assert result["report_id"] is None
@@ -165,16 +185,36 @@ async def test_forbidden_expression_fails_before_human_review(workflow, monkeypa
         return draft
 
     monkeypatch.setattr(workflow_module, "analyze_portfolio_with_llm", unsafe)
-    result = await workflow.start({"user_id": "analyst-1"})
+    result = await workflow.start(_db_request())
     assert result["status"] == "FAILED"
     assert result["current_step"] == "run_compliance_rules"
     assert result["review_tasks"] == []
 
 
 def test_workflow_api_lifecycle(monkeypatch, workflow):
+    async def load(self, **kwargs):
+        return SimpleNamespace(
+            portfolio=SimpleNamespace(id="00000000-0000-0000-0000-000000000001"),
+            valuation=SimpleNamespace(
+                id="00000000-0000-0000-0000-000000000002",
+                input_hash="a" * 64,
+                as_of=datetime.now(timezone.utc),
+            ),
+            summary=_summary(),
+        )
+
+    async def risk_summary(*args, **kwargs):
+        return _db_request()["_db_portfolio"]["risk_summary"]
+
+    async def db_session():
+        yield object()
+
     app = FastAPI()
     app.include_router(workflow_routes.router)
     monkeypatch.setattr(workflow_routes, "get_workflow_service", lambda: workflow)
+    monkeypatch.setattr(workflow_routes.LegacyPortfolioAdapter, "load", load)
+    monkeypatch.setattr(workflow_routes, "_build_portfolio_risk_summary", risk_summary)
+    app.dependency_overrides[workflow_routes.get_db_session] = db_session
     client = TestClient(app)
 
     created = client.post("/api/workflows/research-report", json={"user_id": "api-analyst"})

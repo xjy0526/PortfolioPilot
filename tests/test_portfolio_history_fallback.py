@@ -58,22 +58,22 @@ def test_estimated_history_detail_matches_frontend_shape():
 
 
 @pytest.mark.asyncio
-async def test_portfolio_history_route_uses_csv_estimate_for_single_snapshot(monkeypatch):
+async def test_portfolio_history_route_does_not_use_csv_state_as_fact_source(monkeypatch):
     from routes.portfolio import get_portfolio_history
 
     portfolio_data.clear()
     portfolio_data["summary"] = _summary()
     portfolio_data["source"] = "csv"
 
-    monkeypatch.setattr("database.load_snapshots", lambda days=90: [
-        {"date": "2026-05-20", "total_value": 320.0}
-    ])
+    async def no_database_snapshot(self, **kwargs):
+        return None
 
-    history = await get_portfolio_history(days=30)
+    monkeypatch.setattr(
+        "routes.portfolio.LegacyPortfolioAdapter.load", no_database_snapshot
+    )
+    history = await get_portfolio_history(days=30, portfolio_id=None, session=object())
 
-    assert len(history) == 30
-    assert history[0]["estimated"] is True
-    assert history[-1]["total_value"] == 320.0
+    assert history == []
 
 
 def test_portfolio_return_series_uses_csv_estimate_when_snapshots_missing(monkeypatch):

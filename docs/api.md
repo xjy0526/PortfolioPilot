@@ -25,7 +25,32 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 | GET | `/api/sectors` | Sektor-Allokation |
 | GET | `/api/fear-greed` | Fear & Greed Index |
 | GET | `/api/status` | System-Status |
-| POST | `/api/portfolio/csv` | CSV Portfolio Import (Upload) |
+| POST | `/api/portfolio/csv` | 旧 CSV 兼容入口；新业务应使用 transaction import API |
+
+## PostgreSQL Ledger (`app/api/portfolios.py`)
+
+这些接口以 PostgreSQL transactions 和 valuation snapshots 为数据源。`as_of` 使用带时区 ISO-8601；未带时区时按 UTC 处理。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/portfolios` | 列出 active portfolios |
+| GET | `/api/portfolios/{portfolio_id}` | 读取基准币种、成本法、展示时区和 benchmark 配置 |
+| GET | `/api/portfolios/{portfolio_id}/transactions?as_of=` | 按稳定顺序读取账本流水 |
+| POST | `/api/portfolios/{portfolio_id}/imports/transactions` | 上传标准交易流水或旧持仓 CSV |
+| GET | `/api/import-batches/{batch_id}/errors` | 下载行级 CSV 问题报告 |
+| GET | `/api/portfolios/{portfolio_id}/positions?as_of=` | 从账本重建证券与分币种现金，不写快照 |
+| GET | `/api/portfolios/{portfolio_id}/valuation?as_of=` | 读取不晚于 `as_of` 的最新估值快照 |
+| POST | `/api/portfolios/{portfolio_id}/rebuild?as_of=` | 幂等生成组合与 position valuation snapshots |
+
+导入响应包含 `accepted_rows`、`rejected_rows`、`inserted_rows`、`idempotent_replay` 和 `history_completeness`。旧持仓 CSV 返回 `opening_balance_only`，不会被表示成完整交易历史。
+
+## Market Data (`app/api/market_data.py`)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/market-data/sync` | 显式运行 Provider 同步并返回 `sync_run`、计数和 data cutoff |
+
+请求可包含 `providers`、`start`、`end` 和 `portfolio_id`。Tushare 缺 Token或 Provider 失败时返回错误并将 run 标记 failed，不创建 mock 行情。
 
 ## Demo Mode (`routes/demo.py`)
 

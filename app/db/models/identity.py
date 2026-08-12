@@ -40,6 +40,17 @@ class Portfolio(UUIDTimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     base_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="CNY")
+    cost_basis_method: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="weighted_average"
+    )
+    display_timezone: Mapped[str] = mapped_column(
+        String(80), nullable=False, default="Asia/Shanghai"
+    )
+    benchmark_security_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("securities.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     settings: Mapped[dict[str, Any]] = mapped_column(
         JSONB,

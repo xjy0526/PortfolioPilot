@@ -10,11 +10,18 @@ werden mit einem In-Memory-Cache (15min TTL) zwischengespeichert.
 import logging
 import time
 from datetime import datetime
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+import uuid
 
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.dependencies import get_db_session
+from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from state import portfolio_data
 from config import settings
+from services.market_data.postgres_provider import PostgresPriceHistoryProvider
+from services.market_data.price_history_service import PriceHistoryService
 
 logger = logging.getLogger(__name__)
 
@@ -479,15 +486,17 @@ async def get_stock_news(ticker: str, limit: int = 5):
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/api/risk")
-async def get_risk():
+async def get_risk(
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+):
     """Portfolio-Risikokennzahlen: Beta, VaR, Max Drawdown (gecacht 15min)."""
-    # Demo-Modus
-    summary = portfolio_data.get("summary")
-    if summary and summary.is_demo:
-        from fetchers.demo_data import get_demo_risk
-        return get_demo_risk()
-
-    cached = _get_cached("risk")
+    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if context is None:
+        return JSONResponse({"error": "Keine Daten"}, status_code=503)
+    summary = context.summary
+    cache_key = f"risk:{context.valuation.input_hash}"
+    cached = _get_cached(cache_key)
     if cached is not None:
         return cached
 
@@ -495,11 +504,6 @@ async def get_risk():
         return JSONResponse({"error": "Keine Daten"}, status_code=503)
 
     try:
-        import yfinance as yf
-        from datetime import datetime, timedelta
-        from state import YFINANCE_ALIASES
-
-        # Berechne Portfolio-Returns für VaR
         tickers = [
             s.position.ticker for s in summary.stocks
             if s.position.ticker != "CASH"
@@ -509,26 +513,26 @@ async def get_risk():
             if s.position.ticker != "CASH"
         )
 
-        end = datetime.now()
-        start = end - timedelta(days=180)
-
-        # Gewichtete Portfolio-Returns berechnen
+        history = await PriceHistoryService(
+            PostgresPriceHistoryProvider(session, as_of=context.valuation.as_of),
+            stale_after_days=settings.PRICE_HISTORY_STALE_AFTER_DAYS,
+        ).get_history(
+            tickers,
+            lookback_days=180,
+            as_of=context.valuation.as_of,
+        )
         all_returns = {}
         for s in summary.stocks:
             if s.position.ticker == "CASH":
                 continue
-            yf_ticker = YFINANCE_ALIASES.get(s.position.ticker, s.position.ticker)
-            try:
-                t = yf.Ticker(yf_ticker)
-                hist = t.history(start=start, end=end)
-                if hist is not None and not hist.empty:
-                    closes = hist["Close"].dropna()
-                    if len(closes) >= 20:
-                        rets = closes.pct_change().dropna().tolist()
-                        weight = s.position.current_value / total_value if total_value > 0 else 0
-                        all_returns[s.position.ticker] = (rets, weight)
-            except Exception:
+            ticker = s.position.ticker
+            if ticker not in history.adjusted_close:
                 continue
+            closes = history.adjusted_close[ticker].dropna()
+            if len(closes) >= 20:
+                rets = closes.pct_change(fill_method=None).dropna().tolist()
+                weight = s.position.current_value / total_value if total_value > 0 else 0
+                all_returns[ticker] = (rets, weight)
 
         # Gewichtete Portfolio-Returns
         portfolio_returns = []
@@ -543,7 +547,9 @@ async def get_risk():
 
         from engine.analytics import calculate_portfolio_risk
         result = calculate_portfolio_risk(summary.stocks, portfolio_returns)
-        _set_cached("risk", result)
+        result["market_data_quality"] = history.data_quality()
+        result["valuation_snapshot_id"] = str(context.valuation.id)
+        _set_cached(cache_key, result)
         return result
 
     except Exception as e:

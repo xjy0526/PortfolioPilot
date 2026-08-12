@@ -8,13 +8,20 @@ from app.db.repositories.market import (
     ProviderSymbolRepository,
     SecurityRepository,
 )
-from app.db.repositories.portfolio import PositionSnapshotRepository, TransactionRepository
+from app.db.repositories.portfolio import (
+    ImportBatchRepository,
+    PortfolioValuationRepository,
+    PositionSnapshotRepository,
+    TransactionRepository,
+)
 from app.db.repositories.runs import RiskRunRepository, SyncRunRepository
 
 __all__ = [
     "FxRateRepository",
     "HealthRepository",
+    "ImportBatchRepository",
     "PortfolioRepository",
+    "PortfolioValuationRepository",
     "PositionSnapshotRepository",
     "PriceBarRepository",
     "ProviderSymbolRepository",
