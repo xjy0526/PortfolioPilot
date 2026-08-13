@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.principal import Principal
 from app.db.models import (
@@ -175,10 +176,10 @@ class ResearchReportWorkflow:
             run.error_type = type(exc).__name__
             run.completed_at = utc_now()
             context["workflow_error"] = str(exc)
-            run.context_json = context
+            _persist_context(run, context)
             await self.session.flush()
             return
-        run.context_json = context
+        _persist_context(run, context)
         run.status = "PENDING_REVIEW"
         run.current_step = "request_human_review"
         await self.session.flush()
@@ -235,7 +236,7 @@ class ResearchReportWorkflow:
         context["review_decision"] = decision
         context["review_feedback"] = feedback
         context["reviewer_id"] = principal.user_id
-        run.context_json = context
+        _persist_context(run, context)
         context = await self._run_step(run, "approve_or_reject", context)
         if run.status == "FAILED":
             return await self.get_run(run.id)
@@ -255,7 +256,8 @@ class ResearchReportWorkflow:
             run.iteration += 1
             await self.session.flush()
             await self._execute_until_review(run.id, revision_feedback=feedback)
-        run.context_json = context if decision != "request_changes" else run.context_json
+        if decision != "request_changes":
+            _persist_context(run, context)
         await self.session.flush()
         return await self.get_run(run.id)
 
@@ -375,7 +377,7 @@ class ResearchReportWorkflow:
             step.status = "COMPLETED"
             step.output_summary = _summarize_context(context)
             step.completed_at = utc_now()
-            run.context_json = context
+            _persist_context(run, context)
             await self.session.flush()
             return context
         except Exception as exc:
@@ -548,6 +550,12 @@ def _summarize_context(context: dict[str, Any]) -> dict[str, Any]:
         "ticker_count": len(context.get("portfolio_tickers", [])),
         "evidence_count": len(context.get("evidence", [])),
     }
+
+
+def _persist_context(run: WorkflowRun, context: dict[str, Any]) -> None:
+    """Persist each JSONB workflow checkpoint, including in-place mutations."""
+    run.context_json = context
+    flag_modified(run, "context_json")
 
 
 def _workflow_cost_summary(

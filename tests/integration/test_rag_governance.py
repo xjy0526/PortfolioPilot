@@ -297,6 +297,19 @@ async def test_workflow_idempotency_scope_and_reviewer_identity(monkeypatch):
                 assert scoped["run_id"] != first["run_id"]
                 run_ids = [uuid.UUID(first["run_id"]), uuid.UUID(scoped["run_id"])]
 
+                persisted_run = await session.get(WorkflowRun, run_ids[0])
+                assert persisted_run is not None
+                await session.refresh(persisted_run, attribute_names=["context_json"])
+                assert all(
+                    persisted_run.context_json.get(flag)
+                    for flag in (
+                        "numbers_valid",
+                        "citations_valid",
+                        "permissions_valid",
+                        "rules_valid",
+                    )
+                )
+
                 approved = await service.decide(
                     uuid.UUID(first["review_tasks"][0]["review_id"]),
                     "approve",
