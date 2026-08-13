@@ -106,10 +106,22 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     RAG_CHUNK_SIZE: int = 900
     RAG_TOP_K: int = 5
-    RAG_VECTOR_BACKEND: str = "faiss"
+    RAG_VECTOR_BACKEND: str = "pgvector"
     RAG_SCORE_THRESHOLD: float = 0.15
+    RAG_VECTOR_SCORE_THRESHOLD: float = 0.20
     RAG_RRF_K: int = 60
     RAG_RETRIEVAL_POOL_SIZE: int = 20
+    RAG_EMBEDDING_DIMENSION: int = 384
+    RAG_RERANKER_ENABLED: bool = False
+    RAG_MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+    RAG_MAX_PDF_PAGES: int = 200
+    RAG_MAX_CHUNKS: int = 5000
+    RAG_PARSE_TIMEOUT_SECONDS: int = 60
+    RAG_INGESTION_DIR: str = "data/ingestion"
+
+    # Server-derived local principal used only when Basic Auth is disabled.
+    LOCAL_PRINCIPAL_USER: str = "local-user"
+    LOCAL_PRINCIPAL_GROUPS: str = "public,knowledge_admin,research_reviewer"
 
     # Strategy backtest
     BACKTEST_PRICE_CSV: str = ""
@@ -222,6 +234,16 @@ class Settings(BaseSettings):
         if not normalized.startswith("postgresql+asyncpg://"):
             raise ValueError("DATABASE_URL must use PostgreSQL with the asyncpg driver")
         return normalized
+
+    @field_validator("RAG_EMBEDDING_DIMENSION")
+    @classmethod
+    def validate_rag_embedding_dimension(cls, value: int) -> int:
+        if value != 384:
+            raise ValueError(
+                "RAG_EMBEDDING_DIMENSION is fixed at 384 by the current pgvector schema; "
+                "change it only with an Alembic migration"
+            )
+        return value
 
     def model_post_init(self, __context) -> None:
         # Sync PORT → SERVER_PORT (Cloud Run setzt PORT)

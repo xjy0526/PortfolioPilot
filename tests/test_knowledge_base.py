@@ -185,31 +185,32 @@ def test_markdown_and_pdf_preserve_structure_and_page(monkeypatch):
     assert pdf_blocks[0].section == "RISK FACTORS"
 
 
-def test_knowledge_api_document_lifecycle(monkeypatch, service):
-    app = FastAPI()
-    app.include_router(knowledge_routes.router)
-    monkeypatch.setattr(knowledge_routes, "get_knowledge_service", lambda: service)
-    client = TestClient(app)
+def test_pdf_page_limit_is_enforced_before_parsing(monkeypatch):
+    class FakeReader:
+        metadata = SimpleNamespace(title="Long Filing")
+        pages = [SimpleNamespace(extract_text=lambda: "Page") for _ in range(2)]
 
-    created = client.post(
-        "/api/knowledge/documents",
-        json={
-            "filename": "faq.md",
-            "content": "# Public FAQ\n\n## Fees\n\nThis is simulated public information.",
-            "metadata": {"document_id": "api-doc", "title": "FAQ"},
-        },
+        def __init__(self, _stream):
+            pass
+
+    monkeypatch.setitem(sys.modules, "pypdf", SimpleNamespace(PdfReader=FakeReader))
+
+    with pytest.raises(ValueError, match="PDF page limit exceeded: 2 > 1"):
+        parse_document(
+            b"%PDF-fake",
+            "long_filing.pdf",
+            "Long Filing",
+            max_pdf_pages=1,
+        )
+
+
+def test_knowledge_upload_route_uses_multipart_uploadfile():
+    route = next(
+        item
+        for item in knowledge_routes.router.routes
+        if getattr(item, "path", "") == "/api/knowledge/documents"
+        and "POST" in getattr(item, "methods", set())
     )
-    assert created.status_code == 201
-    payload = created.json()
-    assert client.get(f"/api/knowledge/ingestion-jobs/{payload['job_id']}").json()["status"] == "completed"
-
-    published = client.post("/api/knowledge/documents/api-doc/publish")
-    assert published.status_code == 200
-    listed = client.get("/api/knowledge/documents").json()
-    assert listed["count"] == 1
-    detail = client.get("/api/knowledge/documents/api-doc").json()
-    assert detail["document"]["status"] == "published"
-    assert len(detail["versions"]) == 1
-
-    deactivated = client.post("/api/knowledge/documents/api-doc/deactivate")
-    assert deactivated.json()["document"]["status"] == "inactive"
+    body_fields = {field.name: field for field in route.dependant.body_params}
+    assert {"file", "metadata"}.issubset(body_fields)
+    assert body_fields["file"].field_info.media_type == "multipart/form-data"

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import settings
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
@@ -54,6 +56,7 @@ async def run_llm_evaluation(
     use_mock: bool | None = None,
     language: str = "zh",
     mode: str = "synthetic_smoke",
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Run the evaluation suite and optionally write an evaluation report."""
     if use_mock is not None:
@@ -62,12 +65,29 @@ async def run_llm_evaluation(
         raise ValueError("LLM test execution supports synthetic_smoke or live_model_eval")
     if mode == "live_model_eval" and not settings.qwen_configured:
         raise RuntimeError("live_model_eval requires an explicit QWEN_API_KEY")
+    if mode == "live_model_eval" and session is None:
+        from app.db.session import AsyncSessionFactory
+
+        async with AsyncSessionFactory() as owned_session:
+            report = await run_llm_evaluation(
+                output_path=output_path,
+                language=language,
+                mode=mode,
+                session=owned_session,
+            )
+            await owned_session.commit()
+            return report
     cases = build_portfolio_risk_test_cases()
     effective_mock = mode == "synthetic_smoke"
     case_results = []
 
     for case in cases:
-        result = await evaluate_case(case, use_mock=effective_mock, language=language)
+        result = await evaluate_case(
+            case,
+            use_mock=effective_mock,
+            language=language,
+            session=session,
+        )
         case_results.append(result)
 
     metrics = aggregate_metrics(case_results)
@@ -92,6 +112,7 @@ async def evaluate_case(
     case: PortfolioRiskTestCase,
     use_mock: bool = True,
     language: str = "zh",
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Evaluate one test case and return metric flags."""
     raw_response = ""
@@ -104,10 +125,13 @@ async def evaluate_case(
             raw_response = mock_llm_response(case, language=language)
             parsed = parse_llm_json_response(raw_response)
         else:
+            if session is None:
+                raise RuntimeError("live_model_eval requires a PostgreSQL AsyncSession")
             parsed = await analyze_portfolio_with_llm(
                 case.portfolio_risk_summary,
                 evidence=case.evidence,
                 language=language,
+                session=session,
             )
             raw_response = json.dumps(parsed, ensure_ascii=False)
         json_valid = True

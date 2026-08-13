@@ -1,4 +1,4 @@
-"""Controlled research workflow, human review and published report APIs."""
+"""Controlled PostgreSQL research workflow and human-review APIs."""
 from __future__ import annotations
 
 import uuid
@@ -9,21 +9,18 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from routes.research import _build_portfolio_risk_summary
 from workflows import ResearchReportWorkflow
 
-
 router = APIRouter()
-
-
-def get_workflow_service() -> ResearchReportWorkflow:
-    return ResearchReportWorkflow()
 
 
 @router.post("/api/workflows/research-report")
 async def start_research_report(
     payload: dict[str, Any] = Body(...),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -39,40 +36,55 @@ async def start_research_report(
             session=session,
             as_of=context.valuation.as_of,
         )
-        workflow_payload = dict(payload)
-        workflow_payload["_db_portfolio"] = {
-            "portfolio_id": str(context.portfolio.id),
-            "valuation_snapshot_id": str(context.valuation.id),
-            "valuation_input_hash": context.valuation.input_hash,
-            "as_of": context.valuation.as_of.isoformat(),
-            "tickers": [item.position.ticker for item in context.summary.stocks],
-            "risk_summary": risk_summary,
+        workflow_payload = {
+            **payload,
+            "_db_portfolio": {
+                "portfolio_id": str(context.portfolio.id),
+                "valuation_snapshot_id": str(context.valuation.id),
+                "valuation_input_hash": context.valuation.input_hash,
+                "as_of": context.valuation.as_of.isoformat(),
+                "tickers": [item.position.ticker for item in context.summary.stocks],
+                "risk_summary": risk_summary,
+            },
         }
-        result = await get_workflow_service().start(workflow_payload)
-        status_code = 200 if result.get("idempotent_replay") else 201
-        return JSONResponse(result, status_code=status_code)
+        result = await ResearchReportWorkflow(session).start(
+            workflow_payload, principal=principal
+        )
+        return JSONResponse(result, status_code=200 if result.get("idempotent_replay") else 201)
     except Exception as exc:
         return JSONResponse({"error": str(exc), "error_type": type(exc).__name__}, status_code=422)
 
 
 @router.get("/api/workflows/{run_id}")
-async def get_workflow(run_id: str):
-    result = get_workflow_service().get_run(run_id)
-    if not result:
+async def get_workflow(
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    result = await ResearchReportWorkflow(session).get_run(run_id)
+    if result is None or (
+        result["user_id"] != principal.user_id and not principal.has_group("research_reviewer")
+    ):
         return JSONResponse({"error": "Workflow run not found"}, status_code=404)
     return result
 
 
-async def _review(review_id: str, decision: str, payload: dict[str, Any] | None):
-    payload = payload or {}
+async def _review(
+    review_id: uuid.UUID,
+    decision: str,
+    payload: dict[str, Any] | None,
+    *,
+    principal: Principal,
+    session: AsyncSession,
+):
     try:
-        result = await get_workflow_service().decide(
+        result = await ResearchReportWorkflow(session).decide(
             review_id,
             decision,
-            reviewer_id=str(payload.get("reviewer_id") or "human_reviewer"),
-            feedback=str(payload.get("feedback") or ""),
+            principal=principal,
+            feedback=str((payload or {}).get("feedback") or ""),
         )
-        if not result:
+        if result is None:
             return JSONResponse({"error": "Review task not found"}, status_code=404)
         return result
     except ValueError as exc:
@@ -80,23 +92,47 @@ async def _review(review_id: str, decision: str, payload: dict[str, Any] | None)
 
 
 @router.post("/api/reviews/{review_id}/approve")
-async def approve_review(review_id: str, payload: dict[str, Any] | None = Body(default=None)):
-    return await _review(review_id, "approve", payload)
+async def approve_review(
+    review_id: uuid.UUID,
+    payload: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await _review(review_id, "approve", payload, principal=principal, session=session)
 
 
 @router.post("/api/reviews/{review_id}/reject")
-async def reject_review(review_id: str, payload: dict[str, Any] | None = Body(default=None)):
-    return await _review(review_id, "reject", payload)
+async def reject_review(
+    review_id: uuid.UUID,
+    payload: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await _review(review_id, "reject", payload, principal=principal, session=session)
 
 
 @router.post("/api/reviews/{review_id}/request-changes")
-async def request_review_changes(review_id: str, payload: dict[str, Any] | None = Body(default=None)):
-    return await _review(review_id, "request_changes", payload)
+async def request_review_changes(
+    review_id: uuid.UUID,
+    payload: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await _review(
+        review_id, "request_changes", payload, principal=principal, session=session
+    )
 
 
 @router.get("/api/reports/{report_id}")
-async def get_published_report(report_id: str):
-    result = get_workflow_service().get_report(report_id)
-    if not result:
+async def get_published_report(
+    report_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    result = await ResearchReportWorkflow(session).get_report(
+        report_id,
+        principal=principal,
+    )
+    if result is None:
         return JSONResponse({"error": "Published report not found"}, status_code=404)
     return result

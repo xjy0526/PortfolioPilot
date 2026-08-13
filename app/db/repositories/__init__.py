@@ -2,6 +2,12 @@
 
 from app.db.repositories.backtest import BacktestRunRepository
 from app.db.repositories.health import HealthRepository
+from app.db.repositories.governance import (
+    LLMTraceRepository,
+    PromptRepository,
+    ResearchRepository,
+    WorkflowRepository,
+)
 from app.db.repositories.identity import PortfolioRepository, UserRepository
 from app.db.repositories.market import (
     FxRateRepository,
@@ -22,14 +28,18 @@ __all__ = [
     "FxRateRepository",
     "HealthRepository",
     "ImportBatchRepository",
+    "LLMTraceRepository",
     "PortfolioRepository",
+    "PromptRepository",
     "PortfolioValuationRepository",
     "PositionSnapshotRepository",
     "PriceBarRepository",
     "ProviderSymbolRepository",
     "RiskRunRepository",
+    "ResearchRepository",
     "SecurityRepository",
     "SyncRunRepository",
     "TransactionRepository",
     "UserRepository",
+    "WorkflowRepository",
 ]

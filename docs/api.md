@@ -125,18 +125,19 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 
 ## Knowledge Base (`routes/knowledge.py`)
 
-Uploads use a JSON body with `filename`, either UTF-8 `content` or PDF-safe
-`content_base64`, and a `metadata` object. Read endpoints accept trusted
-`X-User-Id` and comma-separated `X-Permission-Groups` headers. Normal RAG
-retrieval accepts the same permission context in its JSON body and applies the
-ACL in SQLite before chunk text is embedded or scored.
+Uploads use multipart form data with an `UploadFile`, JSON-encoded `metadata`,
+and a required `Idempotency-Key` header. The API queues an `ingestion_job`; an
+independent worker parses, chunks, embeds and persists the document. Identity
+and permission groups come only from the server-derived Principal. Client
+headers and JSON bodies cannot elevate document or review permissions.
 
 `POST /api/rag/retrieve` returns both `evidence` (compatibility alias) and
 `citations`. Each citation contains stable document/chunk identifiers, version,
 source metadata, quote, permission level and fused score. `evidence_insufficient`
 is true when no candidate reaches `score_threshold`. The query body may contain
-`permission_groups`, `top_k`, and an optional `score_threshold`; ticker, fund
-code, source type and date constraints are extracted from the query itself.
+`top_k` and an optional `score_threshold`; ticker, fund code, source type and
+date constraints are extracted from the query itself. PostgreSQL FTS and
+pgvector rankings are fused with RRF after ACL and temporal filtering.
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
@@ -148,6 +149,8 @@ code, source type and date constraints are extracted from the query itself.
 | GET | `/api/knowledge/ingestion-jobs/{job_id}` | Ingestion-Status oder Parserfehler lesen |
 
 ## Prompt Registry (`routes/prompts.py`)
+
+Prompt Registry 的读取、比较和变更均要求服务端 Principal 具有 `knowledge_admin`。
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
@@ -176,6 +179,8 @@ validation, trigger one retry and then use the safe fallback.
 | GET | `/api/reports/{report_id}` | Ausschließlich freigegebenen Bericht lesen |
 
 ## Evaluation & Trace (`routes/evaluation.py`)
+
+评测面板与全局 Trace 要求 `research_reviewer` 或 `knowledge_admin`；不会读取客户端自报身份。
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|

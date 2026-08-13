@@ -24,12 +24,12 @@ class IngestionError(ValueError):
 class KnowledgeBaseService:
     def __init__(
         self,
-        repository: KnowledgeRepository | None = None,
+        repository: KnowledgeRepository,
         embedder: Any | None = None,
         reranker: Reranker | None = None,
         reranker_enabled: bool = True,
     ):
-        self.repository = repository or KnowledgeRepository()
+        self.repository = repository
         if embedder is None:
             from rag.retriever import _build_embedder
 
@@ -189,7 +189,7 @@ class KnowledgeBaseService:
             else float(score_threshold)
         )
         ranked = self.hybrid_retriever.retrieve(
-            intent.normalized_query,
+            intent.retrieval_query,
             eligible,
             top_k=max(1, int(top_k)),
             pool_size=int(getattr(settings, "RAG_RETRIEVAL_POOL_SIZE", 20)),

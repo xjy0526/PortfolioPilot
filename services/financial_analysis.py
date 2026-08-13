@@ -6,7 +6,10 @@ import logging
 import hashlib
 import time
 import uuid
+from datetime import datetime
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from prompts.financial_analysis_models import validate_financial_analysis_output
 from prompts.financial_analysis_prompt import (
@@ -49,15 +52,19 @@ async def analyze_portfolio_with_llm(
     *,
     provider: LLMProvider | None = None,
     registry: PromptRegistry | None = None,
+    session: AsyncSession | None = None,
     run_id: str = "",
     user_id: str = "",
     business_scene: str = "portfolio_financial_analysis",
 ) -> dict[str, Any]:
     evidence = evidence or []
-    registry = registry or PromptRegistry()
-    prompt_version = ensure_financial_analysis_prompt(registry)
+    if registry is None:
+        if session is None:
+            raise ValueError("AsyncSession is required for PostgreSQL Prompt Registry")
+        registry = PromptRegistry(session)
+    prompt_version = await ensure_financial_analysis_prompt(registry)
     supplied_provider = provider is not None
-    provider = provider or get_llm_provider()
+    provider = provider or await get_llm_provider()
     if not supplied_provider and isinstance(provider, MockProvider):
         mock_payload = safe_financial_analysis_template(portfolio_risk_summary, evidence, language=language)
         provider = MockProvider(json.dumps(_contract_fields(mock_payload), ensure_ascii=False))
@@ -72,6 +79,7 @@ async def analyze_portfolio_with_llm(
     ).hexdigest()
     document_ids = sorted({str(item.get("document_id") or "") for item in evidence if item.get("document_id")})
     chunk_ids = sorted({str(item.get("chunk_id") or item.get("id") or "") for item in evidence if item.get("chunk_id") or item.get("id")})
+    data_as_of = _parse_data_as_of(portfolio_risk_summary.get("as_of"))
     for attempt in range(max(0, max_retries) + 1):
         retry_instruction = (
             "Previous output failed validation. Correct it and return valid JSON only."
@@ -94,6 +102,7 @@ async def analyze_portfolio_with_llm(
         trace_id = str(uuid.uuid4())
         last_trace_id = trace_id
         started = time.perf_counter()
+        response = None
         try:
             response = await provider.generate(request)
             result = parse_llm_json_response(
@@ -102,9 +111,27 @@ async def analyze_portfolio_with_llm(
                 evidence=evidence,
             )
             latency_ms = (time.perf_counter() - started) * 1000
-            input_tokens = _estimate_tokens(prompt + SYSTEM_INSTRUCTION)
-            output_tokens = _estimate_tokens(response.text)
-            registry.record_llm_call(
+            input_tokens, output_tokens, usage_source = _token_usage(
+                response.usage,
+                prompt + SYSTEM_INSTRUCTION,
+                response.text,
+                declared_source=response.usage_source,
+            )
+            provider_cost, provider_cost_currency = _provider_cost(response.usage)
+            cost_amount = (
+                provider_cost
+                if provider_cost is not None
+                else _estimate_cost(response.provider, input_tokens, output_tokens)
+            )
+            cost_currency = provider_cost_currency if provider_cost is not None else "USD"
+            cost_source = (
+                "provider"
+                if provider_cost is not None
+                else "estimated_from_provider_tokens"
+                if usage_source == "provider"
+                else "estimated_from_text"
+            )
+            await registry.record_llm_call(
                 trace_id=trace_id,
                 prompt_id=prompt_version.prompt_id,
                 prompt_version=prompt_version.version,
@@ -115,8 +142,14 @@ async def analyze_portfolio_with_llm(
                 model_parameters={"temperature": prompt_version.temperature},
                 input_hash=input_hash, retrieved_document_ids=document_ids,
                 retrieved_chunk_ids=chunk_ids, latency_ms=latency_ms,
+                response_text=response.text,
+                data_as_of=data_as_of,
                 input_tokens=input_tokens, output_tokens=output_tokens,
-                estimated_cost=_estimate_cost(response.provider, input_tokens, output_tokens),
+                cost_amount=cost_amount,
+                cost_currency=cost_currency,
+                provider_usage=response.usage,
+                usage_source=usage_source,
+                cost_source=cost_source,
                 output_schema_valid=True, fallback_used=response.provider == "mock",
             )
             result.update({
@@ -130,27 +163,60 @@ async def analyze_portfolio_with_llm(
         except Exception as exc:
             last_error = exc
             latency_ms = (time.perf_counter() - started) * 1000
-            registry.record_llm_call(
+            response_usage = response.usage if response is not None else {}
+            response_text = response.text if response is not None else ""
+            input_tokens, output_tokens, usage_source = _token_usage(
+                response_usage,
+                prompt + SYSTEM_INSTRUCTION,
+                response_text,
+                declared_source=(response.usage_source if response is not None else "estimated"),
+            )
+            provider_cost, provider_cost_currency = _provider_cost(response_usage)
+            cost_amount = (
+                provider_cost
+                if provider_cost is not None
+                else _estimate_cost(
+                    response.provider if response is not None else getattr(provider, "provider_name", "unknown"),
+                    input_tokens,
+                    output_tokens,
+                )
+            )
+            cost_source = (
+                "provider"
+                if provider_cost is not None
+                else "estimated_from_provider_tokens"
+                if usage_source == "provider"
+                else "estimated_from_text"
+            )
+            await registry.record_llm_call(
                 trace_id=trace_id,
                 prompt_id=prompt_version.prompt_id,
                 prompt_version=prompt_version.version,
-                provider=getattr(provider, "provider_name", "unknown"),
-                model=prompt_version.model,
+                provider=(response.provider if response is not None else getattr(provider, "provider_name", "unknown")),
+                model=response.model if response is not None else prompt_version.model,
                 status="failed",
                 validation_error=str(exc),
                 run_id=run_id, user_id=user_id, business_scene=business_scene,
                 model_parameters={"temperature": prompt_version.temperature},
                 input_hash=input_hash, retrieved_document_ids=document_ids,
                 retrieved_chunk_ids=chunk_ids, latency_ms=latency_ms,
-                input_tokens=_estimate_tokens(prompt + SYSTEM_INSTRUCTION),
-                output_tokens=0, output_schema_valid=False,
+                response_text=response_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_amount=cost_amount,
+                cost_currency=(provider_cost_currency if provider_cost is not None else "USD"),
+                provider_usage=response_usage,
+                usage_source=usage_source,
+                cost_source=cost_source,
+                output_schema_valid=False,
                 error_type=type(exc).__name__,
+                data_as_of=data_as_of,
             )
             logger.warning("Structured analysis attempt %s failed: %s", attempt + 1, exc)
 
     result = safe_financial_analysis_template(portfolio_risk_summary, evidence, language=language)
     if last_trace_id:
-        registry.mark_trace_fallback(last_trace_id)
+        await registry.mark_trace_fallback(last_trace_id)
     result.update({
         "source": "fallback",
         "ai_available": False,
@@ -260,7 +326,8 @@ def enforce_retrieved_citations(
             pair = (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
         else:
             text = str(item)
-            pair = tuple(text.split(":", 1)) if ":" in text else (text, text)
+            pieces = text.split(":", 1)
+            pair = (pieces[0], pieces[1]) if len(pieces) == 2 else (text, text)
         if pair in allowed:
             references.append({"document_id": pair[0], "chunk_id": pair[1]})
     sanitized["evidence_used"] = references
@@ -286,3 +353,41 @@ def _estimate_cost(provider: str, input_tokens: int, output_tokens: int) -> floa
     if provider == "mock":
         return 0.0
     return round(input_tokens * 0.0000005 + output_tokens * 0.0000015, 8)
+
+
+def _token_usage(
+    usage: dict[str, Any],
+    input_text: str,
+    output_text: str,
+    *,
+    declared_source: str = "estimated",
+) -> tuple[int, int, str]:
+    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    if prompt_tokens is not None and completion_tokens is not None:
+        source = "provider" if declared_source == "provider" else "estimated"
+        return int(prompt_tokens), int(completion_tokens), source
+    return _estimate_tokens(input_text), _estimate_tokens(output_text), "estimated"
+
+
+def _provider_cost(usage: dict[str, Any]) -> tuple[float | None, str]:
+    currency = str(usage.get("cost_currency") or usage.get("currency") or "UNK").upper()
+    currency = currency if len(currency) == 3 and currency.isalpha() else "UNK"
+    for key in ("cost", "total_cost", "cost_amount"):
+        if usage.get(key) is not None:
+            try:
+                return float(usage[key]), currency
+            except (TypeError, ValueError):
+                return None, "UNK"
+    return None, "UNK"
+
+
+def _parse_data_as_of(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None

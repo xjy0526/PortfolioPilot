@@ -1,51 +1,51 @@
-"""SQLite-backed Prompt Registry with version, publish, rollback and comparison."""
+"""Async PostgreSQL Prompt Registry and LLM trace persistence."""
 from __future__ import annotations
 
-import json
-import sqlite3
+import hashlib
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, cast
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.governance import (
+    LLMCallTrace,
+    PromptDeployment as PromptDeploymentRow,
+    PromptTemplate as PromptTemplateRow,
+    PromptVersion as PromptVersionRow,
+)
+from app.db.repositories.governance import PromptRepository
+from config import settings
 from prompts.registry_models import (
     PromptDeployment,
     PromptEvaluationResult,
     PromptTemplate,
     PromptVersion,
 )
+from prompts.registry_models import PromptStatus
+from time_utils import utc_now
 
 
 class PromptRegistry:
-    def __init__(self, connection: sqlite3.Connection | None = None):
-        if connection is None:
-            from database import _get_conn
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.repository = PromptRepository(session)
 
-            connection = _get_conn()
-        self.conn = connection
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        ensure_prompt_schema(self.conn)
+    async def list_prompts(self) -> list[dict[str, Any]]:
+        rows = await self.repository.list_templates()
+        return [_template_model(item).model_dump(mode="json") for item in rows]
 
-    def list_prompts(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM prompt_templates ORDER BY business_scene, name"
-        ).fetchall()
-        return [_decode_template(row).model_dump(mode="json") for row in rows]
-
-    def create_prompt(self, payload: dict[str, Any]) -> tuple[PromptTemplate, PromptVersion]:
-        prompt_id = str(payload.get("prompt_id") or uuid.uuid4())
-        now = _now()
-        template = PromptTemplate(
-            prompt_id=prompt_id,
-            name=payload["name"],
-            business_scene=payload["business_scene"],
-            owner=payload.get("owner", "Research Platform"),
-            status="draft",
-            current_version=1,
-            created_at=now,
-        )
-        version = PromptVersion(
-            prompt_id=prompt_id,
+    async def create_prompt(
+        self, payload: dict[str, Any]
+    ) -> tuple[PromptTemplate, PromptVersion]:
+        prompt_key = str(payload.get("prompt_id") or uuid.uuid4())
+        if await self.repository.get_template(prompt_key):
+            raise ValueError(f"Prompt already exists: {prompt_key}")
+        now = utc_now()
+        version_model = PromptVersion(
+            prompt_id=prompt_key,
             version=1,
             template=payload["template"],
             variables=payload.get("variables", []),
@@ -59,31 +59,32 @@ class PromptRegistry:
             baseline_metrics=payload.get("baseline_metrics", {}),
             created_at=now,
         )
-        try:
-            self.conn.execute("BEGIN")
-            self.conn.execute(
-                """INSERT INTO prompt_templates
-                   (prompt_id, name, business_scene, owner, status, current_version,
-                    published_version, created_at, published_at)
-                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL)""",
-                (prompt_id, template.name, template.business_scene, template.owner,
-                 template.status, 1, now, ),
-            )
-            self._insert_version(version)
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-        return template, version
+        template_row = PromptTemplateRow(
+            prompt_key=prompt_key,
+            name=payload["name"],
+            business_scene=payload["business_scene"],
+            owner=version_model.owner,
+            status="draft",
+            current_version=1,
+        )
+        self.session.add(template_row)
+        await self.session.flush()
+        self.session.add(_version_row(template_row.id, version_model))
+        await self.session.flush()
+        return _template_model(template_row), version_model
 
-    def create_version(self, prompt_id: str, payload: dict[str, Any]) -> PromptVersion | None:
-        template = self.get_prompt(prompt_id)
-        if not template:
+    async def create_version(
+        self, prompt_key: str, payload: dict[str, Any]
+    ) -> PromptVersion | None:
+        template = await self.repository.get_template(prompt_key)
+        if template is None:
             return None
-        latest = self.get_version(prompt_id, template.current_version)
-        assert latest is not None
-        version = PromptVersion(
-            prompt_id=prompt_id,
+        latest_row = await self.repository.get_version(template.id, template.current_version)
+        if latest_row is None:
+            raise RuntimeError("Prompt current version is missing")
+        latest = _version_model(template.prompt_key, latest_row)
+        model = PromptVersion(
+            prompt_id=prompt_key,
             version=template.current_version + 1,
             template=payload.get("template", latest.template),
             variables=payload.get("variables", latest.variables),
@@ -96,293 +97,303 @@ class PromptRegistry:
             change_log=payload.get("change_log", ""),
             baseline_metrics=payload.get("baseline_metrics", latest.baseline_metrics),
         )
-        try:
-            self.conn.execute("BEGIN")
-            self._insert_version(version)
-            self.conn.execute(
-                "UPDATE prompt_templates SET current_version=?, status=? WHERE prompt_id=?",
-                (version.version, version.status, prompt_id),
-            )
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-        return version
+        self.session.add(_version_row(template.id, model))
+        template.current_version = model.version
+        if template.published_version is None:
+            template.status = model.status
+        await self.session.flush()
+        return model
 
-    def publish(self, prompt_id: str, version: int) -> PromptDeployment | None:
-        target = self.get_version(prompt_id, version)
-        template = self.get_prompt(prompt_id)
-        if not target or not template:
+    async def publish(
+        self,
+        prompt_key: str,
+        version: int,
+        *,
+        deployed_by: str,
+        action: str = "publish",
+    ) -> PromptDeployment | None:
+        template = await self.repository.get_template(prompt_key)
+        if template is None:
             return None
-        deployment = PromptDeployment(
-            deployment_id=str(uuid.uuid4()), prompt_id=prompt_id, version=version,
-            action="publish", previous_version=template.published_version,
+        target = await self.repository.get_version(template.id, version)
+        if target is None:
+            return None
+        previous = template.published_version
+        now = utc_now()
+        await self.session.execute(
+            update(PromptVersionRow)
+            .where(PromptVersionRow.prompt_id == template.id, PromptVersionRow.status == "published")
+            .values(status="deprecated")
         )
-        self._deploy(template, target, deployment)
-        return deployment
+        target.status = "published"
+        target.published_at = now
+        template.status = "published"
+        template.published_version = target.version
+        template.published_at = now
+        deployment_row = PromptDeploymentRow(
+            prompt_id=template.id,
+            prompt_version_id=target.id,
+            previous_version=previous,
+            action=action,
+            environment="production",
+            deployed_by=deployed_by,
+        )
+        self.session.add(deployment_row)
+        await self.session.flush()
+        return PromptDeployment(
+            deployment_id=str(deployment_row.id),
+            prompt_id=prompt_key,
+            version=target.version,
+            action="rollback" if action == "rollback" else "publish",
+            previous_version=previous,
+            environment=deployment_row.environment,
+            created_at=deployment_row.created_at,
+        )
 
-    def rollback(self, prompt_id: str, target_version: int | None = None) -> PromptDeployment | None:
-        template = self.get_prompt(prompt_id)
-        if not template or template.published_version is None:
+    async def rollback(
+        self,
+        prompt_key: str,
+        target_version: int | None = None,
+        *,
+        deployed_by: str,
+    ) -> PromptDeployment | None:
+        template = await self.repository.get_template(prompt_key)
+        if template is None or template.published_version is None:
             return None
         if target_version is None:
-            row = self.conn.execute(
-                """SELECT previous_version FROM prompt_deployments
-                   WHERE prompt_id=? AND version=? AND previous_version IS NOT NULL
-                   ORDER BY created_at DESC LIMIT 1""",
-                (prompt_id, template.published_version),
-            ).fetchone()
-            target_version = int(row["previous_version"]) if row else template.published_version - 1
-        target = self.get_version(prompt_id, target_version)
-        if not target:
+            target_version = template.published_version - 1
+        if target_version < 1:
             return None
-        deployment = PromptDeployment(
-            deployment_id=str(uuid.uuid4()), prompt_id=prompt_id, version=target_version,
-            action="rollback", previous_version=template.published_version,
+        return await self.publish(
+            prompt_key, target_version, deployed_by=deployed_by, action="rollback"
         )
-        self._deploy(template, target, deployment)
-        return deployment
 
-    def compare_versions(
+    async def compare_versions(
         self,
-        prompt_id: str,
+        prompt_key: str,
         version_a: int,
         version_b: int,
         test_cases: list[dict[str, Any]],
     ) -> PromptEvaluationResult:
-        first = self.get_version(prompt_id, version_a)
-        second = self.get_version(prompt_id, version_b)
-        if not first or not second:
+        first = await self.get_version(prompt_key, version_a)
+        second = await self.get_version(prompt_key, version_b)
+        if first is None or second is None:
             raise ValueError("Prompt version not found")
         metrics_a = _evaluate_prompt(first, test_cases)
         metrics_b = _evaluate_prompt(second, test_cases)
         keys = sorted(set(metrics_a) | set(metrics_b))
-        result = PromptEvaluationResult(
-            evaluation_id=str(uuid.uuid4()), prompt_id=prompt_id,
-            version_a=version_a, version_b=version_b, test_case_count=len(test_cases),
-            metrics_a=metrics_a, metrics_b=metrics_b,
+        return PromptEvaluationResult(
+            evaluation_id=str(uuid.uuid4()),
+            prompt_id=prompt_key,
+            version_a=version_a,
+            version_b=version_b,
+            test_case_count=len(test_cases),
+            metrics_a=metrics_a,
+            metrics_b=metrics_b,
             metric_delta={key: round(metrics_b.get(key, 0.0) - metrics_a.get(key, 0.0), 6) for key in keys},
         )
-        self.conn.execute(
-            """INSERT INTO prompt_evaluation_results
-               (evaluation_id, prompt_id, version_a, version_b, test_case_count,
-                metrics_a, metrics_b, metric_delta, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (result.evaluation_id, prompt_id, version_a, version_b, len(test_cases),
-             _json(metrics_a), _json(metrics_b), _json(result.metric_delta),
-             result.created_at.isoformat()),
-        )
-        self.conn.commit()
-        return result
 
-    def get_prompt(self, prompt_id: str) -> PromptTemplate | None:
-        row = self.conn.execute(
-            "SELECT * FROM prompt_templates WHERE prompt_id=?", (prompt_id,)
-        ).fetchone()
-        return _decode_template(row) if row else None
+    async def get_prompt(self, prompt_key: str) -> PromptTemplate | None:
+        row = await self.repository.get_template(prompt_key)
+        return _template_model(row) if row else None
 
-    def get_version(self, prompt_id: str, version: int) -> PromptVersion | None:
-        row = self.conn.execute(
-            "SELECT * FROM prompt_versions WHERE prompt_id=? AND version=?",
-            (prompt_id, version),
-        ).fetchone()
-        return _decode_version(row) if row else None
+    async def get_version(self, prompt_key: str, version: int) -> PromptVersion | None:
+        template = await self.repository.get_template(prompt_key)
+        if template is None:
+            return None
+        row = await self.repository.get_version(template.id, version)
+        return _version_model(prompt_key, row) if row else None
 
-    def get_published_by_scene(self, business_scene: str) -> PromptVersion | None:
-        row = self.conn.execute(
-            """SELECT v.* FROM prompt_templates t JOIN prompt_versions v
-               ON v.prompt_id=t.prompt_id AND v.version=t.published_version
-               WHERE t.business_scene=? AND t.status='published'
-               ORDER BY t.published_at DESC LIMIT 1""",
-            (business_scene,),
-        ).fetchone()
-        return _decode_version(row) if row else None
+    async def get_published_by_scene(self, business_scene: str) -> PromptVersion | None:
+        result = await self.repository.published_for_scene(business_scene)
+        return _version_model(result[0].prompt_key, result[1]) if result else None
 
-    def record_llm_call(
-        self, *, trace_id: str, prompt_id: str, prompt_version: int,
-        provider: str, model: str, status: str, validation_error: str = "",
-        run_id: str = "", user_id: str = "", business_scene: str = "",
-        model_parameters: dict[str, Any] | None = None, input_hash: str = "",
-        retrieved_document_ids: list[str] | None = None,
+    async def get_published(self, prompt_key: str) -> PromptVersion | None:
+        template = await self.repository.get_template(prompt_key)
+        if template is None or template.status != "published" or template.published_version is None:
+            return None
+        row = await self.repository.get_version(template.id, template.published_version)
+        return _version_model(prompt_key, row) if row else None
+
+    async def record_llm_call(
+        self,
+        *,
+        trace_id: str,
+        prompt_id: str,
+        prompt_version: int,
+        provider: str,
+        model: str,
+        status: str,
+        run_id: str = "",
+        user_id: str = "",
+        business_scene: str = "",
+        input_hash: str = "",
+        response_text: str = "",
+        data_as_of: datetime | None = None,
         retrieved_chunk_ids: list[str] | None = None,
-        tool_calls: list[dict[str, Any]] | None = None, latency_ms: float = 0.0,
-        input_tokens: int = 0, output_tokens: int = 0, estimated_cost: float = 0.0,
-        output_schema_valid: bool = False, fallback_used: bool = False,
-        error_type: str = "", review_decision: str = "", review_feedback: str = "",
+        retrieved_document_ids: list[str] | None = None,
+        latency_ms: float = 0.0,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_amount: float | None = None,
+        cost_currency: str = "UNK",
+        provider_usage: dict[str, Any] | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        usage_source: str = "estimated",
+        cost_source: str = "estimated_from_text",
+        output_schema_valid: bool = False,
+        fallback_used: bool = False,
+        review_decision: str = "",
+        review_feedback: str = "",
+        validation_error: str = "",
+        error_type: str = "",
+        **_: Any,
     ) -> None:
-        self.conn.execute(
-            """INSERT INTO llm_call_traces
-               (trace_id, run_id, user_id, business_scene, prompt_id, prompt_version,
-                provider, model, model_parameters, input_hash, retrieved_document_ids,
-                retrieved_chunk_ids, tool_calls, latency_ms, input_tokens, output_tokens,
-                estimated_cost, output_schema_valid, fallback_used, status,
-                validation_error, error_type, review_decision, review_feedback, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (trace_id, run_id, user_id, business_scene, prompt_id, prompt_version,
-             provider, model, _json(model_parameters or {}), input_hash,
-             _json(retrieved_document_ids or []), _json(retrieved_chunk_ids or []),
-             _json(tool_calls or []), latency_ms, input_tokens, output_tokens,
-             estimated_cost, int(output_schema_valid), int(fallback_used), status,
-             validation_error, error_type, review_decision, review_feedback, _now()),
+        template = await self.repository.get_template(prompt_id)
+        version_row = (
+            await self.repository.get_version(template.id, prompt_version) if template else None
         )
-        self.conn.commit()
-
-    def update_trace_review(self, run_id: str, decision: str, feedback: str) -> None:
-        self.conn.execute(
-            "UPDATE llm_call_traces SET review_decision=?, review_feedback=? WHERE run_id=?",
-            (decision, feedback, run_id),
+        workflow_id = _optional_uuid(run_id)
+        self.session.add(
+            LLMCallTrace(
+                trace_key=trace_id,
+                workflow_run_id=workflow_id,
+                prompt_version_id=version_row.id if version_row else None,
+                user_id=user_id or "anonymous",
+                business_scene=business_scene or "unknown",
+                provider=provider,
+                model=model,
+                model_parameters=model_parameters or {},
+                request_hash=input_hash or hashlib.sha256(b"").hexdigest(),
+                response_hash=hashlib.sha256((response_text or validation_error or status).encode()).hexdigest(),
+                status=status,
+                duration_ms=max(0, round(latency_ms)),
+                data_as_of=data_as_of,
+                code_version=settings.CODE_VERSION,
+                provider_usage=provider_usage or {},
+                usage_source="provider" if usage_source == "provider" else "estimated",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_amount=Decimal(str(cost_amount)) if cost_amount is not None else None,
+                cost_currency=_currency_code(cost_currency),
+                cost_source=cost_source,
+                evidence_ids=retrieved_chunk_ids or [],
+                retrieved_document_ids=retrieved_document_ids or [],
+                tool_calls=tool_calls or [],
+                output_schema_valid=output_schema_valid,
+                fallback_used=fallback_used,
+                review_decision=review_decision,
+                review_feedback=review_feedback,
+                error_message=(validation_error or error_type)[:2000],
+            )
         )
-        self.conn.commit()
+        await self.session.flush()
 
-    def mark_trace_fallback(self, trace_id: str) -> None:
-        self.conn.execute(
-            "UPDATE llm_call_traces SET fallback_used=1 WHERE trace_id=?", (trace_id,)
-        )
-        self.conn.commit()
-
-    def list_traces(self, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM llm_call_traces ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 1000)),)
-        ).fetchall()
-        results = []
-        for row in rows:
-            payload = dict(row)
-            for field in ("model_parameters", "retrieved_document_ids", "retrieved_chunk_ids", "tool_calls"):
-                fallback = "{}" if field == "model_parameters" else "[]"
-                payload[field] = json.loads(payload.get(field) or fallback)
-            results.append(payload)
-        return results
-
-    def _insert_version(self, version: PromptVersion) -> None:
-        self.conn.execute(
-            """INSERT INTO prompt_versions
-               (prompt_id, version, template, variables, input_schema, output_schema,
-                model, temperature, owner, status, change_log, created_at,
-                published_at, baseline_metrics)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (version.prompt_id, version.version, version.template, _json(version.variables),
-             _json(version.input_schema), _json(version.output_schema), version.model,
-             version.temperature, version.owner, version.status, version.change_log,
-             version.created_at.isoformat(),
-             version.published_at.isoformat() if version.published_at else None,
-             _json(version.baseline_metrics)),
+    async def mark_trace_fallback(self, trace_id: str) -> None:
+        await self.session.execute(
+            update(LLMCallTrace).where(LLMCallTrace.trace_key == trace_id).values(fallback_used=True)
         )
 
-    def _deploy(
-        self, template: PromptTemplate, target: PromptVersion,
-        deployment: PromptDeployment,
-    ) -> None:
-        now = _now()
-        try:
-            self.conn.execute("BEGIN")
-            self.conn.execute(
-                "UPDATE prompt_versions SET status='deprecated' WHERE prompt_id=? AND status='published'",
-                (template.prompt_id,),
-            )
-            self.conn.execute(
-                "UPDATE prompt_versions SET status='published', published_at=? WHERE prompt_id=? AND version=?",
-                (now, template.prompt_id, target.version),
-            )
-            self.conn.execute(
-                """UPDATE prompt_templates SET status='published', published_version=?,
-                   published_at=? WHERE prompt_id=?""",
-                (target.version, now, template.prompt_id),
-            )
-            self.conn.execute(
-                """INSERT INTO prompt_deployments
-                   (deployment_id, prompt_id, version, action, previous_version,
-                    environment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (deployment.deployment_id, deployment.prompt_id, deployment.version,
-                 deployment.action, deployment.previous_version, deployment.environment,
-                 deployment.created_at.isoformat()),
-            )
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+    async def list_traces(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = list(
+            (
+                await self.session.scalars(
+                    select(LLMCallTrace)
+                    .order_by(LLMCallTrace.created_at.desc())
+                    .limit(max(1, min(limit, 1000)))
+                )
+            ).all()
+        )
+        return [
+            {
+                "trace_id": row.trace_key,
+                "run_id": str(row.workflow_run_id) if row.workflow_run_id else "",
+                "user_id": row.user_id,
+                "business_scene": row.business_scene,
+                "provider": row.provider,
+                "model": row.model,
+                "model_parameters": row.model_parameters,
+                "duration_ms": row.duration_ms,
+                "data_as_of": row.data_as_of.isoformat() if row.data_as_of else None,
+                "code_version": row.code_version,
+                "provider_usage": row.provider_usage,
+                "usage_source": row.usage_source,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "cost_amount": float(row.cost_amount) if row.cost_amount is not None else None,
+                "cost_currency": row.cost_currency,
+                "cost_source": row.cost_source,
+                "retrieved_document_ids": row.retrieved_document_ids,
+                "evidence_ids": row.evidence_ids,
+                "tool_calls": row.tool_calls,
+                "output_schema_valid": row.output_schema_valid,
+                "fallback_used": row.fallback_used,
+                "review_decision": row.review_decision,
+                "review_feedback": row.review_feedback,
+                "status": row.status,
+                "error_message": row.error_message,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
 
 
-def ensure_prompt_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS prompt_templates (
-            prompt_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-            business_scene TEXT NOT NULL, owner TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'draft', current_version INTEGER NOT NULL DEFAULT 1,
-            published_version INTEGER, created_at TEXT NOT NULL, published_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS prompt_versions (
-            prompt_id TEXT NOT NULL, version INTEGER NOT NULL, template TEXT NOT NULL,
-            variables TEXT NOT NULL DEFAULT '[]', input_schema TEXT NOT NULL,
-            output_schema TEXT NOT NULL, model TEXT NOT NULL, temperature REAL NOT NULL,
-            owner TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', change_log TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL, published_at TEXT, baseline_metrics TEXT NOT NULL DEFAULT '{}',
-            PRIMARY KEY(prompt_id, version),
-            FOREIGN KEY(prompt_id) REFERENCES prompt_templates(prompt_id)
-        );
-        CREATE TABLE IF NOT EXISTS prompt_deployments (
-            deployment_id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, version INTEGER NOT NULL,
-            action TEXT NOT NULL, previous_version INTEGER, environment TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(prompt_id) REFERENCES prompt_templates(prompt_id)
-        );
-        CREATE TABLE IF NOT EXISTS prompt_evaluation_results (
-            evaluation_id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL,
-            version_a INTEGER NOT NULL, version_b INTEGER NOT NULL,
-            test_case_count INTEGER NOT NULL, metrics_a TEXT NOT NULL,
-            metrics_b TEXT NOT NULL, metric_delta TEXT NOT NULL, created_at TEXT NOT NULL,
-            FOREIGN KEY(prompt_id) REFERENCES prompt_templates(prompt_id)
-        );
-        CREATE TABLE IF NOT EXISTS llm_call_traces (
-            trace_id TEXT PRIMARY KEY, run_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL DEFAULT '',
-            business_scene TEXT NOT NULL DEFAULT '', prompt_id TEXT NOT NULL,
-            prompt_version INTEGER NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-            model_parameters TEXT NOT NULL DEFAULT '{}', input_hash TEXT NOT NULL DEFAULT '',
-            retrieved_document_ids TEXT NOT NULL DEFAULT '[]', retrieved_chunk_ids TEXT NOT NULL DEFAULT '[]',
-            tool_calls TEXT NOT NULL DEFAULT '[]', latency_ms REAL NOT NULL DEFAULT 0,
-            input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
-            estimated_cost REAL NOT NULL DEFAULT 0, output_schema_valid INTEGER NOT NULL DEFAULT 0,
-            fallback_used INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
-            validation_error TEXT NOT NULL DEFAULT '', error_type TEXT NOT NULL DEFAULT '',
-            review_decision TEXT NOT NULL DEFAULT '', review_feedback TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_prompt_scene ON prompt_templates(business_scene, status);
-        CREATE INDEX IF NOT EXISTS idx_prompt_deployments ON prompt_deployments(prompt_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_llm_call_prompt ON llm_call_traces(prompt_id, prompt_version, created_at);
-        """
+def _template_model(row: PromptTemplateRow) -> PromptTemplate:
+    return PromptTemplate(
+        prompt_id=row.prompt_key,
+        name=row.name,
+        business_scene=row.business_scene,
+        owner=row.owner,
+        status=cast(PromptStatus, row.status),
+        current_version=row.current_version,
+        published_version=row.published_version,
+        created_at=row.created_at,
+        published_at=row.published_at,
     )
-    _ensure_trace_columns(conn)
-    conn.commit()
 
 
-def _ensure_trace_columns(conn: sqlite3.Connection) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(llm_call_traces)").fetchall()}
-    columns = {
-        "run_id": "TEXT NOT NULL DEFAULT ''", "user_id": "TEXT NOT NULL DEFAULT ''",
-        "business_scene": "TEXT NOT NULL DEFAULT ''", "model_parameters": "TEXT NOT NULL DEFAULT '{}'",
-        "input_hash": "TEXT NOT NULL DEFAULT ''", "retrieved_document_ids": "TEXT NOT NULL DEFAULT '[]'",
-        "retrieved_chunk_ids": "TEXT NOT NULL DEFAULT '[]'", "tool_calls": "TEXT NOT NULL DEFAULT '[]'",
-        "latency_ms": "REAL NOT NULL DEFAULT 0", "input_tokens": "INTEGER NOT NULL DEFAULT 0",
-        "output_tokens": "INTEGER NOT NULL DEFAULT 0", "estimated_cost": "REAL NOT NULL DEFAULT 0",
-        "output_schema_valid": "INTEGER NOT NULL DEFAULT 0", "fallback_used": "INTEGER NOT NULL DEFAULT 0",
-        "error_type": "TEXT NOT NULL DEFAULT ''", "review_decision": "TEXT NOT NULL DEFAULT ''",
-        "review_feedback": "TEXT NOT NULL DEFAULT ''",
-    }
-    for name, definition in columns.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE llm_call_traces ADD COLUMN {name} {definition}")
+def _version_model(prompt_key: str, row: PromptVersionRow) -> PromptVersion:
+    return PromptVersion(
+        prompt_id=prompt_key,
+        version=row.version,
+        template=row.template,
+        variables=row.variables,
+        input_schema=row.input_schema,
+        output_schema=row.output_schema,
+        model=row.model,
+        temperature=float(row.temperature),
+        owner=row.owner,
+        status=cast(PromptStatus, row.status),
+        change_log=row.change_log,
+        created_at=row.created_at,
+        published_at=row.published_at,
+        baseline_metrics=row.baseline_metrics,
+    )
+
+
+def _version_row(prompt_id: uuid.UUID, model: PromptVersion) -> PromptVersionRow:
+    return PromptVersionRow(
+        prompt_id=prompt_id,
+        version=model.version,
+        template=model.template,
+        variables=model.variables,
+        input_schema=model.input_schema,
+        output_schema=model.output_schema,
+        model=model.model,
+        temperature=Decimal(str(model.temperature)),
+        owner=model.owner,
+        status=model.status,
+        change_log=model.change_log,
+        baseline_metrics=model.baseline_metrics,
+        published_at=model.published_at,
+    )
 
 
 def _evaluate_prompt(version: PromptVersion, cases: list[dict[str, Any]]) -> dict[str, float]:
     if not cases:
-        return {
-            "static_render_success_rate": 0.0,
-            "static_expected_token_hit_rate": 0.0,
-        }
-    rendered = 0
-    token_hits = 0
-    token_total = 0
+        return {"static_render_success_rate": 0.0, "static_expected_token_hit_rate": 0.0}
+    rendered = token_hits = token_total = 0
     for case in cases:
         try:
             text = version.template.format_map(_StrictVariables(case.get("variables", {})))
@@ -394,9 +405,7 @@ def _evaluate_prompt(version: PromptVersion, cases: list[dict[str, Any]]) -> dic
             continue
     return {
         "static_render_success_rate": round(rendered / len(cases), 6),
-        "static_expected_token_hit_rate": (
-            round(token_hits / token_total, 6) if token_total else 1.0
-        ),
+        "static_expected_token_hit_rate": round(token_hits / token_total, 6) if token_total else 1.0,
     }
 
 
@@ -405,20 +414,13 @@ class _StrictVariables(dict):
         raise KeyError(key)
 
 
-def _decode_template(row: sqlite3.Row) -> PromptTemplate:
-    return PromptTemplate(**dict(row))
+def _optional_uuid(value: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(value) if value else None
+    except ValueError:
+        return None
 
 
-def _decode_version(row: sqlite3.Row) -> PromptVersion:
-    payload = dict(row)
-    for field in ("variables", "input_schema", "output_schema", "baseline_metrics"):
-        payload[field] = json.loads(payload[field])
-    return PromptVersion(**payload)
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _currency_code(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+    return normalized if len(normalized) == 3 and normalized.isalpha() else "UNK"

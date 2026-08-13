@@ -1,34 +1,45 @@
-"""Prompt Registry lifecycle and comparison APIs."""
+"""PostgreSQL Prompt Registry lifecycle and comparison APIs."""
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
+from prompts.financial_analysis_prompt import ensure_financial_analysis_prompt
 from prompts.registry import PromptRegistry
-
 
 router = APIRouter()
 
 
-def get_prompt_registry() -> PromptRegistry:
-    registry = PromptRegistry()
-    from prompts.financial_analysis_prompt import ensure_financial_analysis_prompt
-    ensure_financial_analysis_prompt(registry)
+async def _registry(session: AsyncSession) -> PromptRegistry:
+    registry = PromptRegistry(session)
+    await ensure_financial_analysis_prompt(registry)
     return registry
 
 
 @router.get("/api/prompts")
-async def list_prompts():
-    prompts = get_prompt_registry().list_prompts()
+async def list_prompts(
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
+    prompts = await (await _registry(session)).list_prompts()
     return {"count": len(prompts), "prompts": prompts}
 
 
 @router.post("/api/prompts")
-async def create_prompt(payload: dict[str, Any] = Body(...)):
+async def create_prompt(
+    payload: dict[str, Any] = Body(...),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
     try:
-        template, version = get_prompt_registry().create_prompt(payload)
+        template, version = await (await _registry(session)).create_prompt(payload)
         return JSONResponse(
             {"prompt": template.model_dump(mode="json"), "version": version.model_dump(mode="json")},
             status_code=201,
@@ -40,10 +51,16 @@ async def create_prompt(payload: dict[str, Any] = Body(...)):
 
 
 @router.post("/api/prompts/{prompt_id}/versions")
-async def create_prompt_version(prompt_id: str, payload: dict[str, Any] = Body(default_factory=dict)):
+async def create_prompt_version(
+    prompt_id: str,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
     try:
-        version = get_prompt_registry().create_version(prompt_id, payload)
-        if not version:
+        version = await (await _registry(session)).create_version(prompt_id, payload)
+        if version is None:
             return JSONResponse({"error": "Prompt not found"}, status_code=404)
         return JSONResponse(version.model_dump(mode="json"), status_code=201)
     except Exception as exc:
@@ -51,29 +68,49 @@ async def create_prompt_version(prompt_id: str, payload: dict[str, Any] = Body(d
 
 
 @router.post("/api/prompts/{prompt_id}/versions/{version}/publish")
-async def publish_prompt_version(prompt_id: str, version: int):
-    deployment = get_prompt_registry().publish(prompt_id, version)
-    if not deployment:
+async def publish_prompt_version(
+    prompt_id: str,
+    version: int,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
+    deployment = await (await _registry(session)).publish(
+        prompt_id, version, deployed_by=principal.user_id
+    )
+    if deployment is None:
         return JSONResponse({"error": "Prompt version not found"}, status_code=404)
     return deployment.model_dump(mode="json")
 
 
 @router.post("/api/prompts/{prompt_id}/rollback")
-async def rollback_prompt(prompt_id: str, payload: dict[str, Any] | None = Body(default=None)):
-    target_version = (payload or {}).get("target_version")
-    deployment = get_prompt_registry().rollback(
+async def rollback_prompt(
+    prompt_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
+    target = (payload or {}).get("target_version")
+    deployment = await (await _registry(session)).rollback(
         prompt_id,
-        int(target_version) if target_version is not None else None,
+        int(target) if target is not None else None,
+        deployed_by=principal.user_id,
     )
-    if not deployment:
+    if deployment is None:
         return JSONResponse({"error": "Rollback target not found"}, status_code=404)
     return deployment.model_dump(mode="json")
 
 
 @router.post("/api/prompts/compare")
-async def compare_prompt_versions(payload: dict[str, Any] = Body(...)):
+async def compare_prompt_versions(
+    payload: dict[str, Any] = Body(...),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
     try:
-        result = get_prompt_registry().compare_versions(
+        result = await (await _registry(session)).compare_versions(
             str(payload["prompt_id"]),
             int(payload["version_a"]),
             int(payload["version_b"]),

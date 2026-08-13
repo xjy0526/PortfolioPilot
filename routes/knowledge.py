@@ -1,108 +1,190 @@
-"""Enterprise-lite knowledge base APIs."""
+"""Governed PostgreSQL research-document APIs."""
 from __future__ import annotations
 
-import base64
-import binascii
+import json
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag.models import PermissionContext
-from rag.service import IngestionError, KnowledgeBaseService
+from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
+from app.db.repositories.governance import ResearchRepository
+from app.services.research_knowledge import KnowledgeIngestionError, PostgresKnowledgeService
+from config import settings
 
 router = APIRouter()
 
 
-class KnowledgeDocumentUpload(BaseModel):
-    filename: str
-    content: str | None = None
-    content_base64: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-def get_knowledge_service() -> KnowledgeBaseService:
-    return KnowledgeBaseService()
-
-
-def _permission_context(user_id: str | None, groups: str | None) -> PermissionContext:
-    parsed = [group.strip() for group in (groups or "public").split(",") if group.strip()]
-    return PermissionContext(user_id=user_id or "anonymous", permission_groups=parsed or ["public"])
-
-
 @router.post("/api/knowledge/documents")
-async def create_knowledge_document(payload: KnowledgeDocumentUpload):
+async def create_knowledge_document(
+    file: UploadFile = File(...),
+    metadata: str = Form(default="{}"),
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
     try:
-        if payload.content_base64:
-            content = base64.b64decode(payload.content_base64, validate=True)
-        elif payload.content is not None:
-            if payload.filename.lower().endswith(".pdf"):
-                return JSONResponse({"error": "PDF content must use content_base64"}, status_code=400)
-            content = payload.content.encode("utf-8")
-        else:
-            return JSONResponse({"error": "content or content_base64 is required"}, status_code=400)
-    except (binascii.Error, ValueError) as exc:
-        return JSONResponse({"error": f"Invalid base64 content: {exc}"}, status_code=400)
-
-    try:
-        result = get_knowledge_service().ingest(
+        parsed_metadata = json.loads(metadata)
+        if not isinstance(parsed_metadata, dict):
+            raise ValueError("metadata must be a JSON object")
+        content = await _read_limited_upload(file)
+        job, replay = await PostgresKnowledgeService(session).queue_upload(
             content=content,
-            filename=payload.filename,
-            metadata=payload.metadata,
+            filename=file.filename or "",
+            metadata=parsed_metadata,
+            principal=principal,
+            idempotency_key=idempotency_key,
         )
-        return JSONResponse(result, status_code=200 if result["status"] == "duplicate" else 201)
-    except IngestionError as exc:
-        return JSONResponse({"error": str(exc), "job_id": exc.job_id}, status_code=422)
+        return JSONResponse(
+            {
+                "job_id": str(job.id),
+                "status": job.status,
+                "filename": job.filename,
+                "checksum": job.checksum,
+                "idempotent_replay": replay,
+            },
+            status_code=200 if replay else 202,
+        )
+    except (KnowledgeIngestionError, ValueError, json.JSONDecodeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    finally:
+        await file.close()
 
 
 @router.get("/api/knowledge/documents")
 async def list_knowledge_documents(
-    x_user_id: str | None = Header(default=None),
-    x_permission_groups: str | None = Header(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
 ):
-    service = get_knowledge_service()
-    context = _permission_context(x_user_id, x_permission_groups)
-    documents = service.repository.list_documents(context)
-    return {"count": len(documents), "documents": [doc.model_dump(mode="json") for doc in documents]}
+    documents = await ResearchRepository(session).list_documents(
+        principal.permission_groups,
+        is_admin=principal.has_group("knowledge_admin"),
+    )
+    include_drafts = principal.has_group("knowledge_admin")
+    payload = [_document_payload(item, include_drafts=include_drafts) for item in documents]
+    return {"count": len(payload), "documents": payload}
 
 
 @router.get("/api/knowledge/documents/{document_id}")
 async def get_knowledge_document(
-    document_id: str,
-    x_user_id: str | None = Header(default=None),
-    x_permission_groups: str | None = Header(default=None),
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
 ):
-    service = get_knowledge_service()
-    context = _permission_context(x_user_id, x_permission_groups)
-    document = service.repository.get_document(document_id, context)
-    if not document:
+    repository = ResearchRepository(session)
+    document = await repository.get_document(
+        document_id,
+        principal.permission_groups,
+        is_admin=principal.has_group("knowledge_admin"),
+    )
+    if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
+    include_drafts = principal.has_group("knowledge_admin")
+    versions = await repository.list_versions(document_id)
+    if not include_drafts:
+        versions = [item for item in versions if item.version == document.published_version]
     return {
-        "document": document.model_dump(mode="json"),
-        "versions": service.repository.list_versions(document_id),
+        "document": _document_payload(document, include_drafts=include_drafts),
+        "versions": [
+            {
+                "version_id": str(item.id),
+                "version": item.version,
+                "checksum": item.checksum,
+                "stored_content_checksum": item.stored_content_checksum,
+                "source_filename": item.source_filename,
+                "parser": item.parser,
+                "page_count": item.page_count,
+                "chunk_count": item.chunk_count,
+                "status": item.status,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in versions
+        ],
     }
 
 
 @router.post("/api/knowledge/documents/{document_id}/publish")
-async def publish_knowledge_document(document_id: str):
-    document = get_knowledge_service().repository.publish(document_id)
-    if not document:
+async def publish_knowledge_document(
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
+    document = await ResearchRepository(session).set_published(document_id)
+    if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
-    return {"status": "published", "document": document.model_dump(mode="json")}
+    return {"status": "published", "document": _document_payload(document)}
 
 
 @router.post("/api/knowledge/documents/{document_id}/deactivate")
-async def deactivate_knowledge_document(document_id: str):
-    document = get_knowledge_service().repository.deactivate(document_id)
-    if not document:
+async def deactivate_knowledge_document(
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    principal.require_group("knowledge_admin")
+    document = await ResearchRepository(session).deactivate(document_id)
+    if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
-    return {"status": "inactive", "document": document.model_dump(mode="json")}
+    return {"status": "inactive", "document": _document_payload(document)}
 
 
 @router.get("/api/knowledge/ingestion-jobs/{job_id}")
-async def get_ingestion_job(job_id: str):
-    job = get_knowledge_service().repository.get_job(job_id)
-    if not job:
+async def get_ingestion_job(
+    job_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    job = await ResearchRepository(session).get_job(job_id)
+    if job is None or (job.user_id != principal.user_id and not principal.has_group("knowledge_admin")):
         return JSONResponse({"error": "Ingestion job not found"}, status_code=404)
-    return job.model_dump(mode="json")
+    return {
+        "job_id": str(job.id),
+        "document_id": str(job.document_id) if job.document_id else None,
+        "version_id": str(job.version_id) if job.version_id else None,
+        "status": job.status,
+        "filename": job.filename,
+        "checksum": job.checksum,
+        "code_version": job.code_version,
+        "chunks_created": job.chunks_created,
+        "retry_count": job.retry_count,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat(),
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+def _document_payload(document: Any, *, include_drafts: bool = True) -> dict[str, Any]:
+    return {
+        "document_id": str(document.id),
+        "document_key": document.document_key,
+        "title": document.title,
+        "source_type": document.source_type,
+        "department": document.department,
+        "author": document.author,
+        "status": document.status,
+        "current_version": (
+            document.current_version if include_drafts else document.published_version
+        ),
+        "published_version": document.published_version,
+        "created_at": document.created_at.isoformat(),
+        "updated_at": document.updated_at.isoformat(),
+    }
+
+
+async def _read_limited_upload(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while block := await file.read(1024 * 1024):
+        total += len(block)
+        if total > settings.RAG_MAX_UPLOAD_BYTES:
+            raise KnowledgeIngestionError(
+                f"File size limit exceeded: {total} > "
+                f"{settings.RAG_MAX_UPLOAD_BYTES}"
+            )
+        chunks.append(block)
+    return b"".join(chunks)

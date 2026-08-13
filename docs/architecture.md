@@ -20,7 +20,8 @@ PortfolioPilot 是“面向 A 股与美股的多市场投资组合风险分析�
 - pandas、NumPy
 - Tushare Pro 与 yfinance Provider Adapter
 - Qwen/OpenAI-Compatible LLM API
-- SQLite 兼容层，用于尚未迁移的知识、Prompt、Trace 和 Workflow 数据
+- pgvector、PostgreSQL 全文检索与 RRF 混合检索
+- SQLite 显式兼容与迁移层；核心治理链路不依赖它，少量默认关闭的旧扩展仍可能写入
 - pytest、pytest-asyncio、pytest-cov、Ruff、Mypy、Docker Compose
 
 ## 目录与职责
@@ -36,8 +37,8 @@ app/workers/                独立 Session、互斥锁和可追踪任务入口
 analytics/                  确定性风险指标
 backtest/                   point-in-time 回测、权重漂移与可用性矩阵
 evaluation/                 分模式评测与版本化公开培训黄金集
-rag/                        当前 SQLite-backed 知识治理与混合检索
-workflows/                  当前 SQLite-backed 受控研究工作流
+rag/                        文档解析、Chunking、查询意图与离线兼容工具
+workflows/                  PostgreSQL-backed 受控研究工作流
 migrations/                 PostgreSQL schema 唯一变更入口
 scripts/                    初始化与兼容迁移工具
 ```
@@ -67,6 +68,16 @@ flowchart LR
     VS --> RISK[确定性风险引擎]
     PB --> RISK
     RISK --> LLM[证据约束的 Qwen 解释]
+
+    UPLOAD[Multipart UploadFile] --> IJ[(ingestion_jobs)]
+    IJ --> IW[Knowledge Ingestion Worker]
+    IW --> RD[(documents + versions + chunks)]
+    IW --> CE[(pgvector chunk_embeddings)]
+    RD --> FTS[PostgreSQL FTS]
+    CE --> DENSE[pgvector cosine search]
+    FTS --> RRF[RRF + optional reranker]
+    DENSE --> RRF
+    RRF --> LLM
 ```
 
 旧持仓 CSV 不会被描述成完整交易历史。证券行转换为 `opening_balance`，现金行转换为 opening cash `deposit`，导入响应返回 `history_completeness=opening_balance_only`。
@@ -117,6 +128,7 @@ market_value_base = native_market_value * valuation_fx_rate
 python -m app.workers.run_market_sync
 python -m app.workers.run_position_rebuild
 python -m app.workers.run_daily_pipeline
+python -m app.workers.run_knowledge_ingestion --once
 ```
 
 Web 进程不再运行 APScheduler，也不会在启动时自动请求行情或修改组合状态；定时调度应由 cron、CI scheduler、Cloud Scheduler 或独立任务平台调用 Worker。
@@ -138,9 +150,15 @@ POST /api/market-data/sync
 
 旧 `/api/portfolio`、行业和资产分布接口仍返回原 `PortfolioSummary` 结构，但数据由 `LegacyPortfolioAdapter` 从 PostgreSQL valuation snapshot 生成，不再以 `state.portfolio_data` 作为真实组合来源。显式 demo 数据仍保留 `is_demo=true`。
 
-## 尚未迁移的数据
+## 研究治理与混合检索
 
-知识库、Prompt Registry、LLM Trace、Workflow 审批和部分可选扩展仍使用 SQLite。它们不参与持仓、现金、行情或估值事实计算。完整边界见 [current-limitations.md](current-limitations.md)。
+知识文档、版本、Chunk、Embedding、Prompt、LLM Trace、Workflow、人工审核和发布报告均持久化于 PostgreSQL。文档入库由独立 Worker 完成，Chunk 在写入时生成并保存 Embedding；查询时仅编码 query，不会重新编码全部文档。
+
+检索先在数据库内执行 ACL、发布版本、有效期与元数据过滤，再分别运行 PostgreSQL `tsvector` 全文检索和 pgvector cosine 检索，最后用 RRF 合并，可配置 Reranker。所有权限来自服务端 `Principal`；客户端 Body/Header 不能声明 `user_id`、permission groups 或 reviewer identity。
+
+Qwen/OpenAI-Compatible HTTP client 与 Embedder 在应用 lifespan 内复用。每次 LLM Trace 保存 Prompt 版本、模型、证据 ID、数据截止时间、代码版本、Provider 原始 usage、usage 来源和成本来源。Provider 未返回 usage 或账单金额时分别标记为估算，不冒充真实成本。
+
+SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。完整边界见 [current-limitations.md](current-limitations.md)。
 
 ## 回测与 LLM 分工
 

@@ -1,4 +1,4 @@
-"""SQLite persistence for the enterprise-lite knowledge base."""
+"""Explicit-connection SQLite reader kept only for migration validation."""
 from __future__ import annotations
 
 import json
@@ -10,15 +10,12 @@ from rag.models import DocumentMetadata, IngestionJob, PermissionContext
 
 
 class KnowledgeRepository:
-    def __init__(self, connection: sqlite3.Connection | None = None):
-        if connection is None:
-            from database import _get_conn
-
-            connection = _get_conn()
+    def __init__(self, connection: sqlite3.Connection, *, ensure_schema: bool = True):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
-        ensure_knowledge_schema(self.conn)
+        if ensure_schema:
+            ensure_knowledge_schema(self.conn)
 
     def create_job(self, job_id: str, filename: str, document_id: str | None, checksum: str) -> None:
         now = _now()

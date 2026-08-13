@@ -26,6 +26,8 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # Prüfe ob Auth konfiguriert ist
         if not settings.auth_configured:
+            request.state.principal_user_id = settings.LOCAL_PRINCIPAL_USER
+            request.state.principal_groups = settings.LOCAL_PRINCIPAL_GROUPS.split(",")
             return await call_next(request)
 
         # Prüfe ob Pfad ausgenommen ist
@@ -47,6 +49,8 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
                 pass_ok = secrets.compare_digest(password, settings.DASHBOARD_PASSWORD)
 
                 if user_ok and pass_ok:
+                    request.state.principal_user_id = username
+                    request.state.principal_groups = settings.LOCAL_PRINCIPAL_GROUPS.split(",")
                     return await call_next(request)
             except Exception:
                 pass

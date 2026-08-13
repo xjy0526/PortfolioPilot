@@ -15,13 +15,15 @@
 | P0-2 样本内回测偏差 | 已整改 | 回测改为 point-in-time walk-forward，保存逐调仓快照、成本、基准、压力测试和 leakage checks。 |
 | P0-3 Agent 控制 | 机构流程已整改 | 新研究报告 Workflow 强制规则校验与人工审核，具备幂等键、节点日志和预算限制；旧 Shadow Agent 仅保留给 `personal` 模式，尚未升级为企业级交易执行系统，也不得用于真实交易。 |
 | P1-1 历史 LLM 策略 | 已整改 | LLM 权重策略已移除；当前回测只运行六种确定性策略，LLM 仅解释风险与证据。 |
-| P1-2 知识库治理 | 已整改 | SQLite 文档、版本、chunk、ingestion job 模型及检索前权限/时效过滤已落地。 |
-| P1-3 Prompt 治理 | 已整改 | Prompt Registry 支持草稿、版本、发布、回滚、同测试集比较及调用 Trace。 |
-| P1-4 治理数据库 | 已整改 | 已新增 Prompt、知识版本、模型 Trace、工作流、审核和发布报告相关幂等表结构。 |
+| P1-2 知识库治理 | 已整改 | PostgreSQL 文档、版本、Chunk、pgvector Embedding、入库 Worker 及检索前权限/时效过滤已落地。 |
+| P1-3 Prompt 治理 | 已整改 | PostgreSQL Prompt Registry 支持草稿、版本、发布、回滚、同测试集比较及调用 Trace。 |
+| P1-4 治理数据库 | 已整改 | Prompt、知识版本、模型 Trace、工作流、审核和发布报告已迁移到 PostgreSQL，并提供 SQLite 迁移与校验脚本。 |
 | P1-5 产品定位 | 已整改 | `fund_research` 模式隐藏交易/Shadow/Tech Picks 入口并使用中性研究措辞；`personal` 保持原功能。 |
-| P1-6 风险测试 | 已整改 | 当前全量回归 `493 passed`，并覆盖行情缺失、stale、权限、版本、Prompt、Trace、人工审核和未来数据泄漏。 |
+| P1-6 风险测试 | 已整改 | 测试覆盖行情缺失、stale、权限、版本、Prompt、Trace、人工审核和未来数据泄漏；具体通过数以各阶段真实测试输出为准。 |
 | P2-1/P2-2 统计与可复现性 | 部分整改 | 已补数据质量、运行方法论、调仓快照、基准与风险指标；生产级行情许可证、交易日历和不可变对象存储仍属于部署层工作。 |
 | P2-3 企业身份与职责分离 | 未整改 | 当前仍是可选 Basic Auth；正式机构部署前仍需 OIDC/SAML、个人身份、RBAC/ABAC 与 maker-checker 策略。 |
+
+> 下文“代码证据”与“仓库未发现”等表述均为原始审计快照，不能用于描述整改后的当前实现；当前状态以上表和 `docs/architecture.md` 为准。
 
 ## 1. 执行摘要
 

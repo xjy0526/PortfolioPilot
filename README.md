@@ -100,7 +100,7 @@ python scripts/migrate_sqlite_to_postgres.py \
   --sqlite-path cache/portfoliopilot.db
 ```
 
-脚本当前幂等迁移旧组合总览快照和可选 Shadow 模拟交易；知识库、Prompt、Workflow 等 SQLite 数据仍按原数据契约保留。
+该脚本幂等迁移旧组合总览快照和可选 Shadow 模拟交易。研究治理数据使用本文后续的独立迁移与校验命令。
 
 ### 交易流水导入
 
@@ -268,40 +268,36 @@ curl "http://localhost:8000/api/portfolio/risk-summary?portfolio_id=<portfolio_i
 
 curl -X POST http://localhost:8000/api/ai/analyze-portfolio \
   -H "Content-Type: application/json" \
-  -d '{"portfolio_id":"<portfolio_id>","lang":"zh","top_k":5,"permission_groups":["public"]}'
+  -d '{"portfolio_id":"<portfolio_id>","lang":"zh","top_k":5}'
 ```
 
-## 轻量企业知识库与 Hybrid RAG
+## PostgreSQL 知识库与 Hybrid RAG
 
-知识库使用 SQLite 持久化以下对象：
+知识库使用 PostgreSQL/pgvector 持久化以下对象：
 
 - `DocumentMetadata`
 - `DocumentVersion`
 - `DocumentChunk`
 - `IngestionJob`
-- `PermissionContext`
+- `ChunkEmbedding`
+- 服务端 `Principal` 权限上下文
 
-文档支持 `.txt`、`.md`、`.csv` 和 `.pdf`。解析器优先按标题、章节、段落和 PDF 页码切片，固定长度仅作为 fallback。内容 checksum 不变时不会重复索引；内容变化会创建新版本；只有已发布且当前有效的版本能够进入正常检索。
+文档支持 `.txt`、`.md`、`.csv` 和 `.pdf`。解析器优先按标题、章节、段落和 PDF 页码切片，固定长度仅作为 fallback。版本同时保存源文件 checksum 和实际持久化内容 checksum；内容不变时不会重复索引，内容变化会创建新版本。只有已发布且当前有效的版本能够进入正常检索。
 
-上传并发布公开模拟文档：
+上传只创建待处理 Job，文档解析与 Embedding 由独立 Worker 执行：
 
 ```bash
 curl -X POST http://localhost:8000/api/knowledge/documents \
-  -H "Content-Type: application/json" \
-  -d '{
-    "filename":"notice.md",
-    "content":"# 公告摘要\n\n这是公开模拟内容。",
-    "metadata":{
-      "title":"公告摘要",
-      "source_type":"public_notice",
-      "permission_groups":["public"]
-    }
-  }'
+  -H "Idempotency-Key: notice-2026-001" \
+  -F 'file=@data/research_docs/notice.md' \
+  -F 'metadata={"title":"公告摘要","source_type":"public_notice","permission_groups":["public"]}'
 
-curl -X POST http://localhost:8000/api/knowledge/documents/<document_id>/publish
+python -m app.workers.run_knowledge_ingestion --once
+
+curl -X POST http://localhost:8000/api/knowledge/documents/<document_uuid>/publish
 ```
 
-PDF 必须通过 `content_base64` 上传。非公开文档必须设置非 `public` 的明确权限组。
+上传使用 multipart `UploadFile`，支持 txt/md/csv/pdf。文件大小、PDF 页数、Chunk 数和解析超时由 `RAG_MAX_*` 配置限制；非公开文档必须设置非 `public` 的明确权限组。权限和上传者来自服务端 Principal，客户端不能通过 Header 或 Body 提升权限。
 
 检索顺序为：
 
@@ -311,7 +307,8 @@ query normalization
 → metadata filter
 → permission filter
 → temporal filter
-→ BM25 + dense retrieval
+→ PostgreSQL tsvector + pgvector cosine retrieval
+→ vector similarity floor
 → reciprocal rank fusion
 → optional reranker
 → deduplication
@@ -319,10 +316,10 @@ query normalization
 → citation objects
 ```
 
-权限和时效条件在候选 chunk 进入相似度计算之前执行。默认不召回未发布、失效、过期或无权限文档。Dense retrieval 在无外部模型时保留 hashing fallback；可选安装：
+权限和时效条件在数据库内、候选 Chunk 进入排名前执行。向量候选先通过 `RAG_VECTOR_SCORE_THRESHOLD` 独立相似度下限，再参与 RRF，避免无关的向量近邻仅因排名靠前成为证据。默认不召回未发布、失效、过期或无权限文档。Embedding 在入库时生成并持久化，查询时只编码 query；sentence-transformers 不可用时使用显式模型名的 hashing embedder，仍由 pgvector 存储和检索。可选安装：
 
 ```bash
-pip install sentence-transformers faiss-cpu
+pip install sentence-transformers
 ```
 
 检索示例：
@@ -332,8 +329,7 @@ curl -X POST http://localhost:8000/api/rag/retrieve \
   -H "Content-Type: application/json" \
   -d '{
     "query":"ticker:NVDA 2025 research report concentration",
-    "top_k":5,
-    "permission_groups":["public"]
+    "top_k":5
   }'
 ```
 
@@ -341,7 +337,7 @@ Citation 包含 `document_id`、`version`、`chunk_id`、标题、来源类型�
 
 ## Prompt Registry、结构化输出与 Trace
 
-金融分析 Prompt 不再硬编码于业务服务。SQLite Prompt Registry 支持：
+金融分析 Prompt 不再硬编码于业务服务。PostgreSQL Prompt Registry 支持：
 
 - 创建 Prompt 和不可变版本；
 - `draft`、`testing`、`published`、`deprecated` 生命周期；
@@ -367,7 +363,7 @@ Pydantic 模型是唯一输出契约，生成的 JSON Schema 禁止额外字段�
 - 金融数值必须能映射到结构化输入；
 - 首次校验失败后只重试一次，再进入安全 fallback。
 
-Trace 记录运行、用户、业务场景、Prompt、模型参数、输入哈希、检索证据、工具调用、延迟、token、估算成本、schema 状态、fallback、错误和人工审核结果。
+Trace 记录运行、用户、业务场景、Prompt、模型、输入/响应哈希、数据截止时间、代码版本、检索证据、延迟、token、成本、fallback 和错误。`usage_source=provider` 表示 token 来自 Provider；`cost_source=provider` 仅在 Provider 返回真实金额时使用，否则明确标记估算来源。
 
 ## 受控公募基金研究报告 Workflow
 
@@ -388,9 +384,9 @@ validate_input → load_portfolio → calculate_risk → retrieve_evidence
 curl -X POST http://localhost:8000/api/workflows/research-report \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id":"analyst-1",
     "idempotency_key":"research-run-2026-001",
-    "max_steps":20
+    "max_steps":20,
+    "node_timeout_seconds":45
   }'
 ```
 
@@ -399,10 +395,31 @@ curl -X POST http://localhost:8000/api/workflows/research-report \
 ```bash
 curl -X POST http://localhost:8000/api/reviews/<review_id>/approve \
   -H "Content-Type: application/json" \
-  -d '{"reviewer_id":"reviewer-1","feedback":"同意发布"}'
+  -d '{"feedback":"同意发布"}'
 ```
 
-也可使用 `/reject` 或 `/request-changes`。报告发布前必须通过数值、引用、权限和禁用表达检查。LLM 不能跳过规则检查或人工审核，工具 allowlist 不包含 Shadow Trading 或真实交易工具。
+也可使用 `/reject` 或 `/request-changes`。`user_id`、permission groups 和 `reviewer_id` 均来自认证后的服务端 Principal，请求 Body 中同名字段不会成为审计身份。幂等键按 `user_id + business_scene + idempotency_key` 唯一；总 timeout 与单节点 timeout 都会真正取消超时协程。报告发布前必须通过数值、引用、权限和禁用表达检查。
+
+### SQLite 研究治理迁移
+
+```bash
+python scripts/migrate_governance_sqlite_to_postgres.py \
+  --sqlite cache/portfoliopilot.db \
+  --report cache/governance_migration_report.json
+
+python scripts/validate_governance_migration.py \
+  --sqlite cache/portfoliopilot.db \
+  --report cache/governance_validation_report.json
+
+python scripts/compare_sqlite_postgres_retrieval.py \
+  --sqlite cache/portfoliopilot.db \
+  --query "ticker:NVDA concentration risk" \
+  --query "行业政策 风险"
+```
+
+迁移会用旧库保存的已解析正文重建 Chunk 和 Embedding，不会声称恢复原始二进制文件；版本保留原始 source checksum，并另存实际重建内容 checksum。由于迁移会按当前规则重新切片，校验脚本不强求新旧 Chunk 数相等，而是核对文档 key/version/source checksum，并确保 PostgreSQL 中版本声明 Chunk 数、实际 Chunk 数与 Embedding 数一致；Prompt key/version/deployment 和稳定映射 ID 也会检查。召回对比让两侧复用同一个 Embedder，只比较公共文档，出现 PostgreSQL 缺失项时以非零状态退出。
+
+本地开发未启用 Basic Auth 时，Principal 由 `LOCAL_PRINCIPAL_*` 配置提供。非 development 环境未认证请求固定为 `anonymous/public`，不能管理知识、Prompt、Trace 或审核任务；正式部署仍建议接入 OIDC 与细粒度 RBAC。
 
 ## 策略回测（研究演示）
 
@@ -514,7 +531,7 @@ pip check
 1. 连接 GitHub 仓库并读取 `render.yaml`；
 2. 配置托管 PostgreSQL 的 `DATABASE_URL`，并设置 `QWEN_API_KEY`、`FMP_API_KEY`、`DASHBOARD_USER` 和 `DASHBOARD_PASSWORD`；
 3. 将 Persistent Disk 挂载到 `/app/cache`；
-4. 将真实组合、SQLite、行情和运行报告保存在持久化目录；
+4. 将 PostgreSQL 数据、行情和运行报告纳入备份与恢复流程；
 5. 生产环境使用受信任的权限主体生成知识库 permission groups。
 
 公网部署必须配置 Dashboard 认证。当前仓库提供的是可选 Basic Auth；正式机构环境仍应接入 OIDC/SAML、个人身份、RBAC/ABAC、职责分离、密钥管理、备份和集中审计。
@@ -524,7 +541,7 @@ pip check
 - 示例组合、FAQ、公告和研报摘要均为公开或模拟内容。
 - 不要提交真实持仓、内部研报、实习单位文件、API Key 或客户数据。
 - `cache/`、`portfolio.csv`、`rag_documents/` 和 `.env` 默认不进入 Git。
-- Knowledge API 中客户端传入的权限组仅适合本地开发；生产环境必须由认证网关注入可信权限上下文。
+- Knowledge、Workflow 和 Review API 的权限与身份只来自服务端 Principal；当前 Basic Auth 仍是演示级认证，机构部署应接入 OIDC/SAML。
 - Shadow Agent 是默认关闭的模拟扩展，不连接券商，也不属于受控研究报告 Workflow。
 - SQLite、行情许可、回测和 fallback 边界见 [docs/current-limitations.md](docs/current-limitations.md)。
 - 机构差距与整改状态见 [docs/audits/institutional_gap_analysis.md](docs/audits/institutional_gap_analysis.md)。

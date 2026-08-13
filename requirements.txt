@@ -29,7 +29,6 @@ structlog>=24.0
 
 # Optional local RAG acceleration:
 # sentence-transformers>=3.0
-# faiss-cpu>=1.8
 
 # Charts (served via CDN, but listed for reference)
 # chart.js - loaded via CDN in frontend

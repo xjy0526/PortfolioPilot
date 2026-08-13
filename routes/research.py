@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
+from app.services.research_knowledge import PostgresKnowledgeService
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from analytics.risk_metrics import build_portfolio_risk_summary
 from backtest.strategy_backtester import (
@@ -23,7 +25,6 @@ from backtest.strategy_backtester import (
 )
 from config import BASE_DIR, settings
 from portfolio_optimizer import risk_parity_simple
-from rag import PermissionContext, retrieve_evidence, retrieve_evidence_with_status
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
 )
@@ -59,6 +60,7 @@ async def get_portfolio_risk_summary(
 @router.post("/api/ai/analyze-portfolio")
 async def analyze_portfolio_endpoint(
     data: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Run structured LLM portfolio analysis with optional RAG evidence."""
@@ -81,12 +83,19 @@ async def analyze_portfolio_endpoint(
         )
         query = data.get("query") or _default_rag_query(context.summary, risk_summary)
         top_k = int(data.get("top_k", getattr(settings, "RAG_TOP_K", 5)) or 5)
-        evidence = retrieve_evidence(
-            query=query,
+        retrieval = await PostgresKnowledgeService(session).retrieve_with_status(
+            query,
             top_k=top_k,
-            permission_context=_permission_context_from_data(data),
+            principal=principal,
         )
-        analysis = await analyze_portfolio_with_llm(risk_summary, evidence, language=language)
+        evidence = retrieval["citations"]
+        analysis = await analyze_portfolio_with_llm(
+            risk_summary,
+            evidence,
+            language=language,
+            session=session,
+            user_id=principal.user_id,
+        )
         return {
             "status": "ok",
             "analysis": analysis,
@@ -99,7 +108,11 @@ async def analyze_portfolio_endpoint(
 
 
 @router.post("/api/rag/retrieve")
-async def rag_retrieve_endpoint(data: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+async def rag_retrieve_endpoint(
+    data: dict[str, Any] | None = Body(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
     """Retrieve local RAG evidence for a query."""
     data = data or {}
     query = str(data.get("query", "")).strip()
@@ -115,11 +128,10 @@ async def rag_retrieve_endpoint(data: dict[str, Any] | None = Body(default=None)
             "citations": [],
             "evidence_insufficient": True,
         }
-    permission_context = _permission_context_from_data(data)
-    result = retrieve_evidence_with_status(
-        query=query,
+    result = await PostgresKnowledgeService(session).retrieve_with_status(
+        query,
         top_k=top_k,
-        permission_context=permission_context,
+        principal=principal,
         score_threshold=data.get("score_threshold"),
     )
     return {
@@ -218,19 +230,6 @@ def _optional_prices_path() -> Path | None:
             path = BASE_DIR / path
         return resolve_prices_csv(path)
     return resolve_prices_csv()
-
-
-def _permission_context_from_data(data: dict[str, Any]) -> PermissionContext:
-    raw_groups = data.get("permission_groups") or ["public"]
-    if isinstance(raw_groups, str):
-        raw_groups = [raw_groups]
-    if not isinstance(raw_groups, (list, tuple, set)):
-        raw_groups = ["public"]
-    groups = [str(group).strip() for group in raw_groups if str(group).strip()]
-    return PermissionContext(
-        user_id=str(data.get("user_id") or "anonymous"),
-        permission_groups=groups or ["public"],
-    )
 
 
 async def _build_portfolio_risk_summary(

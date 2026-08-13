@@ -27,6 +27,35 @@ class QueryIntent:
     publish_date_from: date | None = None
     publish_date_to: date | None = None
 
+    @property
+    def retrieval_query(self) -> str:
+        """Return semantic search text with metadata control prefixes removed."""
+        value = re.sub(
+            r"(?i)(?:ticker|股票代码|证券代码)\s*[:：=]\s*([A-Z0-9.-]{1,16})",
+            r"\1",
+            self.normalized_query,
+        )
+        value = re.sub(
+            r"(?i)(?:fund(?:\s+code)?|基金(?:代码)?)\s*[:：=]?\s*([A-Z0-9.-]{3,20})",
+            r"\1",
+            value,
+        )
+        if self.publish_date_from or self.publish_date_to:
+            value = re.sub(r"\b20\d{2}-\d{1,2}-\d{1,2}\b", " ", value)
+            value = re.sub(r"\b20\d{2}\b", " ", value)
+            value = re.sub(
+                r"(?i)(?:最近|近|last|past)\s*\d{1,4}\s*(?:天|days?)",
+                " ",
+                value,
+            )
+            value = re.sub(r"(?:至|到|截至|之前|以前|之后|以来)|(?i:\b(?:to|until|before|after|since|from)\b)", " ", value)
+        if self.source_types:
+            for source_type in self.source_types:
+                for term in _SOURCE_TYPE_TERMS.get(source_type, ()):
+                    value = re.sub(re.escape(term), " ", value, flags=re.IGNORECASE)
+        cleaned = normalize_query(value)
+        return cleaned or self.normalized_query
+
     def metadata_filters(self) -> dict[str, object]:
         return {
             "tickers": self.tickers,

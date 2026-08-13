@@ -6,12 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from database import _get_conn
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import ReviewDecision, WorkflowRun, WorkflowStep
 from evaluation.llm_eval import EVALUATION_MODES, run_llm_evaluation_sync
 from evaluation.retrieval_eval import run_retrieval_evaluation
 from prompts.registry import PromptRegistry
 from rag.parsers import parse_document, structured_chunks
-from workflows.research_report import ALLOWLISTED_TOOLS, ensure_workflow_schema
+from workflows.research_report import ALLOWLISTED_TOOLS
 
 
 BADCASE_LABELS = (
@@ -36,7 +39,7 @@ def run_full_evaluation(
         )
     retrieval = run_retrieval_evaluation(top_k=top_k)
     generation = run_llm_evaluation_sync(mode=mode)
-    workflow = _workflow_metrics()
+    workflow = _empty_workflow_metrics()
     badcases = _build_badcases(retrieval, generation)
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -87,56 +90,51 @@ def run_full_evaluation(
     return report
 
 
-def evaluation_dashboard(limit: int = 100) -> dict[str, Any]:
-    registry = PromptRegistry()
-    traces = registry.list_traces(limit)
-    conn = registry.conn
-    prompt_rows = conn.execute(
-        "SELECT * FROM prompt_evaluation_results ORDER BY created_at DESC LIMIT 20"
-    ).fetchall()
-    comparisons = []
-    for row in prompt_rows:
-        item = dict(row)
-        for field in ("metrics_a", "metrics_b", "metric_delta"):
-            item[field] = json.loads(item[field])
-        comparisons.append(item)
+async def evaluation_dashboard(session: AsyncSession, limit: int = 100) -> dict[str, Any]:
+    traces = await PromptRegistry(session).list_traces(limit)
+    workflow_metrics = await _workflow_metrics(session)
     report_path = Path(__file__).resolve().parent.parent / "cache" / "full_evaluation_report.json"
     full_report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
     return {
         "metric_trends": _trace_trends(traces),
-        "prompt_comparisons": comparisons,
+        "prompt_comparisons": [],
         "badcase_distribution": full_report.get("badcase_distribution", {}),
         "latency_cost": {
-            "average_latency_ms": _average(traces, "latency_ms"),
-            "total_estimated_cost": round(sum(float(item.get("estimated_cost", 0.0)) for item in traces), 8),
+            "average_latency_ms": _average(traces, "duration_ms"),
+            "total_cost_amount": round(
+                sum(float(item.get("cost_amount") or 0.0) for item in traces), 8
+            ),
+            "contains_estimated_cost": any(
+                item.get("cost_source") != "provider" for item in traces
+            ),
         },
-        "human_adoption_rate": _workflow_metrics()["metrics"]["human_adoption_rate"],
+        "human_adoption_rate": workflow_metrics["metrics"]["human_adoption_rate"],
+        "workflow": workflow_metrics,
         "traces": traces,
     }
 
 
-def _workflow_metrics() -> dict[str, Any]:
-    conn = _get_conn()
-    ensure_workflow_schema(conn)
-    completed_steps = conn.execute("SELECT COUNT(*) FROM workflow_steps WHERE status='COMPLETED'").fetchone()[0]
-    total_steps = conn.execute("SELECT COUNT(*) FROM workflow_steps").fetchone()[0]
-    step_rows = conn.execute("SELECT step_name, status FROM workflow_steps").fetchall()
-    allowed_steps = sum(row[0] in ALLOWLISTED_TOOLS and row[1] == "COMPLETED" for row in step_rows)
-    rule_attempts = sum(row[0] == "run_compliance_rules" for row in step_rows)
-    rule_passes = sum(row[0] == "run_compliance_rules" and row[1] == "COMPLETED" for row in step_rows)
-    runs = conn.execute("SELECT * FROM workflow_runs").fetchall()
-    decisions = conn.execute("SELECT decision FROM review_decisions").fetchall()
+async def _workflow_metrics(session: AsyncSession) -> dict[str, Any]:
+    steps = list((await session.scalars(select(WorkflowStep))).all())
+    runs = list((await session.scalars(select(WorkflowRun))).all())
+    decisions = list((await session.scalars(select(ReviewDecision))).all())
+    total_steps = len(steps)
+    allowed_steps = sum(
+        row.step_name in ALLOWLISTED_TOOLS and row.status == "COMPLETED" for row in steps
+    )
+    rule_attempts = sum(row.step_name == "run_compliance_rules" for row in steps)
+    rule_passes = sum(
+        row.step_name == "run_compliance_rules" and row.status == "COMPLETED" for row in steps
+    )
     decision_count = len(decisions)
-    approved = sum(row[0] == "approve" for row in decisions)
-    changes = sum(row[0] == "request_changes" for row in decisions)
+    approved = sum(row.decision == "approve" for row in decisions)
+    changes = sum(row.decision == "request_changes" for row in decisions)
     latencies = []
     for row in runs:
-        if row["started_at"] and row["completed_at"]:
-            start = datetime.fromisoformat(row["started_at"])
-            end = datetime.fromisoformat(row["completed_at"])
-            latencies.append((end - start).total_seconds() * 1000)
+        if row.started_at and row.completed_at:
+            latencies.append((row.completed_at - row.started_at).total_seconds() * 1000)
     run_count = len(runs)
-    failed = sum(row["status"] == "FAILED" for row in runs)
+    failed = sum(row.status == "FAILED" for row in runs)
     return {
         "metrics": {
             "workflow_allowlist_completion_rate": (
@@ -147,10 +145,33 @@ def _workflow_metrics() -> dict[str, Any]:
             "human_adoption_rate": round(approved / decision_count, 4) if decision_count else 0.0,
             "modification_rate": round(changes / decision_count, 4) if decision_count else 0.0,
             "end_to_end_latency_ms": round(sum(latencies) / len(latencies), 4) if latencies else 0.0,
-            "cost_per_task": round(sum(float(row["estimated_cost"]) for row in runs) / run_count, 8) if run_count else 0.0,
+            "cost_per_task": round(sum(float(row.cost_amount) for row in runs) / run_count, 8) if run_count else 0.0,
+            "estimated_cost_task_rate": (
+                round(sum(row.cost_is_estimated for row in runs) / run_count, 4)
+                if run_count else 0.0
+            ),
             "failure_rate": round(failed / run_count, 4) if run_count else 0.0,
         },
         "run_count": run_count,
+        "data_source": "postgresql_production_runs",
+    }
+
+
+def _empty_workflow_metrics() -> dict[str, Any]:
+    return {
+        "metrics": {
+            "workflow_allowlist_completion_rate": 0.0,
+            **_tool_call_metrics(),
+            "rule_validation_pass_rate": 0.0,
+            "human_adoption_rate": 0.0,
+            "modification_rate": 0.0,
+            "end_to_end_latency_ms": 0.0,
+            "cost_per_task": 0.0,
+            "estimated_cost_task_rate": 0.0,
+            "failure_rate": 0.0,
+        },
+        "run_count": 0,
+        "data_source": "synthetic_static_only",
     }
 
 
@@ -249,9 +270,12 @@ def _chunk_statistics() -> dict[str, Any]:
 def _trace_trends(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
-            "created_at": item["created_at"], "prompt_id": item["prompt_id"],
-            "prompt_version": item["prompt_version"], "latency_ms": item["latency_ms"],
-            "estimated_cost": item["estimated_cost"], "schema_valid": bool(item["output_schema_valid"]),
+            "created_at": item["created_at"],
+            "business_scene": item["business_scene"],
+            "duration_ms": item.get("duration_ms", 0),
+            "cost_amount": item.get("cost_amount"),
+            "cost_source": item.get("cost_source"),
+            "status": item["status"],
         }
         for item in reversed(traces)
     ]

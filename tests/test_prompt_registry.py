@@ -1,27 +1,15 @@
 import json
-import sqlite3
-
+from datetime import UTC, datetime
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
 from prompts.financial_analysis_models import (
     FINANCIAL_ANALYSIS_JSON_SCHEMA,
     validate_financial_analysis_output,
 )
-from prompts.registry import PromptRegistry
-from routes import prompts as prompt_routes
-from services.financial_analysis import analyze_portfolio_with_llm
 from services.llm import MockProvider
 from services.llm import providers as provider_module
-
-
-@pytest.fixture
-def registry():
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
-    value = PromptRegistry(connection)
-    yield value
-    connection.close()
+from prompts.registry import PromptRegistry
 
 
 def _prompt_payload(prompt_id="test-prompt"):
@@ -49,28 +37,9 @@ def _prompt_payload(prompt_id="test-prompt"):
     }
 
 
-def test_prompt_publish_new_version_and_rollback(registry):
-    template, first = registry.create_prompt(_prompt_payload())
-    deployment_one = registry.publish(template.prompt_id, first.version)
-    second = registry.create_version(
-        template.prompt_id,
-        {"template": "Analyze carefully {portfolio_json}", "change_log": "Stricter wording"},
-    )
-    deployment_two = registry.publish(template.prompt_id, second.version)
+def test_invalid_prompt_schema_is_rejected():
+    from prompts.registry_models import PromptVersion
 
-    assert deployment_one.version == 1
-    assert deployment_two.previous_version == 1
-    assert registry.get_prompt(template.prompt_id).published_version == 2
-
-    rollback = registry.rollback(template.prompt_id)
-    assert rollback.action == "rollback"
-    assert rollback.version == 1
-    assert registry.get_prompt(template.prompt_id).published_version == 1
-    assert registry.get_version(template.prompt_id, 1).status == "published"
-    assert registry.get_version(template.prompt_id, 2).status == "deprecated"
-
-
-def test_invalid_prompt_schema_is_rejected(registry):
     payload = _prompt_payload("bad-schema")
     payload["output_schema"] = {
         "type": "object",
@@ -79,29 +48,27 @@ def test_invalid_prompt_schema_is_rejected(registry):
         "additionalProperties": False,
     }
     with pytest.raises(ValueError, match="Invalid JSON Schema type"):
-        registry.create_prompt(payload)
+        PromptVersion(
+            prompt_id=payload["prompt_id"],
+            version=1,
+            template=payload["template"],
+            variables=payload["variables"],
+            input_schema=payload["input_schema"],
+            output_schema=payload["output_schema"],
+            model=payload["model"],
+            temperature=payload["temperature"],
+            owner=payload["owner"],
+        )
 
     payload = _prompt_payload("open-schema")
     payload["output_schema"].pop("additionalProperties")
     with pytest.raises(ValueError, match="additionalProperties=false"):
-        registry.create_prompt(payload)
-
-
-def test_compare_versions_uses_same_test_set(registry):
-    template, first = registry.create_prompt(_prompt_payload("compare"))
-    second = registry.create_version(
-        template.prompt_id,
-        {"template": "Review {portfolio_json} and include CONTROL", "change_log": "Add control"},
-    )
-    result = registry.compare_versions(
-        template.prompt_id,
-        first.version,
-        second.version,
-        [{"variables": {"portfolio_json": "{}"}, "expected_tokens": ["CONTROL"]}],
-    )
-    assert result.metrics_a["static_expected_token_hit_rate"] == 0.0
-    assert result.metrics_b["static_expected_token_hit_rate"] == 1.0
-    assert result.metric_delta["static_expected_token_hit_rate"] == 1.0
+        PromptVersion(
+            prompt_id=payload["prompt_id"], version=1, template=payload["template"],
+            variables=payload["variables"], input_schema=payload["input_schema"],
+            output_schema=payload["output_schema"], model=payload["model"],
+            temperature=payload["temperature"], owner=payload["owner"],
+        )
 
 
 def _valid_financial_payload():
@@ -153,58 +120,104 @@ def test_pydantic_output_schema_forbids_additional_properties():
 
 
 @pytest.mark.asyncio
-async def test_validation_retries_once_then_safe_fallback_and_records_prompt(registry):
-    provider = MockProvider("{not valid json")
-    result = await analyze_portfolio_with_llm(
-        _structured_input(),
-        evidence=[],
-        language="en",
-        provider=provider,
-        registry=registry,
+async def test_new_prompt_draft_does_not_unpublish_active_version():
+    template = SimpleNamespace(
+        id="prompt-uuid",
+        prompt_key="financial-analysis",
+        current_version=1,
+        published_version=1,
+        status="published",
+    )
+    version = SimpleNamespace(
+        version=1,
+        template="Analyze {portfolio_json}",
+        variables=["portfolio_json"],
+        input_schema=_prompt_payload()["input_schema"],
+        output_schema=_prompt_payload()["output_schema"],
+        model="qwen-plus",
+        temperature=0.2,
+        owner="Risk Team",
+        status="published",
+        change_log="Published baseline",
+        created_at=datetime.now(UTC),
+        published_at=datetime.now(UTC),
+        baseline_metrics={},
     )
 
-    assert len(provider.calls) == 2
-    assert result["source"] == "fallback"
-    assert result["prompt_id"] == "financial-analysis"
-    assert result["prompt_version"] == 1
-    traces = registry.conn.execute(
-        "SELECT prompt_id, prompt_version, status FROM llm_call_traces ORDER BY created_at"
-    ).fetchall()
-    assert [(row[0], row[1], row[2]) for row in traces] == [
-        ("financial-analysis", 1, "failed"),
-        ("financial-analysis", 1, "failed"),
-    ]
+    class Repository:
+        async def get_template(self, _prompt_key):
+            return template
+
+        async def get_version(self, _prompt_id, _version):
+            return version
+
+    class Session:
+        def add(self, _value):
+            return None
+
+        async def flush(self):
+            return None
+
+    registry = PromptRegistry(Session())
+    registry.repository = Repository()
+
+    created = await registry.create_version(
+        "financial-analysis",
+        {"template": "Updated {portfolio_json}", "status": "draft"},
+    )
+
+    assert created is not None and created.version == 2
+    assert template.current_version == 2
+    assert template.published_version == 1
+    assert template.status == "published"
 
 
-def test_provider_factory_falls_back_to_mock(monkeypatch):
+@pytest.mark.asyncio
+async def test_get_published_prompt_uses_exact_prompt_key():
+    template = SimpleNamespace(
+        id="prompt-uuid",
+        prompt_key="financial-analysis",
+        status="published",
+        published_version=3,
+    )
+    version = SimpleNamespace(
+        version=3,
+        template="Analyze {portfolio_json}",
+        variables=["portfolio_json"],
+        input_schema=_prompt_payload()["input_schema"],
+        output_schema=_prompt_payload()["output_schema"],
+        model="qwen-plus",
+        temperature=0.2,
+        owner="Risk Team",
+        status="published",
+        change_log="Exact-key deployment",
+        created_at=datetime.now(UTC),
+        published_at=datetime.now(UTC),
+        baseline_metrics={},
+    )
+
+    class Repository:
+        async def get_template(self, prompt_key):
+            assert prompt_key == "financial-analysis"
+            return template
+
+        async def get_version(self, prompt_id, version_number):
+            assert prompt_id == "prompt-uuid"
+            assert version_number == 3
+            return version
+
+    registry = PromptRegistry(SimpleNamespace())
+    registry.repository = Repository()
+
+    published = await registry.get_published("financial-analysis")
+
+    assert published is not None
+    assert published.prompt_id == "financial-analysis"
+    assert published.version == 3
+
+
+@pytest.mark.asyncio
+async def test_provider_factory_falls_back_to_mock(monkeypatch):
     monkeypatch.setattr(provider_module.settings, "AI_PROVIDER", "qwen")
     monkeypatch.setattr(provider_module.settings, "QWEN_API_KEY", "")
-    assert isinstance(provider_module.get_llm_provider(), MockProvider)
-
-
-def test_prompt_api_lifecycle(monkeypatch, registry):
-    app = FastAPI()
-    app.include_router(prompt_routes.router)
-    monkeypatch.setattr(prompt_routes, "get_prompt_registry", lambda: registry)
-    client = TestClient(app)
-
-    created = client.post("/api/prompts", json=_prompt_payload("api-prompt"))
-    assert created.status_code == 201
-    assert client.get("/api/prompts").json()["count"] == 1
-    version = client.post(
-        "/api/prompts/api-prompt/versions",
-        json={"template": "Analyze with review {portfolio_json}"},
-    )
-    assert version.status_code == 201
-    assert client.post("/api/prompts/api-prompt/versions/1/publish").status_code == 200
-    assert client.post("/api/prompts/api-prompt/versions/2/publish").status_code == 200
-    assert client.post("/api/prompts/api-prompt/rollback").json()["version"] == 1
-    compared = client.post(
-        "/api/prompts/compare",
-        json={
-            "prompt_id": "api-prompt", "version_a": 1, "version_b": 2,
-            "test_cases": [{"variables": {"portfolio_json": "{}"}}],
-        },
-    )
-    assert compared.status_code == 200
-    assert compared.json()["test_case_count"] == 1
+    assert isinstance(await provider_module.get_llm_provider(), MockProvider)

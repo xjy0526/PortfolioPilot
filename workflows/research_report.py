@@ -1,30 +1,57 @@
-"""Allowlisted, idempotent public-fund research report workflow."""
+"""Allowlisted PostgreSQL research workflow with server-owned review identity."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import sqlite3
-import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from decimal import Decimal
+from typing import Any
 
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.principal import Principal
+from app.db.models import (
+    LLMCallTrace,
+    PublishedReport,
+    ReviewDecision,
+    ReviewTask,
+    WorkflowRun,
+    WorkflowStep,
+)
+from app.db.repositories.governance import WorkflowRepository
+from app.services.research_knowledge import PostgresKnowledgeService
 from config import settings
-from rag import PermissionContext, retrieve_evidence_with_status
 from services.financial_analysis import analyze_portfolio_with_llm
-from workflows.models import ReviewDecision, ReviewTask, WorkflowRun
-
+from time_utils import utc_now
 
 WORKFLOW_NODES = [
-    "validate_input", "load_portfolio", "calculate_risk", "retrieve_evidence",
-    "generate_draft", "validate_numbers", "validate_citations", "run_compliance_rules",
-    "request_human_review", "approve_or_reject", "publish_report",
+    "validate_input",
+    "load_portfolio",
+    "calculate_risk",
+    "retrieve_evidence",
+    "generate_draft",
+    "validate_numbers",
+    "validate_citations",
+    "run_compliance_rules",
+    "request_human_review",
+    "approve_or_reject",
+    "publish_report",
 ]
 ALLOWLISTED_TOOLS = frozenset(WORKFLOW_NODES)
 SHADOW_TRADING_TOOLS = frozenset({"shadow_trade", "shadow_agent", "execute_trade", "auto_trade"})
 FORBIDDEN_EXPRESSIONS = (
-    "立即买入", "立即卖出", "自动交易", "保证收益", "稳赚", "guaranteed return",
-    "trade now", "execute trade", "auto trading",
+    "立即买入",
+    "立即卖出",
+    "自动交易",
+    "保证收益",
+    "稳赚",
+    "guaranteed return",
+    "trade now",
+    "execute trade",
+    "auto trading",
 )
 
 
@@ -33,234 +60,365 @@ class WorkflowLimitError(RuntimeError):
 
 
 class ResearchReportWorkflow:
-    def __init__(self, connection: sqlite3.Connection | None = None):
-        if connection is None:
-            from database import _get_conn
-            connection = _get_conn()
-        self.conn = connection
-        self.conn.row_factory = sqlite3.Row
-        ensure_workflow_schema(self.conn)
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.repository = WorkflowRepository(session)
 
-    async def start(self, payload: dict[str, Any]) -> dict[str, Any]:
-        idempotency_key = str(payload.get("idempotency_key") or "").strip()
-        if idempotency_key:
-            existing = self.conn.execute(
-                "SELECT run_id FROM workflow_runs WHERE idempotency_key=?", (idempotency_key,)
-            ).fetchone()
-            if existing:
-                result = self.get_run(existing["run_id"]) or {}
-                result["idempotent_replay"] = True
-                return result
-        run_id = str(uuid.uuid4())
-        now = _now()
+    async def start(self, payload: dict[str, Any], *, principal: Principal) -> dict[str, Any]:
+        business_scene = str(payload.get("business_scene") or "public_fund_research_report")
+        if business_scene != "public_fund_research_report":
+            raise ValueError("Unsupported business_scene")
+        supplied_key = str(payload.get("idempotency_key") or "").strip()
+        idempotency_key = supplied_key or f"generated:{uuid.uuid4()}"
+        sanitized_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"user_id", "permission_groups", "reviewer_id"}
+        }
         context = {
-            "request": payload,
-            "permission_groups": payload.get("permission_groups") or ["public"],
+            "request": {
+                **sanitized_payload,
+                "user_id": principal.user_id,
+                "permission_groups": sorted(principal.permission_groups),
+            },
+            "permission_groups": sorted(principal.permission_groups),
             "language": payload.get("language", "zh"),
         }
-        self.conn.execute(
-            """INSERT INTO workflow_runs
-               (run_id, idempotency_key, user_id, business_scene, status, max_steps,
-                timeout_seconds, cost_budget, estimated_cost, current_step, iteration,
-                context_json, created_at, started_at)
-               VALUES (?, ?, ?, 'public_fund_research_report', 'DRAFT', ?, ?, ?, 0, '', 1, ?, ?, ?)""",
-            (run_id, idempotency_key or None, str(payload.get("user_id") or "anonymous"),
-             int(payload.get("max_steps", 30)), int(payload.get("timeout_seconds", 120)),
-             float(payload.get("cost_budget", 0.20)), _json(context), now, now),
+        run_id = uuid.uuid4()
+        statement = (
+            insert(WorkflowRun)
+            .values(
+                id=run_id,
+                user_id=principal.user_id,
+                business_scene=business_scene,
+                idempotency_key=idempotency_key,
+                status="DRAFT",
+                max_steps=max(1, int(payload.get("max_steps", 30))),
+                timeout_seconds=max(1, int(payload.get("timeout_seconds", 120))),
+                node_timeout_seconds=max(1, int(payload.get("node_timeout_seconds", 45))),
+                cost_budget=Decimal(str(payload.get("cost_budget", "0.20"))),
+                cost_amount=Decimal("0"),
+                cost_is_estimated=False,
+                current_step="",
+                iteration=1,
+                context_json=context,
+                started_at=utc_now(),
+                error_type="",
+                code_version=settings.CODE_VERSION,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    WorkflowRun.user_id,
+                    WorkflowRun.business_scene,
+                    WorkflowRun.idempotency_key,
+                ]
+            )
+            .returning(WorkflowRun)
         )
-        self.conn.commit()
-        await self._execute_until_review(run_id)
-        result = self.get_run(run_id) or {}
+        run = (await self.session.execute(statement)).scalar_one_or_none()
+        if run is None:
+            existing = await self.repository.idempotent_run(
+                principal.user_id, business_scene, idempotency_key
+            )
+            if existing is None:
+                raise RuntimeError("Idempotent workflow insert did not return a run")
+            result = await self.get_run(existing.id) or {}
+            result["idempotent_replay"] = bool(supplied_key)
+            return result
+
+        await self._execute_until_review(run.id)
+        result = await self.get_run(run.id) or {}
         result["idempotent_replay"] = False
         return result
 
-    async def _execute_until_review(self, run_id: str, *, revision_feedback: str = "") -> None:
-        context = self._context(run_id)
+    async def _execute_until_review(
+        self,
+        run_id: uuid.UUID,
+        *,
+        revision_feedback: str = "",
+    ) -> None:
+        run = await self._require_run(run_id)
+        context = dict(run.context_json)
         if revision_feedback:
             context["revision_feedback"] = revision_feedback
-        iteration = int(self._run_row(run_id)["iteration"])
         start_at = "generate_draft" if revision_feedback else "validate_input"
-        nodes = WORKFLOW_NODES[WORKFLOW_NODES.index(start_at):WORKFLOW_NODES.index("request_human_review") + 1]
-        self._set_run(run_id, status="RUNNING")
-        started = time.monotonic()
+        nodes = WORKFLOW_NODES[
+            WORKFLOW_NODES.index(start_at) : WORKFLOW_NODES.index("request_human_review") + 1
+        ]
+        run.status = "RUNNING"
         try:
-            for node in nodes:
-                self._check_limits(run_id, started)
-                context = await self._run_step(run_id, node, iteration, context)
-                if self._run_row(run_id)["status"] == "FAILED":
-                    return
-        except WorkflowLimitError as exc:
-            self._set_run(
-                run_id, status="FAILED", error_type=type(exc).__name__, completed_at=_now(),
+            async with asyncio.timeout(run.timeout_seconds):
+                for node in nodes:
+                    await self._check_limits(run)
+                    context = await self._run_step(run, node, context)
+                    if run.status == "FAILED":
+                        return
+        except TimeoutError:
+            running_step = await self.session.scalar(
+                select(WorkflowStep).where(
+                    WorkflowStep.workflow_run_id == run.id,
+                    WorkflowStep.status == "RUNNING",
+                )
             )
+            if running_step is not None:
+                running_step.status = "FAILED"
+                running_step.completed_at = utc_now()
+                running_step.error_type = "WorkflowTimeoutError"
+                running_step.output_summary = {"error": "workflow timeout exceeded"}
+            run.status = "FAILED"
+            run.error_type = "WorkflowTimeoutError"
+            run.completed_at = utc_now()
+            await self.session.flush()
             return
-        self._save_context(run_id, context)
-        self._set_run(run_id, status="PENDING_REVIEW", current_step="request_human_review")
+        except WorkflowLimitError as exc:
+            run.status = "FAILED"
+            run.error_type = type(exc).__name__
+            run.completed_at = utc_now()
+            context["workflow_error"] = str(exc)
+            run.context_json = context
+            await self.session.flush()
+            return
+        run.context_json = context
+        run.status = "PENDING_REVIEW"
+        run.current_step = "request_human_review"
+        await self.session.flush()
 
     async def decide(
-        self, review_id: str, decision: str, *, reviewer_id: str, feedback: str = "",
+        self,
+        review_id: uuid.UUID,
+        decision: str,
+        *,
+        principal: Principal,
+        feedback: str = "",
     ) -> dict[str, Any] | None:
-        task = self.conn.execute("SELECT * FROM review_tasks WHERE review_id=?", (review_id,)).fetchone()
-        if not task:
-            return None
-        run_id = task["run_id"]
-        existing = self.conn.execute(
-            "SELECT * FROM review_decisions WHERE review_id=? AND decision=? AND feedback=?",
-            (review_id, decision, feedback),
-        ).fetchone()
-        if existing:
-            return self.get_run(run_id)
-        if task["status"] != "PENDING":
-            raise ValueError("Review task is already completed")
+        principal.require_group("research_reviewer")
         if decision not in {"approve", "reject", "request_changes"}:
             raise ValueError("Unsupported review decision")
-        now = _now()
-        status = {"approve": "APPROVED", "reject": "REJECTED", "request_changes": "CHANGES_REQUESTED"}[decision]
-        decision_model = ReviewDecision(
-            decision_id=str(uuid.uuid4()), review_id=review_id, run_id=run_id,
-            decision=decision, reviewer_id=reviewer_id, feedback=feedback,
+        task = await self.repository.get_review(review_id, for_update=True)
+        if task is None:
+            return None
+        existing = await self.session.scalar(
+            select(ReviewDecision).where(
+                ReviewDecision.review_task_id == review_id,
+                ReviewDecision.decision == decision,
+                ReviewDecision.reviewer_id == principal.user_id,
+            )
         )
-        self.conn.execute(
-            "UPDATE review_tasks SET status=?, completed_at=? WHERE review_id=?",
-            (status, now, review_id),
+        if existing:
+            return await self.get_run(task.workflow_run_id)
+        if task.status != "PENDING":
+            raise ValueError("Review task is already completed")
+
+        status = {
+            "approve": "APPROVED",
+            "reject": "REJECTED",
+            "request_changes": "CHANGES_REQUESTED",
+        }[decision]
+        task.status = status
+        task.completed_at = utc_now()
+        self.session.add(
+            ReviewDecision(
+                review_task_id=task.id,
+                workflow_run_id=task.workflow_run_id,
+                decision=decision,
+                reviewer_id=principal.user_id,
+                feedback=feedback,
+            )
         )
-        self.conn.execute(
-            """INSERT INTO review_decisions
-               (decision_id, review_id, run_id, decision, reviewer_id, feedback, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (decision_model.decision_id, review_id, run_id, decision, reviewer_id, feedback, now),
+        await self.session.execute(
+            update(LLMCallTrace)
+            .where(LLMCallTrace.workflow_run_id == task.workflow_run_id)
+            .values(review_decision=decision, review_feedback=feedback)
         )
-        self.conn.commit()
-        from prompts.registry import PromptRegistry
-        PromptRegistry(self.conn).update_trace_review(run_id, decision, feedback)
-        context = self._context(run_id)
+        run = await self._require_run(task.workflow_run_id)
+        context = dict(run.context_json)
         context["review_decision"] = decision
         context["review_feedback"] = feedback
-        self._save_context(run_id, context)
-        context = await self._run_step(run_id, "approve_or_reject", int(self._run_row(run_id)["iteration"]), context)
-        if self._run_row(run_id)["status"] == "FAILED":
-            return self.get_run(run_id)
+        context["reviewer_id"] = principal.user_id
+        run.context_json = context
+        context = await self._run_step(run, "approve_or_reject", context)
+        if run.status == "FAILED":
+            return await self.get_run(run.id)
         if decision == "approve":
-            self._set_run(run_id, status="APPROVED")
-            await self._run_step(run_id, "publish_report", int(self._run_row(run_id)["iteration"]), context)
-            if self._run_row(run_id)["status"] != "FAILED":
-                self._set_run(run_id, status="PUBLISHED", current_step="publish_report", completed_at=now)
+            run.status = "APPROVED"
+            context = await self._run_step(run, "publish_report", context)
+            if run.status != "FAILED":
+                run.status = "PUBLISHED"
+                run.current_step = "publish_report"
+                run.completed_at = utc_now()
         elif decision == "reject":
-            self._set_run(run_id, status="REJECTED", current_step="approve_or_reject", completed_at=now)
+            run.status = "REJECTED"
+            run.current_step = "approve_or_reject"
+            run.completed_at = utc_now()
         else:
-            next_iteration = int(self._run_row(run_id)["iteration"]) + 1
-            self.conn.execute(
-                "UPDATE workflow_runs SET status='DRAFT', iteration=? WHERE run_id=?",
-                (next_iteration, run_id),
-            )
-            self.conn.commit()
-            await self._execute_until_review(run_id, revision_feedback=feedback)
-        return self.get_run(run_id)
+            run.status = "DRAFT"
+            run.iteration += 1
+            await self.session.flush()
+            await self._execute_until_review(run.id, revision_feedback=feedback)
+        run.context_json = context if decision != "request_changes" else run.context_json
+        await self.session.flush()
+        return await self.get_run(run.id)
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM workflow_runs WHERE run_id=?", (run_id,)).fetchone()
-        if not row:
+    async def get_run(self, run_id: uuid.UUID) -> dict[str, Any] | None:
+        run = await self.repository.get_run(run_id)
+        if run is None:
             return None
-        result = dict(row)
-        result.pop("context_json", None)
-        result["steps"] = [
-            _decode_json_fields(dict(item), "input_summary", "output_summary")
-            for item in self.conn.execute(
-                "SELECT * FROM workflow_steps WHERE run_id=? ORDER BY started_at", (run_id,)
-            ).fetchall()
-        ]
-        reviews = [dict(item) for item in self.conn.execute(
-            "SELECT * FROM review_tasks WHERE run_id=? ORDER BY created_at", (run_id,)
-        ).fetchall()]
-        result["review_tasks"] = reviews
-        report = self.conn.execute("SELECT report_id FROM published_reports WHERE run_id=?", (run_id,)).fetchone()
-        result["report_id"] = report["report_id"] if report else None
-        return result
+        steps = await self.repository.run_steps(run_id)
+        reviews = await self.repository.run_reviews(run_id)
+        report = await self.repository.report_for_run(run_id)
+        return {
+            "run_id": str(run.id),
+            "user_id": run.user_id,
+            "business_scene": run.business_scene,
+            "status": run.status,
+            "max_steps": run.max_steps,
+            "timeout_seconds": run.timeout_seconds,
+            "node_timeout_seconds": run.node_timeout_seconds,
+            "cost_budget": float(run.cost_budget),
+            "cost_amount": float(run.cost_amount),
+            "cost_is_estimated": run.cost_is_estimated,
+            "estimated_cost": float(run.cost_amount),
+            "current_step": run.current_step,
+            "iteration": run.iteration,
+            "created_at": run.created_at.isoformat(),
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "error_type": run.error_type,
+            "steps": [
+                {
+                    "step_id": str(item.id),
+                    "run_id": str(item.workflow_run_id),
+                    "step_name": item.step_name,
+                    "iteration": item.iteration,
+                    "status": item.status,
+                    "input_summary": item.input_summary,
+                    "output_summary": item.output_summary,
+                    "started_at": item.started_at.isoformat(),
+                    "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+                    "error_type": item.error_type,
+                }
+                for item in steps
+            ],
+            "review_tasks": [
+                {
+                    "review_id": str(item.id),
+                    "run_id": str(item.workflow_run_id),
+                    "status": item.status,
+                    "assigned_to": item.assigned_group,
+                    "created_at": item.created_at.isoformat(),
+                    "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+                }
+                for item in reviews
+            ],
+            "report_id": str(report.id) if report else None,
+        }
 
-    def get_report(self, report_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM published_reports WHERE report_id=?", (report_id,)).fetchone()
-        if not row:
+    async def get_report(
+        self,
+        report_id: uuid.UUID,
+        *,
+        principal: Principal,
+    ) -> dict[str, Any] | None:
+        report = await self.repository.get_report(report_id)
+        if report is None:
             return None
-        payload = dict(row)
-        payload["report"] = json.loads(payload.pop("report_json"))
-        return payload
+        run = await self.repository.get_run(report.workflow_run_id)
+        if run is None or (
+            run.user_id != principal.user_id
+            and not principal.has_group("research_reviewer")
+        ):
+            return None
+        return {
+            "report_id": str(report.id),
+            "run_id": str(report.workflow_run_id),
+            "report": report.report_json,
+            "published_by": report.published_by,
+            "published_at": report.published_at.isoformat(),
+        }
 
     async def _run_step(
-        self, run_id: str, node: str, iteration: int, context: dict[str, Any],
+        self,
+        run: WorkflowRun,
+        node: str,
+        context: dict[str, Any],
     ) -> dict[str, Any]:
-        if node not in ALLOWLISTED_TOOLS or (settings.fund_research_mode and node in SHADOW_TRADING_TOOLS):
+        if node not in ALLOWLISTED_TOOLS or (
+            settings.fund_research_mode and node in SHADOW_TRADING_TOOLS
+        ):
             raise PermissionError(f"Tool is not allowlisted: {node}")
-        existing = self.conn.execute(
-            "SELECT * FROM workflow_steps WHERE run_id=? AND step_name=? AND iteration=? AND status='COMPLETED'",
-            (run_id, node, iteration),
-        ).fetchone()
+        existing = await self.session.scalar(
+            select(WorkflowStep).where(
+                WorkflowStep.workflow_run_id == run.id,
+                WorkflowStep.step_name == node,
+                WorkflowStep.iteration == run.iteration,
+                WorkflowStep.status == "COMPLETED",
+            )
+        )
         if existing:
             return context
-        step_id = str(uuid.uuid4())
-        now = _now()
-        input_summary = _summarize_context(context)
-        self.conn.execute(
-            """INSERT OR REPLACE INTO workflow_steps
-               (step_id, run_id, step_name, iteration, status, input_summary,
-                output_summary, started_at, completed_at, error_type)
-               VALUES (?, ?, ?, ?, 'RUNNING', ?, '{}', ?, NULL, '')""",
-            (step_id, run_id, node, iteration, _json(input_summary), now),
+        step = WorkflowStep(
+            workflow_run_id=run.id,
+            step_name=node,
+            iteration=run.iteration,
+            status="RUNNING",
+            input_summary=_summarize_context(context),
+            output_summary={},
+            started_at=utc_now(),
+            error_type="",
         )
-        self._set_run(run_id, current_step=node)
+        self.session.add(step)
+        run.current_step = node
+        await self.session.flush()
         try:
-            context = await self._execute_node(node, run_id, context)
-            self.conn.execute(
-                """UPDATE workflow_steps SET status='COMPLETED', output_summary=?, completed_at=?
-                   WHERE step_id=?""",
-                (_json(_summarize_context(context)), _now(), step_id),
-            )
-            self.conn.commit()
-            self._save_context(run_id, context)
+            async with asyncio.timeout(run.node_timeout_seconds):
+                context = await self._execute_node(node, run, context)
+            step.status = "COMPLETED"
+            step.output_summary = _summarize_context(context)
+            step.completed_at = utc_now()
+            run.context_json = context
+            await self.session.flush()
             return context
         except Exception as exc:
-            error_type = type(exc).__name__
-            self.conn.execute(
-                """UPDATE workflow_steps SET status='FAILED', completed_at=?, error_type=?,
-                   output_summary=? WHERE step_id=?""",
-                (_now(), error_type, _json({"error": str(exc)[:500]}), step_id),
-            )
-            self.conn.commit()
-            self._set_run(run_id, status="FAILED", error_type=error_type, completed_at=_now())
+            step.status = "FAILED"
+            step.completed_at = utc_now()
+            step.error_type = "NodeTimeoutError" if isinstance(exc, TimeoutError) else type(exc).__name__
+            step.output_summary = {"error": str(exc)[:500]}
+            run.status = "FAILED"
+            run.error_type = step.error_type
+            run.completed_at = utc_now()
+            await self.session.flush()
             return context
 
-    async def _execute_node(self, node: str, run_id: str, context: dict[str, Any]) -> dict[str, Any]:
+    async def _execute_node(
+        self,
+        node: str,
+        run: WorkflowRun,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        request = context["request"]
         if node == "validate_input":
-            if not context["request"].get("user_id"):
-                raise ValueError("user_id is required")
-            context["input_valid"] = True
+            context["input_valid"] = bool(run.user_id)
         elif node == "load_portfolio":
-            db_portfolio = context["request"].get("_db_portfolio") or {}
+            db_portfolio = request.get("_db_portfolio") or {}
             if not db_portfolio.get("valuation_snapshot_id"):
                 raise ValueError("No PostgreSQL valuation snapshot available")
             context["portfolio_tickers"] = list(db_portfolio.get("tickers") or [])
             context["portfolio_lineage"] = {
                 key: db_portfolio.get(key)
-                for key in (
-                    "portfolio_id",
-                    "valuation_snapshot_id",
-                    "valuation_input_hash",
-                    "as_of",
-                )
+                for key in ("portfolio_id", "valuation_snapshot_id", "valuation_input_hash", "as_of")
             }
         elif node == "calculate_risk":
-            db_portfolio = context["request"].get("_db_portfolio") or {}
-            risk_summary = db_portfolio.get("risk_summary")
+            risk_summary = (request.get("_db_portfolio") or {}).get("risk_summary")
             if not isinstance(risk_summary, dict):
                 raise ValueError("Database-backed risk summary is required")
             context["risk_summary"] = risk_summary
         elif node == "retrieve_evidence":
-            query = str(context["request"].get("query") or "public fund portfolio risk policy evidence")
-            result = retrieve_evidence_with_status(
-                query, top_k=int(context["request"].get("top_k", 5)),
-                permission_context=PermissionContext(
-                    user_id=str(context["request"]["user_id"]),
-                    permission_groups=context["permission_groups"],
-                ),
+            query = str(request.get("query") or "public fund portfolio risk policy evidence")
+            principal = Principal(run.user_id, frozenset(context["permission_groups"]))
+            result = await PostgresKnowledgeService(self.session).retrieve_with_status(
+                query,
+                top_k=int(request.get("top_k", 5)),
+                principal=principal,
             )
             context["evidence"] = result.get("citations", [])
             context["evidence_insufficient"] = result.get("evidence_insufficient", True)
@@ -269,19 +427,39 @@ class ResearchReportWorkflow:
             if context.get("revision_feedback"):
                 risk_input["review_feedback"] = context["revision_feedback"]
             draft = await analyze_portfolio_with_llm(
-                risk_input, context.get("evidence", []), language=context["language"],
-                run_id=run_id, user_id=str(context["request"]["user_id"]),
-                business_scene="public_fund_research_report",
+                risk_input,
+                context.get("evidence", []),
+                language=context["language"],
+                run_id=str(run.id),
+                user_id=run.user_id,
+                business_scene=run.business_scene,
+                session=self.session,
             )
             context["draft"] = draft
-            estimated = 0.0 if draft.get("source") in {"mock", "fallback"} else 0.01
-            self.conn.execute(
-                "UPDATE workflow_runs SET estimated_cost=estimated_cost+? WHERE run_id=?",
-                (estimated, run_id),
+            trace = await self.session.scalar(
+                select(LLMCallTrace).where(LLMCallTrace.trace_key == draft.get("llm_trace_id"))
             )
-            self.conn.commit()
+            total_cost, trace_count, non_provider_cost_count = (
+                await self.session.execute(
+                    select(
+                        func.coalesce(func.sum(LLMCallTrace.cost_amount), 0),
+                        func.count(LLMCallTrace.id),
+                        func.count(LLMCallTrace.id).filter(
+                            LLMCallTrace.cost_source != "provider"
+                        ),
+                    ).where(LLMCallTrace.workflow_run_id == run.id)
+                )
+            ).one()
+            run.cost_amount, run.cost_is_estimated = _workflow_cost_summary(
+                total_cost,
+                trace_count,
+                non_provider_cost_count,
+            )
+            context["llm_usage_source"] = trace.usage_source if trace else "estimated"
+            context["llm_cost_source"] = trace.cost_source if trace else "estimated_from_text"
         elif node == "validate_numbers":
             from prompts.financial_analysis_models import validate_financial_analysis_output
+
             validate_financial_analysis_output(
                 _contract_fields(context["draft"]),
                 portfolio_risk_summary=context["risk_summary"],
@@ -289,128 +467,80 @@ class ResearchReportWorkflow:
             )
             context["numbers_valid"] = True
         elif node == "validate_citations":
-            allowed = {(item["document_id"], item["chunk_id"]) for item in context.get("evidence", [])}
-            used = {(item["document_id"], item["chunk_id"]) for item in context["draft"].get("evidence_used", [])}
+            allowed = {
+                (item["document_id"], item["chunk_id"])
+                for item in context.get("evidence", [])
+            }
+            used = {
+                (item["document_id"], item["chunk_id"])
+                for item in context["draft"].get("evidence_used", [])
+            }
             if not used.issubset(allowed):
                 raise ValueError("Draft contains ungrounded citations")
             context["citations_valid"] = True
+            groups = set(context["permission_groups"])
             context["permissions_valid"] = all(
                 item.get("permission_level", "public") == "public"
-                or bool(set(context["permission_groups"]) - {"public"})
+                or bool(groups.intersection(item.get("permission_groups", [])))
                 for item in context.get("evidence", [])
             )
             if not context["permissions_valid"]:
                 raise PermissionError("Citation permission validation failed")
         elif node == "run_compliance_rules":
-            text = json.dumps(context["draft"], ensure_ascii=False).lower()
-            matches = [expression for expression in FORBIDDEN_EXPRESSIONS if expression.lower() in text]
+            raw = json.dumps(context["draft"], ensure_ascii=False).lower()
+            matches = [item for item in FORBIDDEN_EXPRESSIONS if item.lower() in raw]
             if matches:
                 raise ValueError(f"Forbidden expressions: {', '.join(matches)}")
             context["rules_valid"] = True
         elif node == "request_human_review":
-            review = ReviewTask(review_id=str(uuid.uuid4()), run_id=run_id)
-            self.conn.execute(
-                """INSERT INTO review_tasks
-                   (review_id, run_id, status, assigned_to, created_at, completed_at)
-                   VALUES (?, ?, 'PENDING', ?, ?, NULL)""",
-                (review.review_id, run_id, review.assigned_to, review.created_at.isoformat()),
+            review = ReviewTask(
+                workflow_run_id=run.id,
+                status="PENDING",
+                assigned_group="research_reviewer",
             )
-            self.conn.commit()
-            context["review_id"] = review.review_id
+            self.session.add(review)
+            await self.session.flush()
+            context["review_id"] = str(review.id)
         elif node == "approve_or_reject":
             if context.get("review_decision") not in {"approve", "reject", "request_changes"}:
                 raise ValueError("Human review decision is required")
         elif node == "publish_report":
             if context.get("review_decision") != "approve":
                 raise PermissionError("Human approval is required")
-            required = ("numbers_valid", "citations_valid", "permissions_valid", "rules_valid")
-            if not all(context.get(flag) for flag in required):
+            if not all(
+                context.get(flag)
+                for flag in ("numbers_valid", "citations_valid", "permissions_valid", "rules_valid")
+            ):
                 raise ValueError("Pre-publication controls have not all passed")
-            report_id = str(uuid.uuid4())
-            self.conn.execute(
-                """INSERT INTO published_reports
-                   (report_id, run_id, report_json, published_by, published_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (report_id, run_id, _json(context["draft"]),
-                 str(context["request"]["user_id"]), _now()),
+            report = PublishedReport(
+                workflow_run_id=run.id,
+                report_json=context["draft"],
+                published_by=str(context["reviewer_id"]),
+                published_at=utc_now(),
             )
-            self.conn.commit()
-            context["report_id"] = report_id
+            self.session.add(report)
+            await self.session.flush()
+            context["report_id"] = str(report.id)
         return context
 
-    def _check_limits(self, run_id: str, started: float) -> None:
-        run = self._run_row(run_id)
-        steps = self.conn.execute("SELECT COUNT(*) FROM workflow_steps WHERE run_id=?", (run_id,)).fetchone()[0]
-        if steps >= int(run["max_steps"]):
+    async def _check_limits(self, run: WorkflowRun) -> None:
+        count = await self.session.scalar(
+            select(func.count(WorkflowStep.id)).where(WorkflowStep.workflow_run_id == run.id)
+        )
+        if int(count or 0) >= run.max_steps:
             raise WorkflowLimitError("max_steps exceeded")
-        if time.monotonic() - started > int(run["timeout_seconds"]):
-            raise WorkflowLimitError("workflow timeout exceeded")
-        if float(run["estimated_cost"]) > float(run["cost_budget"]):
+        if run.cost_amount > run.cost_budget:
             raise WorkflowLimitError("cost budget exceeded")
 
-    def _run_row(self, run_id: str) -> sqlite3.Row:
-        row = self.conn.execute("SELECT * FROM workflow_runs WHERE run_id=?", (run_id,)).fetchone()
-        if not row:
+    async def _require_run(self, run_id: uuid.UUID) -> WorkflowRun:
+        run = await self.repository.get_run(run_id)
+        if run is None:
             raise ValueError("Workflow run not found")
-        return row
-
-    def _context(self, run_id: str) -> dict[str, Any]:
-        return json.loads(self._run_row(run_id)["context_json"])
-
-    def _save_context(self, run_id: str, context: dict[str, Any]) -> None:
-        self.conn.execute("UPDATE workflow_runs SET context_json=? WHERE run_id=?", (_json(context), run_id))
-        self.conn.commit()
-
-    def _set_run(self, run_id: str, **updates: Any) -> None:
-        if not updates:
-            return
-        columns = ", ".join(f"{key}=?" for key in updates)
-        self.conn.execute(f"UPDATE workflow_runs SET {columns} WHERE run_id=?", [*updates.values(), run_id])
-        self.conn.commit()
-
-
-def ensure_workflow_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS workflow_runs (
-            run_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE, user_id TEXT NOT NULL,
-            business_scene TEXT NOT NULL, status TEXT NOT NULL, max_steps INTEGER NOT NULL,
-            timeout_seconds INTEGER NOT NULL, cost_budget REAL NOT NULL, estimated_cost REAL NOT NULL DEFAULT 0,
-            current_step TEXT NOT NULL DEFAULT '', iteration INTEGER NOT NULL DEFAULT 1,
-            context_json TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT,
-            completed_at TEXT, error_type TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS workflow_steps (
-            step_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, step_name TEXT NOT NULL,
-            iteration INTEGER NOT NULL, status TEXT NOT NULL, input_summary TEXT NOT NULL,
-            output_summary TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT,
-            error_type TEXT NOT NULL DEFAULT '', UNIQUE(run_id, step_name, iteration),
-            FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)
-        );
-        CREATE TABLE IF NOT EXISTS review_tasks (
-            review_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL,
-            assigned_to TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
-            FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)
-        );
-        CREATE TABLE IF NOT EXISTS review_decisions (
-            decision_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, run_id TEXT NOT NULL,
-            decision TEXT NOT NULL, reviewer_id TEXT NOT NULL, feedback TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL, FOREIGN KEY(review_id) REFERENCES review_tasks(review_id)
-        );
-        CREATE TABLE IF NOT EXISTS published_reports (
-            report_id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, report_json TEXT NOT NULL,
-            published_by TEXT NOT NULL, published_at TEXT NOT NULL,
-            FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_workflow_status ON workflow_runs(status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_review_run ON review_tasks(run_id, status);
-        """
-    )
-    conn.commit()
+        return run
 
 
 def _summarize_context(context: dict[str, Any]) -> dict[str, Any]:
-    raw = _json(context)
+    raw = json.dumps(context, ensure_ascii=False, sort_keys=True, default=str)
     return {
         "keys": sorted(context.keys()),
         "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
@@ -420,13 +550,20 @@ def _summarize_context(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _workflow_cost_summary(
+    total_cost: Any,
+    trace_count: Any,
+    non_provider_cost_count: Any,
+) -> tuple[Decimal, bool]:
+    return (
+        Decimal(str(total_cost)),
+        int(trace_count) == 0 or int(non_provider_cost_count) > 0,
+    )
+
+
 def _contract_fields(payload: dict[str, Any]) -> dict[str, Any]:
     observations = payload.get("research_observations") or [
-        {
-            "ticker": item.get("ticker"),
-            "observation": item.get("comment", ""),
-            "evidence_ids": [],
-        }
+        {"ticker": item.get("ticker"), "observation": item.get("comment", ""), "evidence_ids": []}
         for item in payload.get("asset_level_comments", [])
     ]
     priorities = payload.get("review_priorities") or [
@@ -445,22 +582,15 @@ def _contract_fields(payload: dict[str, Any]) -> dict[str, Any]:
         "deprecated_fields": payload.get("deprecated_fields", ["rebalance_suggestions"]),
     }
     fields = (
-        "portfolio_summary", "risk_score", "main_risks", "asset_level_comments",
-        "research_observations", "review_priorities", "rebalance_suggestions",
-        "deprecated_fields", "evidence_used", "disclaimer",
+        "portfolio_summary",
+        "risk_score",
+        "main_risks",
+        "asset_level_comments",
+        "research_observations",
+        "review_priorities",
+        "rebalance_suggestions",
+        "deprecated_fields",
+        "evidence_used",
+        "disclaimer",
     )
     return {field: normalized[field] for field in fields}
-
-
-def _decode_json_fields(payload: dict[str, Any], *fields: str) -> dict[str, Any]:
-    for field in fields:
-        payload[field] = json.loads(payload[field])
-    return payload
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()

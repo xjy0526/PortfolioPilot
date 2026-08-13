@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import text
+
 from config import settings
 from prompts.financial_analysis_models import FINANCIAL_ANALYSIS_JSON_SCHEMA
 from prompts.registry import PromptRegistry
@@ -50,14 +52,17 @@ INPUT_SCHEMA = {
 }
 
 
-def ensure_financial_analysis_prompt(registry: PromptRegistry | None = None) -> PromptVersion:
-    registry = registry or PromptRegistry()
-    published = registry.get_published_by_scene(FINANCIAL_ANALYSIS_SCENE)
+async def ensure_financial_analysis_prompt(registry: PromptRegistry) -> PromptVersion:
+    await registry.session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": "portfoliopilot:prompt-seed:financial-analysis"},
+    )
+    published = await registry.get_published(FINANCIAL_ANALYSIS_PROMPT_ID)
     if published and _has_current_analysis_contract(published.output_schema):
         return published
-    existing = registry.get_prompt(FINANCIAL_ANALYSIS_PROMPT_ID)
+    existing = await registry.get_prompt(FINANCIAL_ANALYSIS_PROMPT_ID)
     if existing:
-        target = registry.create_version(existing.prompt_id, {
+        target = await registry.create_version(existing.prompt_id, {
             "template": DEFAULT_TEMPLATE,
             "variables": ["language", "portfolio_risk_summary_json", "evidence_text", "retry_instruction"],
             "input_schema": INPUT_SCHEMA,
@@ -68,9 +73,9 @@ def ensure_financial_analysis_prompt(registry: PromptRegistry | None = None) -> 
             "change_log": "Move allocation ownership to deterministic optimizers",
         })
         assert target is not None
-        registry.publish(existing.prompt_id, target.version)
-        return registry.get_version(existing.prompt_id, target.version) or target
-    _, version = registry.create_prompt({
+        await registry.publish(existing.prompt_id, target.version, deployed_by="system-seed")
+        return await registry.get_version(existing.prompt_id, target.version) or target
+    _, version = await registry.create_prompt({
         "prompt_id": FINANCIAL_ANALYSIS_PROMPT_ID,
         "name": "Financial Portfolio Analysis",
         "business_scene": FINANCIAL_ANALYSIS_SCENE,
@@ -83,8 +88,8 @@ def ensure_financial_analysis_prompt(registry: PromptRegistry | None = None) -> 
         "owner": "Research Platform",
         "change_log": "Registry baseline migrated from financial_analysis_prompt",
     })
-    registry.publish(version.prompt_id, version.version)
-    return registry.get_version(version.prompt_id, version.version) or version
+    await registry.publish(version.prompt_id, version.version, deployed_by="system-seed")
+    return await registry.get_version(version.prompt_id, version.version) or version
 
 
 def _has_current_analysis_contract(schema: dict[str, Any]) -> bool:
@@ -100,7 +105,8 @@ def build_financial_analysis_prompt(
     prompt_version: PromptVersion | None = None,
     retry_instruction: str = "",
 ) -> str:
-    prompt_version = prompt_version or ensure_financial_analysis_prompt()
+    if prompt_version is None:
+        raise ValueError("prompt_version is required; load it from the async Prompt Registry")
     evidence = evidence or []
     citations = [
         {

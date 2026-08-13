@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.models import FxRate, Portfolio, PriceBar, Security, Transaction, User
@@ -80,6 +80,9 @@ def _transaction(
 async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> None:
     engine, factory = await _factory()
     user_id = None
+    run_suffix = uuid.uuid4().hex
+    price_source = f"yfinance_research_{run_suffix}"
+    fx_source = f"integration_test_{run_suffix}"
     try:
         async with factory() as session:
             async with session.begin():
@@ -121,7 +124,7 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                         PriceBar(
                             security_id=security.id,
                             trade_date=(AS_OF - timedelta(days=2)).date(),
-                            source="yfinance_research",
+                            source=price_source,
                             currency="USD",
                             close=Decimal("120"),
                             adjusted_close=Decimal("120"),
@@ -133,7 +136,7 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                         PriceBar(
                             security_id=security.id,
                             trade_date=(AS_OF + timedelta(days=1)).date(),
-                            source="yfinance_research",
+                            source=price_source,
                             currency="USD",
                             close=Decimal("200"),
                             adjusted_close=Decimal("200"),
@@ -146,7 +149,7 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                             base_currency="USD",
                             quote_currency="CNY",
                             rate_date=(AS_OF - timedelta(days=2)).date(),
-                            source="integration_test",
+                            source=fx_source,
                             rate=Decimal("7"),
                             data_as_of=AS_OF - timedelta(days=1),
                             raw_payload={},
@@ -155,7 +158,7 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                             base_currency="USD",
                             quote_currency="CNY",
                             rate_date=(AS_OF + timedelta(days=1)).date(),
-                            source="integration_test",
+                            source=fx_source,
                             rate=Decimal("8"),
                             data_as_of=AS_OF + timedelta(days=1),
                             raw_payload={},
@@ -192,6 +195,9 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                 assert legacy.summary.stocks[0].position.ticker == "AAPL"
 
             await session.delete(user)
+            await session.flush()
+            await session.execute(delete(PriceBar).where(PriceBar.source == price_source))
+            await session.execute(delete(FxRate).where(FxRate.source == fx_source))
             await session.commit()
     finally:
         await engine.dispose()

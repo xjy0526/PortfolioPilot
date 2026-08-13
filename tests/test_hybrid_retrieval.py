@@ -25,6 +25,15 @@ def test_query_normalization_and_intent_extraction():
     assert intent.source_types == ["research_report"]
     assert intent.publish_date_from == date(2024, 1, 1)
     assert intent.publish_date_to == date(2024, 12, 31)
+    assert intent.retrieval_query == "NVDA FUND001"
+
+
+def test_retrieval_query_keeps_semantic_terms_and_drops_structured_controls():
+    intent = extract_query_intent("ticker:AAPL concentration risk")
+    assert intent.retrieval_query == "AAPL concentration risk"
+
+    fallback = extract_query_intent("研报")
+    assert fallback.retrieval_query == "研报"
 
 
 def test_bm25_dense_and_rrf_hybrid_rank_matching_chunk_first():
@@ -109,19 +118,26 @@ def test_unretrieved_citation_references_are_removed():
 
 
 def test_rag_api_exposes_citations_and_insufficient_flag(monkeypatch):
+    class FakeKnowledgeService:
+        def __init__(self, _session):
+            pass
+
+        async def retrieve_with_status(self, *_args, **_kwargs):
+            return {
+                "normalized_query": "unknown topic",
+                "intent": {"tickers": []},
+                "citations": [],
+                "evidence_insufficient": True,
+                "score_threshold": 0.5,
+            }
+
+    async def db_session():
+        yield object()
+
     app = FastAPI()
     app.include_router(research.router)
-    monkeypatch.setattr(
-        research,
-        "retrieve_evidence_with_status",
-        lambda **_kwargs: {
-            "normalized_query": "unknown topic",
-            "intent": {"tickers": []},
-            "citations": [],
-            "evidence_insufficient": True,
-            "score_threshold": 0.5,
-        },
-    )
+    monkeypatch.setattr(research, "PostgresKnowledgeService", FakeKnowledgeService)
+    app.dependency_overrides[research.get_db_session] = db_session
 
     payload = TestClient(app).post(
         "/api/rag/retrieve",

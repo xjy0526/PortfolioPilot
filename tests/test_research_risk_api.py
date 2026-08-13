@@ -80,9 +80,14 @@ def test_risk_summary_api_schema_and_real_price_metadata(monkeypatch):
 
 
 def test_ai_analysis_api_embeds_same_risk_schema(monkeypatch):
-    monkeypatch.setattr(research, "retrieve_evidence", lambda **kwargs: [])
+    class FakeKnowledgeService:
+        def __init__(self, _session):
+            pass
 
-    async def _analysis(risk_summary, evidence, language="zh"):
+        async def retrieve_with_status(self, *_args, **_kwargs):
+            return {"citations": [], "evidence_insufficient": True}
+
+    async def _analysis(risk_summary, evidence, language="zh", **_kwargs):
         return {
             "portfolio_summary": "ok",
             "risk_score": risk_summary["risk_score"],
@@ -93,6 +98,7 @@ def test_ai_analysis_api_embeds_same_risk_schema(monkeypatch):
             "disclaimer": "research only",
         }
 
+    monkeypatch.setattr(research, "PostgresKnowledgeService", FakeKnowledgeService)
     monkeypatch.setattr(research, "analyze_portfolio_with_llm", _analysis)
     app = _app(monkeypatch)
 

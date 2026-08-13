@@ -35,7 +35,7 @@ class BM25Retriever:
         if not query_terms:
             return []
         average_length = sum(len(tokens) for tokens in documents) / max(1, len(documents))
-        document_frequency = Counter()
+        document_frequency: Counter[str] = Counter()
         for tokens in documents:
             document_frequency.update(set(tokens))
 
@@ -133,13 +133,15 @@ def reciprocal_rank_fusion(
     if not ranked_lists:
         return []
     by_chunk: dict[str, dict[str, Any]] = {}
-    rank_scores: Counter[str] = Counter()
+    rank_scores: dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, candidate in enumerate(ranked, start=1):
             chunk_id = str(candidate["chunk_id"])
             by_chunk.setdefault(chunk_id, dict(candidate))
-            rank_scores[chunk_id] += 1.0 / (max(1, rrf_k) + rank)
-            for key in ("bm25_score", "dense_score"):
+            rank_scores[chunk_id] = rank_scores.get(chunk_id, 0.0) + 1.0 / (
+                max(1, rrf_k) + rank
+            )
+            for key in ("bm25_score", "dense_score", "fts_score", "vector_score"):
                 if key in candidate:
                     by_chunk[chunk_id][key] = candidate[key]
     maximum = len(ranked_lists) / (max(1, rrf_k) + 1)

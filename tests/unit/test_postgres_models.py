@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import DateTime, Float, Numeric
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 from app.db.models import Base
 from app.db.session import AsyncSessionFactory, worker_session
@@ -30,6 +30,20 @@ EXPECTED_TABLES = {
     "backtest_runs",
     "backtest_rebalance_snapshots",
     "backtest_strategy_results",
+    "research_documents",
+    "document_versions",
+    "document_chunks",
+    "chunk_embeddings",
+    "ingestion_jobs",
+    "prompt_templates",
+    "prompt_versions",
+    "prompt_deployments",
+    "llm_call_traces",
+    "workflow_runs",
+    "workflow_steps",
+    "review_tasks",
+    "review_decisions",
+    "published_reports",
 }
 
 
@@ -102,6 +116,19 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("backtest_strategy_results", "metrics"),
         ("backtest_strategy_results", "final_weights"),
         ("backtest_strategy_results", "nav_series"),
+        ("research_documents", "metadata_json"),
+        ("document_versions", "metadata_json"),
+        ("ingestion_jobs", "metadata_json"),
+        ("prompt_versions", "input_schema"),
+        ("prompt_versions", "output_schema"),
+        ("prompt_versions", "baseline_metrics"),
+        ("llm_call_traces", "provider_usage"),
+        ("llm_call_traces", "model_parameters"),
+        ("llm_call_traces", "tool_calls"),
+        ("workflow_runs", "context_json"),
+        ("workflow_steps", "input_summary"),
+        ("workflow_steps", "output_summary"),
+        ("published_reports", "report_json"),
     }
     for table_name, column_name in json_columns:
         assert isinstance(Base.metadata.tables[table_name].c[column_name].type, JSONB)
@@ -116,6 +143,39 @@ def test_required_idempotency_constraints_are_present():
     assert "uq_price_bars_security_id_trade_date_source" in price_constraints
     assert "uq_transactions_external_id_not_null" in transaction_indexes
     assert "uq_transactions_source_record_hash_not_null" in transaction_indexes
+    workflow_constraints = {
+        constraint.name for constraint in Base.metadata.tables["workflow_runs"].constraints
+    }
+    assert "uq_workflow_runs_user_scene_key" in workflow_constraints
+    trace_columns = Base.metadata.tables["llm_call_traces"].c
+    for name in (
+        "model_parameters",
+        "retrieved_document_ids",
+        "tool_calls",
+        "output_schema_valid",
+        "review_decision",
+        "review_feedback",
+    ):
+        assert name in trace_columns
+
+
+def test_document_version_keeps_source_and_stored_content_checksums():
+    columns = Base.metadata.tables["document_versions"].c
+    assert "checksum" in columns
+    assert "stored_content_checksum" in columns
+    assert "code_version" in Base.metadata.tables["ingestion_jobs"].c
+
+
+def test_governance_array_columns_use_postgresql_array_comparators():
+    array_columns = {
+        ("document_chunks", "tickers"),
+        ("document_chunks", "fund_codes"),
+        ("document_chunks", "permission_groups"),
+        ("prompt_versions", "variables"),
+    }
+    for table_name, column_name in array_columns:
+        column_type = Base.metadata.tables[table_name].c[column_name].type
+        assert isinstance(column_type, ARRAY)
 
 
 def test_legacy_database_module_has_no_import_time_init_call():
@@ -128,6 +188,18 @@ def test_legacy_database_module_has_no_import_time_init_call():
         and isinstance(node.value.func, ast.Name)
     ]
     assert "init_db" not in top_level_calls
+
+
+def test_legacy_database_init_no_longer_owns_governance_tables():
+    source = (ROOT / "database.py").read_text(encoding="utf-8")
+    for table_name in (
+        "knowledge_documents",
+        "prompt_templates",
+        "llm_call_traces",
+        "workflow_runs",
+        "review_tasks",
+    ):
+        assert f"CREATE TABLE IF NOT EXISTS {table_name}" not in source
 
 
 def test_database_url_normalizes_managed_postgres_urls_to_asyncpg():

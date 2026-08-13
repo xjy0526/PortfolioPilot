@@ -14,6 +14,7 @@ from app.api.health import router as health_router
 from app.api.market_data import router as market_data_router
 from app.api.portfolios import router as db_portfolio_router
 from app.db.session import dispose_async_engine, get_db_session
+from app.core.resources import close_resources, initialize_resources
 from cache_manager import CacheManager
 from config import settings
 from logging_config import setup_logging
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     logger.info("PortfolioPilot starting")
     CacheManager.clear_volatile_caches()
     CacheManager.cleanup_stale_files()
+    await initialize_resources()
 
     # SQLite stays readable during incremental migration, but PostgreSQL schema
     # creation remains exclusively owned by Alembic.
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await close_resources()
     await dispose_async_engine()
     logger.info("PortfolioPilot stopped")
 

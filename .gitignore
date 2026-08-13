@@ -12,6 +12,7 @@ cache/
 Parqet/
 portfolio.csv
 rag_documents/
+data/ingestion/
 historical_prices*.csv
 
 # === Python ===

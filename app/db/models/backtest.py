@@ -21,7 +21,11 @@ class BacktestRun(UUIDTimestampMixin, Base):
         ForeignKey("portfolios.id", ondelete="SET NULL"), nullable=True, index=True
     )
     portfolio_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("portfolio_valuation_snapshots.id", ondelete="SET NULL"),
+        ForeignKey(
+            "portfolio_valuation_snapshots.id",
+            name="fk_backtest_run_valuation_snapshot",
+            ondelete="SET NULL",
+        ),
         nullable=True,
         index=True,
     )

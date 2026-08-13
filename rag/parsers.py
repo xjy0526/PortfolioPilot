@@ -19,14 +19,20 @@ class ParsedBlock:
     text: str
 
 
-def parse_document(content: bytes, filename: str, fallback_title: str) -> tuple[str, list[ParsedBlock], str]:
+def parse_document(
+    content: bytes,
+    filename: str,
+    fallback_title: str,
+    *,
+    max_pdf_pages: int | None = None,
+) -> tuple[str, list[ParsedBlock], str]:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError(f"Unsupported document type: {suffix or 'unknown'}")
     if not content:
         raise ValueError("Document content is empty")
     if suffix == ".pdf":
-        title, blocks = _parse_pdf(content, fallback_title)
+        title, blocks = _parse_pdf(content, fallback_title, max_pages=max_pdf_pages)
         return title, blocks, "pypdf"
 
     text = content.decode("utf-8-sig", errors="strict")
@@ -103,20 +109,31 @@ def _parse_csv(text: str, fallback_title: str) -> tuple[str, list[ParsedBlock]]:
     reader = csv.DictReader(io.StringIO(text))
     blocks: list[ParsedBlock] = []
     if reader.fieldnames:
-        for row_number, row in enumerate(reader, start=1):
-            value = " | ".join(f"{key}: {value}" for key, value in row.items() if value not in (None, ""))
+        for row_number, dict_row in enumerate(reader, start=1):
+            value = " | ".join(
+                f"{key}: {value}"
+                for key, value in dict_row.items()
+                if value not in (None, "")
+            )
             if value:
                 blocks.append(ParsedBlock(fallback_title, f"Row {row_number}", None, value))
     else:
-        for row_number, row in enumerate(csv.reader(io.StringIO(text)), start=1):
-            if row:
-                blocks.append(ParsedBlock(fallback_title, f"Row {row_number}", None, ", ".join(row)))
+        for row_number, list_row in enumerate(csv.reader(io.StringIO(text)), start=1):
+            if list_row:
+                blocks.append(
+                    ParsedBlock(fallback_title, f"Row {row_number}", None, ", ".join(list_row))
+                )
     if not blocks:
         raise ValueError("CSV document contains no readable rows")
     return fallback_title, blocks
 
 
-def _parse_pdf(content: bytes, fallback_title: str) -> tuple[str, list[ParsedBlock]]:
+def _parse_pdf(
+    content: bytes,
+    fallback_title: str,
+    *,
+    max_pages: int | None = None,
+) -> tuple[str, list[ParsedBlock]]:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -125,6 +142,9 @@ def _parse_pdf(content: bytes, fallback_title: str) -> tuple[str, list[ParsedBlo
         reader = PdfReader(io.BytesIO(content))
     except Exception as exc:
         raise ValueError(f"Invalid PDF document: {exc}") from exc
+
+    if max_pages is not None and len(reader.pages) > max_pages:
+        raise ValueError(f"PDF page limit exceeded: {len(reader.pages)} > {max_pages}")
 
     metadata_title = str(getattr(reader.metadata, "title", "") or "").strip()
     title = metadata_title or fallback_title

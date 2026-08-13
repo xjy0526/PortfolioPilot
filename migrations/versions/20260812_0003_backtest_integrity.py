@@ -64,7 +64,7 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(
             ["portfolio_snapshot_id"], ["portfolio_valuation_snapshots.id"],
-            name="fk_backtest_runs_portfolio_snapshot_id_portfolio_valuation_snapshots",
+            name="fk_backtest_run_valuation_snapshot",
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_backtest_runs"),

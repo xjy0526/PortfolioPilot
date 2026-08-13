@@ -13,6 +13,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Protocol
 
 from rag.models import PermissionContext
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
+    model_name: str
+
     def encode(self, texts: list[str]) -> np.ndarray:
         """Encode texts into a 2D float array."""
 
@@ -43,6 +46,7 @@ class HashingEmbedder:
 
     def __init__(self, dimensions: int = 384):
         self.dimensions = dimensions
+        self.model_name = f"hashing-blake2b-{dimensions}"
 
     def encode(self, texts: list[str]) -> np.ndarray:
         vectors = np.zeros((len(texts), self.dimensions), dtype=np.float32)
@@ -63,6 +67,7 @@ class SentenceTransformerEmbedder:
     def __init__(self, model_name: str):
         from sentence_transformers import SentenceTransformer
 
+        self.model_name = model_name
         self.model = SentenceTransformer(model_name)
 
     def encode(self, texts: list[str]) -> np.ndarray:
@@ -95,7 +100,9 @@ class LocalVectorIndex:
 
         if self.faiss_index is not None:
             scores, indices = self.faiss_index.search(query_vec, k)
-            pairs = zip(indices[0].tolist(), scores[0].tolist(), strict=False)
+            pairs: Iterable[tuple[int, float]] = zip(
+                indices[0].tolist(), scores[0].tolist(), strict=False
+            )
         else:
             sims = self.embeddings @ query_vec[0]
             top_indices = np.argsort(sims)[::-1][:k]
@@ -129,8 +136,8 @@ def retrieve_evidence(
     """Retrieve authorized, published and currently effective evidence.
 
     An explicitly supplied ``document_dir`` keeps the legacy public-directory
-    behavior for local tests/tools. Normal application retrieval uses the
-    versioned SQLite knowledge base and applies ACL filtering before embedding.
+    behavior for local tests/tools. Normal application retrieval uses
+    ``PostgresKnowledgeService``; this function is an explicit offline fallback.
     """
     return retrieve_evidence_with_status(
         query,
@@ -160,23 +167,30 @@ def retrieve_evidence_with_status(
             logger.warning("Legacy RAG retrieval failed: %s", exc)
             return {"citations": [], "evidence_insufficient": True}
 
-    root = _resolve_usable_document_dir(document_dir)
+    # Compatibility-only offline path for local tools and bundled samples.
+    # FastAPI routes and workflow services use PostgresKnowledgeService directly.
+    root = _resolve_usable_document_dir(None)
+    if not root.exists() or not root.is_dir():
+        return {
+            "citations": [],
+            "evidence_insufficient": True,
+            "retrieval_backend": "legacy_local_fallback",
+        }
     try:
-        from rag.service import KnowledgeBaseService
-
-        service = KnowledgeBaseService()
-        bundled_samples = BASE_DIR / "data" / "research_docs"
-        if root.exists() and bundled_samples.exists() and root.resolve() == bundled_samples.resolve():
-            service.bootstrap_public_directory(root)
-        return service.retrieve_with_status(
-            query,
-            top_k=top_k,
-            permission_context=permission_context or PermissionContext(),
-            score_threshold=score_threshold,
-        )
+        citations = _get_or_build_index(root).search(query, top_k=top_k)
+        return {
+            "citations": citations,
+            "evidence_insufficient": not citations,
+            "retrieval_backend": "legacy_local_fallback",
+        }
     except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc)
-        return {"citations": [], "evidence_insufficient": True, "error": str(exc)}
+        logger.warning("Legacy local RAG fallback failed: %s", exc)
+        return {
+            "citations": [],
+            "evidence_insufficient": True,
+            "retrieval_backend": "legacy_local_fallback",
+            "error": str(exc),
+        }
 
 
 def load_documents(document_dir: str | Path | None = None) -> list[dict[str, str]]:
@@ -252,7 +266,7 @@ def _build_embedder() -> Embedder:
         return SentenceTransformerEmbedder(model_name)
     except Exception as exc:
         logger.debug("sentence-transformers unavailable, using hashing embedder: %s", exc)
-        return HashingEmbedder()
+        return HashingEmbedder(dimensions=settings.RAG_EMBEDDING_DIMENSION)
 
 
 def _read_document(path: Path) -> str:
@@ -296,7 +310,9 @@ def _directory_signature(root: Path) -> tuple[tuple[str, float, int], ...]:
 
 
 def _resolve_document_dir(document_dir: str | Path | None) -> Path:
-    value = document_dir or getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents")
+    value: str | Path = document_dir or str(
+        getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents")
+    )
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = BASE_DIR / path
