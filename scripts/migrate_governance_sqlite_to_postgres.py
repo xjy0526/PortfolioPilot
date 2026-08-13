@@ -94,7 +94,11 @@ async def migrate(
         "review_decisions": {"source": 0, "migrated": 0, "failed": []},
         "published_reports": {"source": 0, "migrated": 0, "failed": []},
     }
-    principal = Principal("sqlite-migration", frozenset({"public", "knowledge_admin"}))
+    principal = Principal(
+        "sqlite-migration",
+        frozenset({"public"}),
+        roles=frozenset({"platform_admin"}),
+    )
     try:
         documents = _rows(source, "knowledge_documents")
         versions = _rows(source, "knowledge_document_versions")

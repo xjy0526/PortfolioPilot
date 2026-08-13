@@ -100,18 +100,28 @@ class TransactionCsvImporter:
                 source=source,
                 source_filename=safe_filename,
                 file_sha256=file_sha256,
-                status="processing",
+                status="pending",
                 total_rows=len(rows),
                 accepted_rows=0,
                 rejected_rows=0,
                 error_summary={},
             )
         )
-        if not created and batch.status == "completed":
+        if not created and batch.status in {
+            "pending",
+            "processing",
+            "completed",
+            "completed_with_errors",
+            "failed",
+            "duplicate",
+        }:
             summary = batch.error_summary or {}
+            batch.status = "duplicate"
+            batch.completed_at = utc_now()
+            await self.session.flush()
             return TransactionImportResult(
                 import_batch_id=batch.id,
-                status=batch.status,
+                status="duplicate",
                 total_rows=batch.total_rows,
                 accepted_rows=batch.accepted_rows,
                 rejected_rows=batch.rejected_rows,
@@ -120,6 +130,9 @@ class TransactionCsvImporter:
                 history_completeness=str(summary.get("history_completeness", "complete")),
                 errors=tuple(summary.get("errors", [])),
             )
+
+        batch.status = "processing"
+        await self.session.flush()
 
         normalized: list[_NormalizedRow] = []
         errors: list[dict[str, object]] = []
@@ -188,10 +201,15 @@ class TransactionCsvImporter:
             await savepoint.commit()
 
         history = _history_completeness(normalized, legacy=legacy)
-        batch.status = "completed" if normalized or errors else "failed"
         batch.total_rows = len(rows)
         batch.accepted_rows = len(normalized)
         batch.rejected_rows = len(rows) - len(normalized)
+        if batch.accepted_rows == batch.total_rows and batch.total_rows > 0:
+            batch.status = "completed"
+        elif batch.accepted_rows > 0:
+            batch.status = "completed_with_errors"
+        else:
+            batch.status = "failed"
         batch.completed_at = utc_now()
         batch.error_summary = {
             "errors": errors,

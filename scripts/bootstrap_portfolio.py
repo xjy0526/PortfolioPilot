@@ -10,8 +10,13 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db.repositories import PortfolioRepository, UserRepository
+from app.db.repositories import (
+    PortfolioMembershipRepository,
+    PortfolioRepository,
+    UserRepository,
+)
 from app.db.session import AsyncSessionFactory, dispose_async_engine
+from config import settings
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,6 +41,14 @@ async def bootstrap(email: str, name: str, base_currency: str) -> dict[str, str]
                 base_currency=base_currency,
                 description="Local research and system demonstration portfolio.",
                 portfolio_settings={"contains_personal_data": False},
+            )
+            await PortfolioMembershipRepository(session).grant(
+                portfolio_id=portfolio.id,
+                user_id=settings.LOCAL_PRINCIPAL_USER,
+                role="admin",
+                can_read=True,
+                can_write=True,
+                can_admin=True,
             )
         return {
             "user_id": str(user.id),

@@ -1,11 +1,11 @@
-"""As-of portfolio valuation with complete price and FX lineage."""
+"""As-of portfolio valuation with integrity status and complete lineage."""
 from __future__ import annotations
 
 import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TypedDict
 
@@ -28,6 +28,7 @@ ONE = Decimal("1")
 
 class _ValuationRow(TypedDict):
     security_id: uuid.UUID
+    ticker: str
     quantity: Decimal
     average_cost: Decimal
     price_bar_id: uuid.UUID
@@ -36,8 +37,11 @@ class _ValuationRow(TypedDict):
     native_currency: str
     valuation_fx_rate: Decimal
     market_value_base: Decimal
-    cost_basis_base: Decimal
-    unrealized_pnl_base: Decimal
+    cost_basis_native: Decimal
+    cost_basis_base_at_trade: Decimal | None
+    local_price_pnl: Decimal | None
+    fx_pnl: Decimal | None
+    total_pnl_base: Decimal | None
     price_trade_date: str
     price_source: str
     price_data_as_of: str
@@ -72,27 +76,78 @@ class PortfolioValuationService:
         if portfolio is None:
             raise ValueError("portfolio not found")
         rebuilt = await self.ledger.rebuild(portfolio_id, as_of=cutoff)
-        rows, warnings, data_times, cash_fx_lineage = await self._value_positions(
-            portfolio, rebuilt
+        rows, warnings, lineage_dates, unpriced_assets, fx_lineage = (
+            await self._value_positions(portfolio, rebuilt)
         )
-        cash_value = await self._value_cash(
+        priced_cash_value, cash_complete = await self._value_cash(
             rebuilt,
             portfolio.base_currency,
             warnings,
-            data_times,
-            cash_fx_lineage,
+            lineage_dates,
+            unpriced_assets,
+            fx_lineage,
         )
-        securities_value = sum((row["market_value_base"] for row in rows), ZERO)
-        total_market_value = securities_value + cash_value
-        total_cost_basis = sum((row["cost_basis_base"] for row in rows), ZERO)
-        unrealized_pnl = sum((row["unrealized_pnl_base"] for row in rows), ZERO)
+        priced_market_value = sum((row["market_value_base"] for row in rows), ZERO)
+        priced_market_value += priced_cash_value
+        expected_assets = len(rebuilt.positions) + sum(
+            1 for amount in rebuilt.cash_balances.values() if amount != ZERO
+        )
+        priced_assets = len(rows) + sum(
+            1 for amount in rebuilt.cash_balances.values() if amount != ZERO
+        )
+        if not cash_complete:
+            priced_assets -= sum(
+                1
+                for item in unpriced_assets
+                if item.get("asset_type") == "cash"
+            )
+        unpriced_count = len(unpriced_assets)
+        coverage = (
+            Decimal(priced_assets) / Decimal(expected_assets)
+            if expected_assets > 0
+            else ONE
+        )
+        complete_cost = all(row["cost_basis_base_at_trade"] is not None for row in rows)
+        if unpriced_count == 0 and complete_cost:
+            valuation_status = "complete"
+        elif priced_assets > 0 or expected_assets == 0:
+            valuation_status = "partial"
+        else:
+            valuation_status = "unavailable"
+        total_market_value = (
+            priced_market_value if valuation_status == "complete" else None
+        )
+        total_cost_basis = (
+            sum(
+                (row["cost_basis_base_at_trade"] or ZERO for row in rows),
+                ZERO,
+            )
+            if valuation_status == "complete" and complete_cost
+            else None
+        )
+        total_pnl = (
+            sum((row["total_pnl_base"] or ZERO for row in rows), ZERO)
+            if valuation_status == "complete" and complete_cost
+            else None
+        )
+        earliest = min((item[0] for item in lineage_dates), default=None)
+        latest = max((item[0] for item in lineage_dates), default=None)
+        stale_days = [max(0, (cutoff.date() - item[1]).days) for item in lineage_dates]
+        max_staleness_days = max(stale_days) if stale_days else None
         input_hash = await self._input_hash(
             portfolio=portfolio,
             rebuilt=rebuilt,
             rows=rows,
-            cash_fx_lineage=cash_fx_lineage,
+            unpriced_assets=unpriced_assets,
+            cash_fx_lineage=fx_lineage,
         )
-        data_as_of = max(data_times) if data_times else rebuilt.last_transaction_at
+        snapshot_warnings = list(dict.fromkeys([*rebuilt.warnings, *warnings]))
+        if not complete_cost:
+            snapshot_warnings.append("valuation_partial:missing_historical_cost_fx")
+        if valuation_status != "complete":
+            snapshot_warnings.append(
+                f"valuation_{valuation_status}:coverage={float(coverage):.4f}"
+            )
         valuation = await self.valuations.upsert(
             PortfolioValuationSnapshot(
                 portfolio_id=portfolio.id,
@@ -100,16 +155,25 @@ class PortfolioValuationService:
                 valuation_date=cutoff.date(),
                 base_currency=portfolio.base_currency,
                 total_market_value=total_market_value,
+                priced_market_value=priced_market_value,
                 total_cost_basis=total_cost_basis,
-                cash_value=cash_value,
-                unrealized_pnl=unrealized_pnl,
-                data_as_of=data_as_of,
+                cash_value=priced_cash_value if cash_complete else None,
+                unrealized_pnl=total_pnl,
+                valuation_status=valuation_status,
+                priced_asset_count=priced_assets,
+                unpriced_asset_count=unpriced_count,
+                unpriced_assets=unpriced_assets,
+                data_as_of=latest or rebuilt.last_transaction_at,
+                data_as_of_earliest=earliest,
+                data_as_of_latest=latest,
+                max_staleness_days=max_staleness_days,
+                coverage_ratio=coverage,
                 source=source,
                 sync_run_id=sync_run_id,
                 input_hash=input_hash,
                 history_completeness=rebuilt.history_completeness,
                 cash_balances={key: str(value) for key, value in rebuilt.cash_balances.items()},
-                warnings=list(dict.fromkeys([*rebuilt.warnings, *warnings])),
+                warnings=snapshot_warnings,
                 config_snapshot={
                     "cost_basis_method": portfolio.cost_basis_method,
                     "display_timezone": portfolio.display_timezone,
@@ -118,7 +182,7 @@ class PortfolioValuationService:
                         if portfolio.benchmark_security_id
                         else None
                     ),
-                    "cash_fx_lineage": cash_fx_lineage,
+                    "cash_fx_lineage": fx_lineage,
                 },
             )
         )
@@ -126,8 +190,8 @@ class PortfolioValuationService:
         for row in rows:
             weight = (
                 row["market_value_base"] / total_market_value
-                if total_market_value > ZERO
-                else ZERO
+                if total_market_value is not None and total_market_value > ZERO
+                else None
             )
             snapshot, _ = await self.position_snapshots.add_idempotent(
                 PositionSnapshot(
@@ -141,14 +205,20 @@ class PortfolioValuationService:
                     native_currency=row["native_currency"],
                     valuation_fx_rate=row["valuation_fx_rate"],
                     market_value_base=row["market_value_base"],
-                    cost_basis_base=row["cost_basis_base"],
-                    unrealized_pnl_base=row["unrealized_pnl_base"],
+                    cost_basis_base=row["cost_basis_base_at_trade"],
+                    unrealized_pnl_base=row["total_pnl_base"],
+                    cost_basis_native=row["cost_basis_native"],
+                    cost_basis_base_at_trade=row["cost_basis_base_at_trade"],
+                    local_price_pnl=row["local_price_pnl"],
+                    fx_pnl=row["fx_pnl"],
+                    total_pnl_base=row["total_pnl_base"],
                     weight=weight,
                     base_currency=portfolio.base_currency,
                     snapshot_data={
                         "price_trade_date": row["price_trade_date"],
                         "price_source": row["price_source"],
                         "price_data_as_of": row["price_data_as_of"],
+                        "cost_basis_semantics": "historical_trade_date_fx",
                     },
                 )
             )
@@ -162,30 +232,46 @@ class PortfolioValuationService:
         self,
         portfolio: Portfolio,
         rebuilt: PositionRebuildResult,
-    ) -> tuple[list[_ValuationRow], list[str], list[datetime], dict[str, object]]:
+    ) -> tuple[
+        list[_ValuationRow],
+        list[str],
+        list[tuple[datetime, date]],
+        list[dict[str, str]],
+        dict[str, object],
+    ]:
         rows: list[_ValuationRow] = []
         warnings: list[str] = []
-        data_times: list[datetime] = []
+        lineage_dates: list[tuple[datetime, date]] = []
+        unpriced: list[dict[str, str]] = []
         fx_lineage: dict[str, object] = {}
         for position in rebuilt.positions:
             security = await self.session.get(Security, position.security_id)
             if security is None:
-                warnings.append(f"missing_security:{position.security_id}")
+                warning = f"missing_security:{position.security_id}"
+                warnings.append(warning)
+                unpriced.append(
+                    {
+                        "asset_type": "security",
+                        "security_id": str(position.security_id),
+                        "ticker": "",
+                        "reason": "missing_security_master",
+                    }
+                )
                 continue
-            preferred_source = (
-                "tushare" if security.market.upper() == "CN-A" else "yfinance_research"
-            )
             price = await self.prices.latest_at_or_before(
                 security.id,
                 rebuilt.as_of.date(),
-                preferred_source=preferred_source,
+                preferred_source=(
+                    "tushare" if security.market.upper() == "CN-A" else "yfinance_research"
+                ),
                 knowledge_as_of=rebuilt.as_of,
             )
             if price is None:
                 warnings.append(f"missing_price:{security.canonical_symbol}")
+                unpriced.append(_unpriced_security(security, "missing_price"))
                 continue
             native_price = price.adjusted_close or price.close
-            fx_rate, fx_row_id = await self._valuation_fx(
+            fx_rate, fx_row_id, fx_date, fx_data_as_of = await self._valuation_fx(
                 security.currency,
                 portfolio.base_currency,
                 rebuilt.as_of,
@@ -193,21 +279,38 @@ class PortfolioValuationService:
                 fx_lineage,
             )
             if fx_rate is None:
-                warnings.append(
-                    f"missing_fx:{security.currency}/{portfolio.base_currency}"
-                )
+                warnings.append(f"missing_fx:{security.currency}/{portfolio.base_currency}")
+                unpriced.append(_unpriced_security(security, "missing_valuation_fx"))
                 continue
             native_market_value = position.quantity * native_price
             market_value_base = native_market_value * fx_rate
-            cost_basis_base = position.cost_basis_native * fx_rate
-            data_times.append(_as_utc(price.data_as_of))
-            if fx_row_id is not None:
-                fx_row = await self.fx_rates.get(fx_row_id)
-                if fx_row is not None:
-                    data_times.append(_as_utc(fx_row.data_as_of))
+            historical_cost = (
+                position.cost_basis_base_at_trade
+                if position.historical_fx_complete
+                else None
+            )
+            local_price_pnl = (
+                (native_market_value - position.cost_basis_native) * fx_rate
+                if historical_cost is not None
+                else None
+            )
+            fx_pnl = (
+                position.cost_basis_native * fx_rate - historical_cost
+                if historical_cost is not None
+                else None
+            )
+            total_pnl = (
+                market_value_base - historical_cost
+                if historical_cost is not None
+                else None
+            )
+            lineage_dates.append((_as_utc(price.data_as_of), price.trade_date))
+            if fx_data_as_of is not None and fx_date is not None:
+                lineage_dates.append((_as_utc(fx_data_as_of), fx_date))
             rows.append(
                 {
                     "security_id": security.id,
+                    "ticker": security.canonical_symbol,
                     "quantity": position.quantity,
                     "average_cost": position.average_cost_native,
                     "price_bar_id": price.id,
@@ -216,37 +319,50 @@ class PortfolioValuationService:
                     "native_currency": security.currency,
                     "valuation_fx_rate": fx_rate,
                     "market_value_base": market_value_base,
-                    "cost_basis_base": cost_basis_base,
-                    "unrealized_pnl_base": market_value_base - cost_basis_base,
+                    "cost_basis_native": position.cost_basis_native,
+                    "cost_basis_base_at_trade": historical_cost,
+                    "local_price_pnl": local_price_pnl,
+                    "fx_pnl": fx_pnl,
+                    "total_pnl_base": total_pnl,
                     "price_trade_date": price.trade_date.isoformat(),
                     "price_source": price.source,
                     "price_data_as_of": _as_utc(price.data_as_of).isoformat(),
                 }
             )
-        return rows, warnings, data_times, fx_lineage
+        return rows, warnings, lineage_dates, unpriced, fx_lineage
 
     async def _value_cash(
         self,
         rebuilt: PositionRebuildResult,
         base_currency: str,
         warnings: list[str],
-        data_times: list[datetime],
+        lineage_dates: list[tuple[datetime, date]],
+        unpriced: list[dict[str, str]],
         fx_lineage: dict[str, object],
-    ) -> Decimal:
+    ) -> tuple[Decimal, bool]:
         total = ZERO
+        complete = True
         for currency, amount in rebuilt.cash_balances.items():
-            rate, rate_id = await self._valuation_fx(
+            if amount == ZERO:
+                continue
+            rate, _, rate_date, data_as_of = await self._valuation_fx(
                 currency, base_currency, rebuilt.as_of, warnings, fx_lineage
             )
             if rate is None:
+                complete = False
                 warnings.append(f"missing_cash_fx:{currency}/{base_currency}")
+                unpriced.append(
+                    {
+                        "asset_type": "cash",
+                        "currency": currency,
+                        "reason": "missing_valuation_fx",
+                    }
+                )
                 continue
             total += amount * rate
-            if rate_id:
-                fx_row = await self.fx_rates.get(rate_id)
-                if fx_row:
-                    data_times.append(_as_utc(fx_row.data_as_of))
-        return total
+            if data_as_of is not None and rate_date is not None:
+                lineage_dates.append((_as_utc(data_as_of), rate_date))
+        return total, complete
 
     async def _valuation_fx(
         self,
@@ -255,45 +371,26 @@ class PortfolioValuationService:
         as_of: datetime,
         warnings: list[str],
         lineage: dict[str, object],
-    ) -> tuple[Decimal | None, uuid.UUID | None]:
+    ) -> tuple[Decimal | None, uuid.UUID | None, date | None, datetime | None]:
         native = native_currency.upper()
         base = base_currency.upper()
         if native == base:
-            return ONE, None
+            return ONE, None, as_of.date(), None
         direct = await self.fx_rates.latest_at_or_before(
-            native,
-            base,
-            as_of.date(),
-            knowledge_as_of=as_of,
+            native, base, as_of.date(), knowledge_as_of=as_of
         )
         if direct is not None:
-            lineage[f"{native}/{base}"] = {
-                "fx_rate_id": str(direct.id),
-                "rate_date": direct.rate_date.isoformat(),
-                "source": direct.source,
-                "inverted": False,
-                "rate": str(direct.rate),
-                "data_as_of": _as_utc(direct.data_as_of).isoformat(),
-            }
-            return direct.rate, direct.id
+            lineage[f"{native}/{base}"] = _fx_lineage(direct, direct.rate, inverted=False)
+            return direct.rate, direct.id, direct.rate_date, direct.data_as_of
         inverse = await self.fx_rates.latest_at_or_before(
-            base,
-            native,
-            as_of.date(),
-            knowledge_as_of=as_of,
+            base, native, as_of.date(), knowledge_as_of=as_of
         )
         if inverse is not None and inverse.rate > ZERO:
             warnings.append(f"inverted_fx_rate:{base}/{native}")
-            lineage[f"{native}/{base}"] = {
-                "fx_rate_id": str(inverse.id),
-                "rate_date": inverse.rate_date.isoformat(),
-                "source": inverse.source,
-                "inverted": True,
-                "rate": str(ONE / inverse.rate),
-                "data_as_of": _as_utc(inverse.data_as_of).isoformat(),
-            }
-            return ONE / inverse.rate, inverse.id
-        return None, None
+            rate = ONE / inverse.rate
+            lineage[f"{native}/{base}"] = _fx_lineage(inverse, rate, inverted=True)
+            return rate, inverse.id, inverse.rate_date, inverse.data_as_of
+        return None, None, None, None
 
     async def _input_hash(
         self,
@@ -301,6 +398,7 @@ class PortfolioValuationService:
         portfolio: Portfolio,
         rebuilt: PositionRebuildResult,
         rows: list[_ValuationRow],
+        unpriced_assets: list[dict[str, str]],
         cash_fx_lineage: dict[str, object],
     ) -> str:
         transactions = await self.ledger.list_transactions(
@@ -318,6 +416,9 @@ class PortfolioValuationService:
                     "id": str(item.id),
                     "updated_at": _as_utc(item.updated_at).isoformat(),
                     "source_record_hash": item.source_record_hash,
+                    "fx_rate_to_base": (
+                        str(item.fx_rate_to_base) if item.fx_rate_to_base else None
+                    ),
                 }
                 for item in transactions
             ],
@@ -329,10 +430,15 @@ class PortfolioValuationService:
                     "quantity": str(row["quantity"]),
                     "native_price": str(row["native_price"]),
                     "valuation_fx_rate": str(row["valuation_fx_rate"]),
+                    "cost_basis_base_at_trade": str(row["cost_basis_base_at_trade"]),
                     "price_data_as_of": row["price_data_as_of"],
                 }
                 for row in rows
             ],
+            "unpriced_assets": sorted(
+                unpriced_assets,
+                key=lambda item: json.dumps(item, sort_keys=True),
+            ),
             "cash_balances": {
                 key: str(value) for key, value in rebuilt.cash_balances.items()
             },
@@ -340,6 +446,27 @@ class PortfolioValuationService:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+
+def _unpriced_security(security: Security, reason: str) -> dict[str, str]:
+    return {
+        "asset_type": "security",
+        "security_id": str(security.id),
+        "ticker": security.canonical_symbol,
+        "currency": security.currency,
+        "reason": reason,
+    }
+
+
+def _fx_lineage(row, rate: Decimal, *, inverted: bool) -> dict[str, object]:
+    return {
+        "fx_rate_id": str(row.id),
+        "rate_date": row.rate_date.isoformat(),
+        "source": row.source,
+        "inverted": inverted,
+        "rate": str(rate),
+        "data_as_of": _as_utc(row.data_as_of).isoformat(),
+    }
 
 
 def _as_utc(value: datetime) -> datetime:

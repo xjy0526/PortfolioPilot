@@ -127,7 +127,12 @@ class DocumentChunk(UUIDTimestampMixin, Base):
 class ChunkEmbedding(UUIDTimestampMixin, Base):
     __tablename__ = "chunk_embeddings"
     __table_args__ = (
-        UniqueConstraint("chunk_id", "embedding_model", name="uq_chunk_embeddings_chunk_model"),
+        UniqueConstraint(
+            "chunk_id",
+            "model_name",
+            "model_version",
+            name="uq_chunk_embeddings_chunk_model_version",
+        ),
         Index(
             "ix_chunk_embeddings_vector_hnsw",
             "embedding",
@@ -140,6 +145,12 @@ class ChunkEmbedding(UUIDTimestampMixin, Base):
         ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False, index=True
     )
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="legacy"
+    )
+    model_version: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="legacy"
+    )
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(
         Vector(RAG_VECTOR_DIMENSIONS), nullable=False
@@ -149,7 +160,14 @@ class ChunkEmbedding(UUIDTimestampMixin, Base):
 
 class IngestionJob(UUIDTimestampMixin, Base):
     __tablename__ = "ingestion_jobs"
-    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_ingestion_jobs_user_key"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "business_scene",
+            "idempotency_key",
+            name="uq_ingestion_jobs_user_scene_key",
+        ),
+    )
 
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("research_documents.id", ondelete="SET NULL"), nullable=True, index=True
@@ -158,10 +176,21 @@ class IngestionJob(UUIDTimestampMixin, Base):
         ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    business_scene: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="knowledge_ingestion"
+    )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    storage_uri: Mapped[str] = mapped_column(String(1200), nullable=False, default="")
     checksum: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    content_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_type: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="application/octet-stream"
+    )
+    retention_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     code_version: Mapped[str] = mapped_column(String(120), nullable=False, default="unknown")
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
@@ -253,6 +282,9 @@ class LLMCallTrace(UUIDTimestampMixin, Base):
     )
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     response_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     data_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -291,6 +323,9 @@ class WorkflowRun(UUIDTimestampMixin, Base):
     )
 
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="default", index=True
+    )
     business_scene: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="DRAFT")
@@ -307,6 +342,15 @@ class WorkflowRun(UUIDTimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_type: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     code_version: Mapped[str] = mapped_column(String(120), nullable=False, default="unknown")
+    lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
 
 class WorkflowStep(UUIDTimestampMixin, Base):
@@ -330,10 +374,18 @@ class WorkflowStep(UUIDTimestampMixin, Base):
 
 class ReviewTask(UUIDTimestampMixin, Base):
     __tablename__ = "review_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_run_id",
+            "iteration",
+            name="uq_review_tasks_run_iteration",
+        ),
+    )
 
     workflow_run_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="PENDING")
     assigned_group: Mapped[str] = mapped_column(String(120), nullable=False, default="research_reviewer")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -343,6 +395,7 @@ class ReviewDecision(UUIDTimestampMixin, Base):
     __tablename__ = "review_decisions"
     __table_args__ = (
         UniqueConstraint("review_task_id", "decision", "reviewer_id", name="uq_review_decisions_task_decision_reviewer"),
+        UniqueConstraint("review_task_id", name="uq_review_decisions_review_task"),
     )
 
     review_task_id: Mapped[uuid.UUID] = mapped_column(

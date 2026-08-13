@@ -17,7 +17,9 @@ def test_workflows_target_main_and_contain_no_legacy_identity():
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     combined = (deploy + ci).lower()
 
-    assert "branches: [main]" in deploy
+    assert "workflow_run:" in deploy
+    assert "head_branch == 'main'" in deploy
+    assert "conclusion == 'success'" in deploy
     assert "branches: [main]" in ci
     assert "master" not in combined
     legacy_markers = (

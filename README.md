@@ -216,7 +216,7 @@ OPENAI_COMPATIBLE_BASE_URL=https://your-endpoint.example/v1
 OPENAI_COMPATIBLE_MODEL=your-model
 ```
 
-业务层仅依赖 `LLMProvider`，内置 `QwenProvider`、`MockProvider` 和 `OptionalOpenAICompatibleProvider`。本地还可以在 Dashboard 的“操作 → API 设置”中保存千问、FMP 和联系邮箱配置；该入口只允许 localhost 或已启用 Dashboard 认证的请求使用，密钥不会在页面回显。
+业务层仅依赖 `LLMProvider`，内置 `QwenProvider`、`MockProvider` 和 `OptionalOpenAICompatibleProvider`。本地还可以在 Dashboard 的“操作 → API 设置”中临时设置千问、FMP 和联系邮箱；该入口必须同时满足 development、localhost、`platform_admin` 和 `ALLOW_RUNTIME_SECRET_CONFIGURATION=true`，只修改当前进程内存且不写 `.env`，密钥不会在页面回显。Production 永久禁用该入口。
 
 ## 旧持仓 CSV 兼容
 
@@ -316,11 +316,9 @@ query normalization
 → citation objects
 ```
 
-权限和时效条件在数据库内、候选 Chunk 进入排名前执行。向量候选先通过 `RAG_VECTOR_SCORE_THRESHOLD` 独立相似度下限，再参与 RRF，避免无关的向量近邻仅因排名靠前成为证据。默认不召回未发布、失效、过期或无权限文档。Embedding 在入库时生成并持久化，查询时只编码 query；sentence-transformers 不可用时使用显式模型名的 hashing embedder，仍由 pgvector 存储和检索。可选安装：
+权限和时效条件在数据库内、候选 Chunk 进入排名前执行。向量候选先通过 `RAG_VECTOR_SCORE_THRESHOLD` 独立相似度下限，再参与 RRF，避免无关的向量近邻仅因排名靠前成为证据。默认不召回未发布、失效、过期或无权限文档。Embedding 在入库时生成并持久化，查询时只编码 query。默认语义模型是 384 维的 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`；hashing 仅允许 development/test 显式 fallback，生产模型加载失败时 `/health/ready` 返回 503，不会静默降级。
 
-```bash
-pip install sentence-transformers
-```
+模型依赖已包含在 `requirements.txt`，Docker 镜像构建时会将模型缓存进不可变镜像，生产启动不依赖在线下载。
 
 检索示例：
 
@@ -376,7 +374,7 @@ validate_input → load_portfolio → calculate_risk → retrieve_evidence
 → approve_or_reject → publish_report
 ```
 
-运行状态包括 `DRAFT`、`RUNNING`、`PENDING_REVIEW`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `FAILED`。每个节点持久化输入/输出摘要、状态、时间和错误类型，并受 `max_steps`、timeout 与 cost budget 限制。
+运行状态包括 `PENDING`、`RUNNING`、`RETRY`、`PENDING_REVIEW`、`REJECTED`、`PUBLISHED` 和 `FAILED`。每个节点持久化输入/输出摘要、状态、时间和错误类型，并受 `max_steps`、timeout 与 cost budget 限制。
 
 启动一个幂等工作流：
 
@@ -385,10 +383,19 @@ curl -X POST http://localhost:8000/api/workflows/research-report \
   -H "Content-Type: application/json" \
   -d '{
     "idempotency_key":"research-run-2026-001",
+    "portfolio_id":"<portfolio_id>",
     "max_steps":20,
     "node_timeout_seconds":45
   }'
 ```
+
+该 POST 只创建 `WorkflowRun` 并以 HTTP 202 返回 `status=PENDING`；请求线程不会执行 RAG 或 LLM。独立 Worker 使用 `FOR UPDATE SKIP LOCKED`、租约和短事务推进节点：
+
+```bash
+python -m app.workers.run_research_workflow --once
+```
+
+租约过期后其他 Worker 可以接管；已完成节点按 `run + node + iteration` 跳过，LLM Trace 使用稳定 key，发布报告按 run 唯一，因此崩溃恢复不会重复模型 Trace 或重复发布。
 
 人工审核：
 
@@ -516,7 +523,7 @@ python -m pytest -q
 TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
   python -m pytest -m postgres -q
 ruff check .
-mypy
+mypy .
 python -m compileall -q app analytics backtest evaluation prompts rag routes services workflows
 node --check static/app.js
 pip check
@@ -534,7 +541,9 @@ pip check
 4. 将 PostgreSQL 数据、行情和运行报告纳入备份与恢复流程；
 5. 生产环境使用受信任的权限主体生成知识库 permission groups。
 
-公网部署必须配置 Dashboard 认证。当前仓库提供的是可选 Basic Auth；正式机构环境仍应接入 OIDC/SAML、个人身份、RBAC/ABAC、职责分离、密钥管理、备份和集中审计。
+只读公开演示可以匿名访问，但任何可写公网部署都必须配置认证。当前仓库提供的是可选 Basic Auth；正式机构环境仍应接入 OIDC/SAML、个人身份、RBAC/ABAC、职责分离、密钥管理、备份和集中审计。
+
+Production 默认 `READ_ONLY_DEMO=true`，所有 HTTP mutation 返回 403。若显式关闭只读模式，则启动前必须配置认证和 S3-compatible 对象存储；开发身份 Header 在 production 被拒绝。部署流水线仅在 `main` 的 CI 成功后使用 Git SHA 镜像，先执行 Alembic migration job，再执行 readiness 与只读 smoke test。
 
 ## 数据与安全边界
 

@@ -321,7 +321,9 @@ def _parse_date(date_str: str) -> Optional[str]:
     return None
 
 
-def csv_positions_to_portfolio_format(positions: list[dict], prices: dict = None) -> list[dict]:
+def csv_positions_to_portfolio_format(
+    positions: list[dict], prices: dict | None = None
+) -> list[dict]:
     """
     Convert CSV positions to the internal portfolio format expected by the scoring engine.
 

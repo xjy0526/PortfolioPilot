@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, update
@@ -81,10 +81,17 @@ class ResearchRepository:
     async def get_job(self, job_id: uuid.UUID) -> IngestionJob | None:
         return await self.session.get(IngestionJob, job_id)
 
-    async def find_job(self, user_id: str, idempotency_key: str) -> IngestionJob | None:
+    async def find_job(
+        self,
+        user_id: str,
+        idempotency_key: str,
+        *,
+        business_scene: str = "knowledge_ingestion",
+    ) -> IngestionJob | None:
         return await self.session.scalar(
             select(IngestionJob).where(
                 IngestionJob.user_id == user_id,
+                IngestionJob.business_scene == business_scene,
                 IngestionJob.idempotency_key == idempotency_key,
             )
         )
@@ -244,7 +251,8 @@ class ResearchRepository:
         self,
         query_vector: list[float],
         *,
-        embedding_model: str,
+        model_name: str,
+        model_version: str,
         groups: frozenset[str],
         as_of: date,
         limit: int,
@@ -257,7 +265,8 @@ class ResearchRepository:
             .join(ResearchDocument, ResearchDocument.id == DocumentChunk.document_id)
             .join(DocumentVersion, DocumentVersion.id == DocumentChunk.version_id)
             .where(
-                ChunkEmbedding.embedding_model == embedding_model,
+                ChunkEmbedding.model_name == model_name,
+                ChunkEmbedding.model_version == model_version,
                 _chunk_acl(groups, as_of),
                 *_metadata_filters(**metadata),
             )
@@ -316,8 +325,69 @@ class WorkflowRepository:
     async def idempotent_run(self, user_id: str, business_scene: str, key: str) -> WorkflowRun | None:
         return await self.session.scalar(select(WorkflowRun).where(WorkflowRun.user_id == user_id, WorkflowRun.business_scene == business_scene, WorkflowRun.idempotency_key == key))
 
-    async def get_run(self, run_id: uuid.UUID) -> WorkflowRun | None:
-        return await self.session.get(WorkflowRun, run_id)
+    async def get_run(
+        self, run_id: uuid.UUID, *, for_update: bool = False
+    ) -> WorkflowRun | None:
+        statement = select(WorkflowRun).where(WorkflowRun.id == run_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def claim_next_run(
+        self,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> WorkflowRun | None:
+        eligible = or_(
+            and_(
+                WorkflowRun.status.in_(["PENDING", "RETRY"]),
+                or_(WorkflowRun.next_retry_at.is_(None), WorkflowRun.next_retry_at <= now),
+            ),
+            and_(
+                WorkflowRun.status == "RUNNING",
+                WorkflowRun.lease_expires_at.is_not(None),
+                WorkflowRun.lease_expires_at <= now,
+            ),
+        )
+        statement = (
+            select(WorkflowRun)
+            .where(eligible)
+            .order_by(WorkflowRun.next_retry_at.asc().nullsfirst(), WorkflowRun.created_at)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        run = await self.session.scalar(statement)
+        if run is None:
+            return None
+        run.status = "RUNNING"
+        run.lease_owner = lease_owner
+        run.heartbeat_at = now
+        run.lease_expires_at = now + timedelta(seconds=max(1, lease_seconds))
+        run.next_retry_at = None
+        run.attempt += 1
+        if run.started_at is None:
+            run.started_at = now
+        await self.session.flush()
+        return run
+
+    async def get_step(
+        self,
+        run_id: uuid.UUID,
+        step_name: str,
+        iteration: int,
+        *,
+        for_update: bool = False,
+    ) -> WorkflowStep | None:
+        statement = select(WorkflowStep).where(
+            WorkflowStep.workflow_run_id == run_id,
+            WorkflowStep.step_name == step_name,
+            WorkflowStep.iteration == iteration,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
 
     async def get_review(self, review_id: uuid.UUID, *, for_update: bool = False) -> ReviewTask | None:
         statement = select(ReviewTask).where(ReviewTask.id == review_id)

@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
-from config import BASE_DIR, settings
+from app.core.principal import Principal, get_principal, require_writable
+from config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,12 +32,13 @@ async def get_app_settings() -> dict[str, Any]:
 @router.post("/api/app-settings")
 async def update_app_settings(request: Request, data: dict[str, Any] = Body(default=None)):
     """Update API configuration from the dashboard without echoing secrets."""
-    if not _can_update_settings(request):
+    principal = await get_principal(request)
+    require_writable()
+    if not _can_update_settings(request, principal):
         return JSONResponse(
             {
                 "error": (
-                    "API settings can only be changed from localhost, or behind "
-                    "configured dashboard authentication."
+                    "Runtime settings require an enabled local development admin session."
                 )
             },
             status_code=403,
@@ -51,11 +52,15 @@ async def update_app_settings(request: Request, data: dict[str, Any] = Body(defa
             continue
         if "\n" in value or "\r" in value:
             return JSONResponse({"error": f"Invalid newline in {field}"}, status_code=400)
+        if env_key in {"QWEN_BASE_URL", "OPENAI_COMPATIBLE_BASE_URL"}:
+            try:
+                value = settings.validate_provider_base_url(value, setting_name=env_key)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
         updates[env_key] = value
 
     if updates:
         _apply_runtime_settings(updates)
-        _upsert_env_values(BASE_DIR / ".env", updates)
         logger.info("Runtime app settings updated: %s", sorted(updates))
 
     return {
@@ -83,13 +88,17 @@ def _public_settings() -> dict[str, Any]:
         "qwen_model": settings.QWEN_MODEL,
         "qwen_reasoning_model_configured": bool(settings.QWEN_REASONING_MODEL),
         "fmp_configured": bool(settings.FMP_API_KEY) and settings.FMP_API_KEY != "your_fmp_api_key_here",
-        "env_file": ".env",
+        "runtime_configuration_persisted": False,
     }
 
 
-def _can_update_settings(request: Request) -> bool:
-    if settings.auth_configured:
-        return True
+def _can_update_settings(request: Request, principal: Principal) -> bool:
+    if settings.ENVIRONMENT != "development":
+        return False
+    if not settings.ALLOW_RUNTIME_SECRET_CONFIGURATION:
+        return False
+    if not principal.is_platform_admin:
+        return False
     client_host = request.client.host if request.client else ""
     return client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
@@ -98,35 +107,3 @@ def _apply_runtime_settings(updates: dict[str, str]) -> None:
     for env_key, value in updates.items():
         if hasattr(settings, env_key):
             setattr(settings, env_key, value)
-
-
-def _upsert_env_values(path: Path, updates: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    remaining = dict(updates)
-    next_lines: list[str] = []
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            next_lines.append(line)
-            continue
-        key = line.split("=", 1)[0].strip()
-        if key in remaining:
-            next_lines.append(f"{key}={_env_value(remaining.pop(key))}")
-        else:
-            next_lines.append(line)
-
-    if remaining and next_lines and next_lines[-1].strip():
-        next_lines.append("")
-    for key, value in remaining.items():
-        next_lines.append(f"{key}={_env_value(value)}")
-
-    path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
-
-
-def _env_value(value: str) -> str:
-    if not value or any(ch.isspace() for ch in value) or "#" in value or '"' in value:
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return value

@@ -6,55 +6,109 @@ import asyncio
 import json
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import select
 
+from app.core.resources import close_resources, get_resources
 from app.db.models import IngestionJob
 from app.db.repositories.governance import ResearchRepository
 from app.db.session import AsyncSessionFactory, dispose_async_engine
-from app.core.resources import close_resources
 from app.services.research_knowledge import PostgresKnowledgeService
+from config import settings
 from time_utils import utc_now
 
 
 async def process_one_job() -> dict[str, object]:
-    job_id: uuid.UUID | None = None
+    """Claim, prepare, and persist one job without holding a long DB transaction."""
+    job_id = await _claim_job()
+    if job_id is None:
+        return {"status": "idle"}
+
     try:
-        async with AsyncSessionFactory() as session:
-            async with session.begin():
-                acquired = await session.scalar(
-                    text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                    {"key": "portfoliopilot:knowledge-ingestion"},
-                )
-                if not acquired:
-                    return {"status": "busy"}
-                job = await ResearchRepository(session).next_pending_job()
-                if job is None:
-                    return {"status": "idle"}
-                job_id = job.id
-                await PostgresKnowledgeService(session).process_job(job)
-                return {
-                    "status": job.status,
-                    "job_id": str(job.id),
-                    "document_id": str(job.document_id) if job.document_id else None,
-                    "version_id": str(job.version_id) if job.version_id else None,
-                    "chunks_created": job.chunks_created,
-                }
+        async with AsyncSessionFactory() as loading_session:
+            job = await loading_session.get(IngestionJob, job_id)
+            if job is None:
+                return {"status": "missing", "job_id": str(job_id)}
+            loading_session.expunge(job)
+
+        # Parsing and model inference use a detached job snapshot. This
+        # session performs no SQL, so no database transaction remains open
+        # while object storage, PDF parsing, or embedding work runs.
+        async with AsyncSessionFactory() as preparation_session:
+            prepared = await PostgresKnowledgeService(preparation_session).prepare_job(job)
+
+        async with AsyncSessionFactory.begin() as persistence_session:
+            job = await persistence_session.scalar(
+                select(IngestionJob)
+                .where(IngestionJob.id == job_id)
+                .with_for_update()
+            )
+            if job is None:
+                return {"status": "missing", "job_id": str(job_id)}
+            if job.status in {"completed", "duplicate"}:
+                return _job_payload(job)
+            if job.status != "processing":
+                return {"status": job.status, "job_id": str(job.id)}
+            await PostgresKnowledgeService(persistence_session).persist_prepared(job, prepared)
+            payload = _job_payload(job)
+
+        await _apply_success_retention(job_id)
+        return payload
     except Exception as exc:
-        if job_id is not None:
-            async with AsyncSessionFactory() as failure_session:
-                job = await failure_session.get(IngestionJob, job_id)
-                if job is not None:
-                    job.status = "failed"
-                    job.retry_count += 1
-                    job.completed_at = utc_now()
-                    job.error_message = _safe_error(exc)
-                    await failure_session.commit()
+        await _mark_failed(job_id, exc)
         return {
             "status": "failed",
-            "job_id": str(job_id) if job_id else None,
+            "job_id": str(job_id),
             "error": _safe_error(exc),
         }
+
+
+async def _claim_job() -> uuid.UUID | None:
+    async with AsyncSessionFactory.begin() as session:
+        job = await ResearchRepository(session).next_pending_job()
+        if job is None:
+            return None
+        job.status = "processing"
+        job.started_at = utc_now()
+        job.completed_at = None
+        job.error_message = ""
+        return job.id
+
+
+async def _mark_failed(job_id: uuid.UUID, exc: Exception) -> None:
+    async with AsyncSessionFactory.begin() as session:
+        job = await session.get(IngestionJob, job_id)
+        if job is None or job.status in {"completed", "duplicate"}:
+            return
+        job.status = "failed"
+        job.retry_count += 1
+        job.completed_at = utc_now()
+        job.retention_until = datetime.now(UTC) + timedelta(
+            days=max(0, settings.RAG_FAILURE_SOURCE_RETENTION_DAYS)
+        )
+        job.error_message = _safe_error(exc)
+
+
+async def _apply_success_retention(job_id: uuid.UUID) -> None:
+    if settings.RAG_SUCCESS_SOURCE_RETENTION_DAYS > 0:
+        return
+    resources = await get_resources()
+    async with AsyncSessionFactory() as session:
+        job = await session.get(IngestionJob, job_id)
+        storage_uri = job.storage_uri if job is not None else ""
+    if storage_uri:
+        await resources.object_storage.delete(storage_uri)
+
+
+def _job_payload(job: IngestionJob) -> dict[str, object]:
+    return {
+        "status": job.status,
+        "job_id": str(job.id),
+        "document_id": str(job.document_id) if job.document_id else None,
+        "version_id": str(job.version_id) if job.version_id else None,
+        "chunks_created": job.chunks_created,
+    }
 
 
 def _safe_error(exc: Exception) -> str:

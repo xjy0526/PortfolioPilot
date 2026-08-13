@@ -4,7 +4,15 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,6 +45,9 @@ class Portfolio(UUIDTimestampMixin, Base):
         nullable=False,
         index=True,
     )
+    tenant_id: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="default", index=True
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     base_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="CNY")
@@ -58,3 +69,31 @@ class Portfolio(UUIDTimestampMixin, Base):
         default=dict,
         server_default=text("'{}'::jsonb"),
     )
+
+
+class PortfolioMembership(UUIDTimestampMixin, Base):
+    """Server-authorized access grant for one external identity and portfolio."""
+
+    __tablename__ = "portfolio_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "portfolio_id",
+            "user_id",
+            name="uq_portfolio_memberships_portfolio_user",
+        ),
+        CheckConstraint(
+            "role IN ('viewer','analyst','operator','admin')",
+            name="portfolio_membership_role_allowed",
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="viewer")
+    can_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_write: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

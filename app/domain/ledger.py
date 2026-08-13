@@ -14,6 +14,8 @@ class LedgerPosition:
     average_cost_native: Decimal
     native_currency: str
     realized_pnl_native: Decimal = Decimal("0")
+    cost_basis_base_at_trade: Decimal | None = None
+    historical_fx_complete: bool = True
 
     @property
     def cost_basis_native(self) -> Decimal:

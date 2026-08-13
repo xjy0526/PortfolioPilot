@@ -142,16 +142,10 @@ def _normalize_reference(value: Any) -> dict[str, str]:
 
 def _validate_tickers(output: FinancialAnalysisOutput, summary: dict[str, Any]) -> None:
     allowed = {str(value).upper() for value in (summary.get("asset_metrics") or {}).keys()}
-    generated = {
-        item.ticker
-        for item in [
-            *output.asset_level_comments,
-            *output.research_observations,
-            *output.review_priorities,
-            *output.rebalance_suggestions,
-        ]
-        if item.ticker
-    }
+    generated = {item.ticker for item in output.asset_level_comments if item.ticker}
+    generated.update(item.ticker for item in output.research_observations if item.ticker)
+    generated.update(item.ticker for item in output.review_priorities if item.ticker)
+    generated.update(item.ticker for item in output.rebalance_suggestions if item.ticker)
     unknown = sorted(generated - allowed)
     if unknown:
         raise ValueError(f"Output contains tickers outside current portfolio: {', '.join(unknown)}")

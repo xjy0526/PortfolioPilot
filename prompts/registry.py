@@ -229,6 +229,7 @@ class PromptRegistry:
         business_scene: str = "",
         input_hash: str = "",
         response_text: str = "",
+        response_payload: dict[str, Any] | None = None,
         data_as_of: datetime | None = None,
         retrieved_chunk_ids: list[str] | None = None,
         retrieved_document_ids: list[str] | None = None,
@@ -255,39 +256,51 @@ class PromptRegistry:
             await self.repository.get_version(template.id, prompt_version) if template else None
         )
         workflow_id = _optional_uuid(run_id)
-        self.session.add(
-            LLMCallTrace(
-                trace_key=trace_id,
-                workflow_run_id=workflow_id,
-                prompt_version_id=version_row.id if version_row else None,
-                user_id=user_id or "anonymous",
-                business_scene=business_scene or "unknown",
-                provider=provider,
-                model=model,
-                model_parameters=model_parameters or {},
-                request_hash=input_hash or hashlib.sha256(b"").hexdigest(),
-                response_hash=hashlib.sha256((response_text or validation_error or status).encode()).hexdigest(),
-                status=status,
-                duration_ms=max(0, round(latency_ms)),
-                data_as_of=data_as_of,
-                code_version=settings.CODE_VERSION,
-                provider_usage=provider_usage or {},
-                usage_source="provider" if usage_source == "provider" else "estimated",
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost_amount=Decimal(str(cost_amount)) if cost_amount is not None else None,
-                cost_currency=_currency_code(cost_currency),
-                cost_source=cost_source,
-                evidence_ids=retrieved_chunk_ids or [],
-                retrieved_document_ids=retrieved_document_ids or [],
-                tool_calls=tool_calls or [],
-                output_schema_valid=output_schema_valid,
-                fallback_used=fallback_used,
-                review_decision=review_decision,
-                review_feedback=review_feedback,
-                error_message=(validation_error or error_type)[:2000],
-            )
+        trace = await self.session.scalar(
+            select(LLMCallTrace).where(LLMCallTrace.trace_key == trace_id)
         )
+        values = {
+            "workflow_run_id": workflow_id,
+            "prompt_version_id": version_row.id if version_row else None,
+            "user_id": user_id or "anonymous",
+            "business_scene": business_scene or "unknown",
+            "provider": provider,
+            "model": model,
+            "model_parameters": model_parameters or {},
+            "request_hash": input_hash or hashlib.sha256(b"").hexdigest(),
+            "response_hash": hashlib.sha256(
+                (response_text or validation_error or status).encode()
+            ).hexdigest(),
+            "response_payload": response_payload or {},
+            "status": status,
+            "duration_ms": max(0, round(latency_ms)),
+            "data_as_of": data_as_of,
+            "code_version": settings.CODE_VERSION,
+            "provider_usage": provider_usage or {},
+            "usage_source": "provider" if usage_source == "provider" else "estimated",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_amount": Decimal(str(cost_amount)) if cost_amount is not None else None,
+            "cost_currency": _currency_code(cost_currency),
+            "cost_source": cost_source,
+            "evidence_ids": retrieved_chunk_ids or [],
+            "retrieved_document_ids": retrieved_document_ids or [],
+            "tool_calls": tool_calls or [],
+            "output_schema_valid": output_schema_valid,
+            "fallback_used": fallback_used,
+            "review_decision": review_decision,
+            "review_feedback": review_feedback,
+            "error_message": (validation_error or error_type)[:2000],
+        }
+        if trace is None:
+            trace = LLMCallTrace(
+                trace_key=trace_id,
+                **values,
+            )
+            self.session.add(trace)
+        elif trace.status != "success":
+            for name, value in values.items():
+                setattr(trace, name, value)
         await self.session.flush()
 
     async def mark_trace_fallback(self, trace_id: str) -> None:

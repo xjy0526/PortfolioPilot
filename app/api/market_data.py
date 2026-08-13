@@ -5,11 +5,12 @@ import logging
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.market_data_sync import configured_provider_names
 from app.workers.jobs import run_market_sync_job
+from app.core.principal import Principal, get_principal, require_writable
 
 router = APIRouter(prefix="/api/market-data", tags=["market-data"])
 logger = logging.getLogger(__name__)
@@ -23,7 +24,12 @@ class MarketDataSyncRequest(BaseModel):
 
 
 @router.post("/sync")
-async def sync_market_data(request: MarketDataSyncRequest) -> dict[str, object]:
+async def sync_market_data(
+    request: MarketDataSyncRequest,
+    principal: Principal = Depends(get_principal),
+) -> dict[str, object]:
+    require_writable()
+    principal.require_role("market_data_admin", "platform_admin")
     try:
         run = await run_market_sync_job(
             start=request.start,

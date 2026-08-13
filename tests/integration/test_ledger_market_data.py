@@ -3,15 +3,24 @@ from __future__ import annotations
 
 import os
 import uuid
+from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.api.portfolios import import_transactions
+from app.core.principal import Principal, require_portfolio_access
 from app.db.models import FxRate, Portfolio, PriceBar, Security, Transaction, User
-from app.db.repositories import PortfolioRepository, SecurityRepository, UserRepository
+from app.db.repositories import (
+    PortfolioMembershipRepository,
+    PortfolioRepository,
+    SecurityRepository,
+    UserRepository,
+)
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from app.services.portfolio_valuation import PortfolioValuationService
 from app.services.transaction_import import TransactionCsvImporter
@@ -148,6 +157,15 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                         FxRate(
                             base_currency="USD",
                             quote_currency="CNY",
+                            rate_date=(AS_OF - timedelta(days=4)).date(),
+                            source=fx_source,
+                            rate=Decimal("6.5"),
+                            data_as_of=AS_OF - timedelta(days=3),
+                            raw_payload={"purpose": "trade_date_cost_basis"},
+                        ),
+                        FxRate(
+                            base_currency="USD",
+                            quote_currency="CNY",
                             rate_date=(AS_OF - timedelta(days=2)).date(),
                             source=fx_source,
                             rate=Decimal("7"),
@@ -184,8 +202,15 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                 assert position.native_price == Decimal("120")
                 assert position.valuation_fx_rate == Decimal("7")
                 assert position.market_value_base == Decimal("8400")
+                assert position.cost_basis_native == Decimal("1000")
+                assert position.cost_basis_base_at_trade == Decimal("6500")
+                assert position.local_price_pnl == Decimal("1400")
+                assert position.fx_pnl == Decimal("500")
+                assert position.total_pnl_base == Decimal("1900")
                 assert position.price_bar_id is not None
                 assert position.fx_rate_id is not None
+                assert first.valuation.valuation_status == "complete"
+                assert first.valuation.coverage_ratio == Decimal("1")
 
                 legacy = await LegacyPortfolioAdapter(session).load(
                     portfolio_id=portfolio.id, as_of=AS_OF
@@ -234,6 +259,7 @@ async def test_legacy_csv_import_is_atomic_idempotent_and_marks_incomplete_histo
                 assert first.accepted_rows == 2
                 assert first.history_completeness == "opening_balance_only"
                 assert replay.idempotent_replay is True
+                assert replay.status == "duplicate"
                 assert replay.import_batch_id == first.import_batch_id
                 assert len(rows) == 2
                 assert {row.transaction_type for row in rows} == {"opening_balance", "deposit"}
@@ -296,6 +322,9 @@ async def test_missing_price_is_warning_and_invalid_csv_batch_rolls_back() -> No
                 )
                 assert valued.positions == ()
                 assert "missing_price:MSFT" in valued.valuation.warnings
+                assert valued.valuation.valuation_status == "partial"
+                assert valued.valuation.total_market_value is None
+                assert valued.valuation.priced_market_value == Decimal("-100")
 
                 invalid_csv = b"\n".join(
                     [
@@ -319,6 +348,7 @@ async def test_missing_price_is_warning_and_invalid_csv_batch_rolls_back() -> No
                 )
                 assert imported.accepted_rows == 0
                 assert imported.rejected_rows == 2
+                assert imported.status == "failed"
                 assert imported.errors[0]["line"] == 0
                 assert stored == []
 
@@ -363,3 +393,99 @@ async def test_committed_ledger_survives_engine_disposal_and_reconnection() -> N
             await session.commit()
     finally:
         await reconnected.dispose()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_memberships_prevent_cross_portfolio_reads_and_imports() -> None:
+    engine, factory = await _factory()
+    suffix = uuid.uuid4().hex
+    principal_a = Principal(
+        f"principal-a-{suffix}",
+        frozenset({"public"}),
+        authenticated=True,
+        tenant_id="tenant-a",
+        roles=frozenset({"operator"}),
+    )
+    platform_admin = Principal(
+        f"platform-admin-{suffix}",
+        frozenset({"public"}),
+        authenticated=True,
+        tenant_id="another-tenant",
+        roles=frozenset({"platform_admin"}),
+    )
+    try:
+        async with factory() as session:
+            async with session.begin():
+                user_a = await UserRepository(session).get_or_create(
+                    email=f"membership-a-{suffix}@example.invalid"
+                )
+                user_b = await UserRepository(session).get_or_create(
+                    email=f"membership-b-{suffix}@example.invalid"
+                )
+                portfolio_a = await PortfolioRepository(session).get_or_create(
+                    user_id=user_a.id,
+                    name="Membership A",
+                    base_currency="CNY",
+                )
+                portfolio_b = await PortfolioRepository(session).get_or_create(
+                    user_id=user_b.id,
+                    name="Membership B",
+                    base_currency="USD",
+                )
+                portfolio_a.tenant_id = "tenant-a"
+                portfolio_b.tenant_id = "tenant-a"
+                await session.flush()
+                await PortfolioMembershipRepository(session).grant(
+                    portfolio_id=portfolio_a.id,
+                    user_id=principal_a.user_id,
+                    role="operator",
+                    can_read=True,
+                    can_write=True,
+                    can_admin=False,
+                )
+
+                accessible = await PortfolioRepository(session).list_accessible(
+                    user_id=principal_a.user_id,
+                    tenant_id=principal_a.tenant_id,
+                )
+                assert [item.id for item in accessible] == [portfolio_a.id]
+                assert (
+                    await require_portfolio_access(
+                        session, principal_a, portfolio_a.id, "read"
+                    )
+                ).id == portfolio_a.id
+
+                with pytest.raises(HTTPException) as hidden_read:
+                    await require_portfolio_access(
+                        session, principal_a, portfolio_b.id, "read"
+                    )
+                assert hidden_read.value.status_code == 404
+
+                upload = UploadFile(
+                    file=BytesIO(
+                        b"external_id,transaction_type,ticker,exchange,trade_date,"
+                        b"settlement_date,quantity,price,fees,taxes,currency,note\n"
+                    ),
+                    filename="unauthorized.csv",
+                )
+                with pytest.raises(HTTPException) as hidden_import:
+                    await import_transactions(
+                        portfolio_b.id,
+                        file=upload,
+                        source="csv_upload",
+                        principal=principal_a,
+                        session=session,
+                    )
+                assert hidden_import.value.status_code == 404
+
+                assert (
+                    await require_portfolio_access(
+                        session, platform_admin, portfolio_b.id, "read"
+                    )
+                ).id == portfolio_b.id
+
+            await session.delete(user_a)
+            await session.delete(user_b)
+            await session.commit()
+    finally:
+        await engine.dispose()

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.principal import Principal
 from app.db.models import Portfolio, PortfolioValuationSnapshot, Security
 from app.db.repositories import (
     PortfolioRepository,
@@ -37,8 +38,9 @@ class LegacyPortfolioAdapter:
         *,
         portfolio_id: uuid.UUID | None = None,
         as_of: datetime | None = None,
+        principal: Principal | None = None,
     ) -> LegacyPortfolioContext | None:
-        portfolio = await self._resolve_portfolio(portfolio_id)
+        portfolio = await self._resolve_portfolio(portfolio_id, principal=principal)
         if portfolio is None:
             return None
         valuation = await self.valuations.latest_at_or_before(
@@ -47,6 +49,8 @@ class LegacyPortfolioAdapter:
             preferred_source="ledger_rebuild",
         )
         if valuation is None:
+            return None
+        if valuation.valuation_status != "complete" or valuation.total_market_value is None:
             return None
         rows = await self.positions.list_at(valuation.id)
         stocks: list[StockFullData] = []
@@ -83,7 +87,7 @@ class LegacyPortfolioAdapter:
                     ),
                 )
             )
-        if valuation.cash_value != 0:
+        if valuation.cash_value is not None and valuation.cash_value != 0:
             stocks.append(
                 StockFullData(
                     position=PortfolioPosition(
@@ -102,7 +106,7 @@ class LegacyPortfolioAdapter:
                 )
             )
         total_value = float(valuation.total_market_value)
-        total_cost = float(valuation.total_cost_basis + valuation.cash_value)
+        total_cost = float((valuation.total_cost_basis or 0) + (valuation.cash_value or 0))
         total_pnl = total_value - total_cost
         summary = PortfolioSummary(
             total_value=total_value,
@@ -117,8 +121,21 @@ class LegacyPortfolioAdapter:
         )
         return LegacyPortfolioContext(portfolio, valuation, summary)
 
-    async def _resolve_portfolio(self, portfolio_id: uuid.UUID | None) -> Portfolio | None:
+    async def _resolve_portfolio(
+        self,
+        portfolio_id: uuid.UUID | None,
+        *,
+        principal: Principal | None,
+    ) -> Portfolio | None:
         if portfolio_id is not None:
+            if principal is not None:
+                return await self.portfolios.get_accessible(
+                    portfolio_id=portfolio_id,
+                    user_id=principal.user_id,
+                    tenant_id=principal.tenant_id,
+                    access="read",
+                    platform_admin=principal.is_platform_admin,
+                )
             return await self.portfolios.get(portfolio_id)
         if settings.DEFAULT_PORTFOLIO_ID:
             try:
@@ -126,9 +143,25 @@ class LegacyPortfolioAdapter:
             except ValueError:
                 configured_id = None
             if configured_id is not None:
-                configured = await self.portfolios.get(configured_id)
+                if principal is None:
+                    configured = await self.portfolios.get(configured_id)
+                else:
+                    configured = await self.portfolios.get_accessible(
+                        portfolio_id=configured_id,
+                        user_id=principal.user_id,
+                        tenant_id=principal.tenant_id,
+                        access="read",
+                        platform_admin=principal.is_platform_admin,
+                    )
                 if configured is not None:
                     return configured
+        if principal is not None:
+            portfolios = await self.portfolios.list_accessible(
+                user_id=principal.user_id,
+                tenant_id=principal.tenant_id,
+                platform_admin=principal.is_platform_admin,
+            )
+            return portfolios[0] if portfolios else None
         portfolios = await self.portfolios.list_active()
         return portfolios[0] if portfolios else None
 

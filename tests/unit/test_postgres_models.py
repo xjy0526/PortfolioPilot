@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_TABLES = {
     "users",
     "portfolios",
+    "portfolio_memberships",
     "securities",
     "provider_symbols",
     "transactions",
@@ -70,9 +71,12 @@ def test_financial_columns_are_numeric_and_never_float():
         "position_snapshots": {
             "quantity", "average_cost", "native_price", "valuation_fx_rate",
             "market_value_base", "cost_basis_base", "unrealized_pnl_base", "weight",
+            "cost_basis_native", "cost_basis_base_at_trade", "local_price_pnl",
+            "fx_pnl", "total_pnl_base",
         },
         "portfolio_valuation_snapshots": {
-            "total_market_value", "total_cost_basis", "cash_value", "unrealized_pnl",
+            "total_market_value", "priced_market_value", "total_cost_basis",
+            "cash_value", "unrealized_pnl", "coverage_ratio",
         },
         "backtest_rebalance_snapshots": {"turnover", "executed_turnover"},
         "backtest_strategy_results": {"turnover", "total_costs"},
@@ -98,6 +102,7 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("portfolio_valuation_snapshots", "cash_balances"),
         ("portfolio_valuation_snapshots", "warnings"),
         ("portfolio_valuation_snapshots", "config_snapshot"),
+        ("portfolio_valuation_snapshots", "unpriced_assets"),
         ("sync_runs", "config_snapshot"),
         ("sync_runs", "result_snapshot"),
         ("risk_runs", "config_snapshot"),
@@ -125,6 +130,7 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("llm_call_traces", "provider_usage"),
         ("llm_call_traces", "model_parameters"),
         ("llm_call_traces", "tool_calls"),
+        ("llm_call_traces", "response_payload"),
         ("workflow_runs", "context_json"),
         ("workflow_steps", "input_summary"),
         ("workflow_steps", "output_summary"),
@@ -147,6 +153,11 @@ def test_required_idempotency_constraints_are_present():
         constraint.name for constraint in Base.metadata.tables["workflow_runs"].constraints
     }
     assert "uq_workflow_runs_user_scene_key" in workflow_constraints
+    membership_constraints = {
+        constraint.name
+        for constraint in Base.metadata.tables["portfolio_memberships"].constraints
+    }
+    assert "uq_portfolio_memberships_portfolio_user" in membership_constraints
     trace_columns = Base.metadata.tables["llm_call_traces"].c
     for name in (
         "model_parameters",

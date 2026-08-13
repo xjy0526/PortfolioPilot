@@ -16,7 +16,7 @@
 
 - 当前支持显式可用性矩阵，但尚未集成完整交易所交易日历和跨市场统一可交易时点；
 - 尚无生产级公司行动、退市和停牌数据库；
-- 输入文件和报告尚未进入不可变对象存储；
+- 研究文档源文件已进入 Local/S3-compatible 对象存储；回测输入文件和已发布报告尚未进入不可变对象存储；
 - LLM 已退出权重计算；历史 Prompt、模型和 evidence snapshot 仍需在解释评测中持续采集；
 - 示例 CSV 只适合流程验证，不能代表可交易回测结果。
 
@@ -36,7 +36,8 @@ yfinance 是非授权的公开数据接口适配，不提供生产 SLA。它可�
 | LLM 输出校验 | JSON/Schema 校验重试后仍失败 | 返回安全模板，记录失败 Trace 和 fallback 状态 |
 | 回测行情 | 解析后没有可用真实价格 CSV | 生成固定种子 mock 行情，`mock_price_data_used=true`、`data_source=mock_price_data` |
 | 完整模型评测 | 显式使用 `--mode live_model` 且缺少 Qwen Key | 直接失败，不回退 mock，也不生成伪 live 报告 |
-| RAG embedding | sentence-transformers 不可用 | 使用确定性 hashing embedding，并以配置维度持久化到 pgvector；报告保留模型名 |
+| RAG embedding（development/test） | sentence-transformers 不可用且 `RAG_ALLOW_HASHING_FALLBACK=true` | 使用明确标记的非语义 hashing provider；不得把结果宣传为语义检索效果 |
+| RAG embedding（production） | sentence-transformers 模型无法从镜像缓存加载 | 禁止 hashing fallback，`/health/ready` 返回 503，知识 Worker 明确失败 |
 | RAG 数据库 | PostgreSQL/pgvector 不可用 | 核心知识 API 和 Workflow 明确失败；不会静默切换到本地向量事实源 |
 | RAG evidence | 配置目录无文档时存在仓库示例文档 | 仅显式离线工具可读取 `data/research_docs/`，并标记 `legacy_local_fallback`；核心 API 不自动导入 |
 | RAG evidence | 没有任何可用或有权限文档 | 返回空 citations 和 `evidence_insufficient=true` |
@@ -53,10 +54,13 @@ Polymarket、Telegram、Parqet 和 Shadow Agent 分别由 `ENABLE_POLYMARKET`、
 
 ## 6. 其他工程限制
 
-- 当前认证仍是可选 Basic Auth，尚未接入 OIDC、RBAC/ABAC 和个人审计身份。
+- 当前认证仍是可选 Basic Auth；已实现服务端 Principal、tenant、role、permission group 和 portfolio membership 授权，但尚未接入 OIDC/SAML 与完整机构身份生命周期。
 - development 可使用 `LOCAL_PRINCIPAL_*` 作为显式本地身份；其他环境未认证请求只具 `anonymous/public` 权限。
 - 原生前端与部分根目录旧接口仍依赖全局状态；核心组合路径已迁移，但完整模块归档尚未完成。
 - Tushare 与 yfinance 当前按 Provider 逐证券串行获取，尚未实现生产级限流、断点续传、交易所级增量游标和授权行情 SLA。
 - Corporate action 已有 Provider 查询契约，但尚未独立落库和自动生成账本事件；当前复权主要通过 `adjusted_close` 与 `adjustment_factor` 保存 lineage。
 - 当前本地虚拟环境可能不是 Python 3.12；CI 和 Docker 使用 Python 3.12 作为验收环境。
+- Mypy 对 PostgreSQL/application core 采用渐进检查边界；旧 dashboard、fetcher、legacy route 和其测试仍有待逐步纳入全仓严格类型检查。
+- `legacy-file://` 仅是旧 IngestionJob 迁移后的 lineage 标记，无法恢复已经缺失的原始上传文件；这类 job 需要重新上传或显式归档。
+- 真实语义检索 Gold Test 目前是 40 条自行构造的中英文培训夹具；它验证回归边界，不代表线上语料或机构检索质量。
 - 示例持仓、价格和研究文档均为公开或模拟内容，不代表真实持仓或投资观点。

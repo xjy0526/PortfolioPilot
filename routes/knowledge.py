@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
 from app.core.principal import Principal, get_principal
+from app.core.principal import require_writable
 from app.db.repositories.governance import ResearchRepository
 from app.services.research_knowledge import KnowledgeIngestionError, PostgresKnowledgeService
 from config import settings
@@ -27,6 +28,7 @@ async def create_knowledge_document(
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
+        require_writable()
         parsed_metadata = json.loads(metadata)
         if not isinstance(parsed_metadata, dict):
             raise ValueError("metadata must be a JSON object")
@@ -61,9 +63,9 @@ async def list_knowledge_documents(
 ):
     documents = await ResearchRepository(session).list_documents(
         principal.permission_groups,
-        is_admin=principal.has_group("knowledge_admin"),
+        is_admin=principal.has_role("knowledge_admin") or principal.is_platform_admin,
     )
-    include_drafts = principal.has_group("knowledge_admin")
+    include_drafts = principal.has_role("knowledge_admin") or principal.is_platform_admin
     payload = [_document_payload(item, include_drafts=include_drafts) for item in documents]
     return {"count": len(payload), "documents": payload}
 
@@ -78,11 +80,11 @@ async def get_knowledge_document(
     document = await repository.get_document(
         document_id,
         principal.permission_groups,
-        is_admin=principal.has_group("knowledge_admin"),
+        is_admin=principal.has_role("knowledge_admin") or principal.is_platform_admin,
     )
     if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
-    include_drafts = principal.has_group("knowledge_admin")
+    include_drafts = principal.has_role("knowledge_admin") or principal.is_platform_admin
     versions = await repository.list_versions(document_id)
     if not include_drafts:
         versions = [item for item in versions if item.version == document.published_version]
@@ -112,7 +114,8 @@ async def publish_knowledge_document(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     document = await ResearchRepository(session).set_published(document_id)
     if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -125,7 +128,8 @@ async def deactivate_knowledge_document(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     document = await ResearchRepository(session).deactivate(document_id)
     if document is None:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -139,7 +143,8 @@ async def get_ingestion_job(
     session: AsyncSession = Depends(get_db_session),
 ):
     job = await ResearchRepository(session).get_job(job_id)
-    if job is None or (job.user_id != principal.user_id and not principal.has_group("knowledge_admin")):
+    is_admin = principal.has_role("knowledge_admin") or principal.is_platform_admin
+    if job is None or (job.user_id != principal.user_id and not is_admin):
         return JSONResponse({"error": "Ingestion job not found"}, status_code=404)
     return {
         "job_id": str(job.id),
@@ -148,6 +153,9 @@ async def get_ingestion_job(
         "status": job.status,
         "filename": job.filename,
         "checksum": job.checksum,
+        "content_length": job.content_length,
+        "content_type": job.content_type,
+        "retention_until": job.retention_until.isoformat() if job.retention_until else None,
         "code_version": job.code_version,
         "chunks_created": job.chunks_created,
         "retry_count": job.retry_count,

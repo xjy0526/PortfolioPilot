@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 from app.db.models import PortfolioValuationSnapshot, Transaction
 from app.db.repositories import (
     PortfolioRepository,
+    PortfolioMembershipRepository,
     PortfolioValuationRepository,
     SecurityRepository,
     TransactionRepository,
@@ -120,6 +121,14 @@ async def migrate(
                 base_currency=base_currency,
                 description="Compatibility import; not a live source of truth.",
                 portfolio_settings={"source": "sqlite", "migration_version": 1},
+            )
+            await PortfolioMembershipRepository(session).grant(
+                portfolio_id=portfolio.id,
+                user_id=settings.LOCAL_PRINCIPAL_USER,
+                role="admin",
+                can_read=True,
+                can_write=True,
+                can_admin=True,
             )
 
             snapshot_repository = PortfolioValuationRepository(session)

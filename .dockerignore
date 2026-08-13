@@ -4,15 +4,21 @@
 
 .git
 .gitignore
+.mypy_cache
 .pytest_cache
+.ruff_cache
 __pycache__
 *.pyc
 *.pyo
 *.pyd
+.coverage
+coverage.xml
+htmlcov
 
 venv
 .venv
 cache
+data/ingestion
 Parqet
 portfolio.csv
 

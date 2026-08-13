@@ -195,7 +195,7 @@ def build_portfolio_risk_summary(
     quality_input = dict(market_data_quality or {})
     stale_tickers = {str(ticker).upper() for ticker in quality_input.get("stale_tickers", [])}
 
-    asset_metrics: dict[str, dict[str, float | str]] = {}
+    asset_metrics: dict[str, dict[str, Any]] = {}
     for item in non_empty_positions:
         ticker = _ticker(item)
         if not ticker:
@@ -301,7 +301,7 @@ def _time_series_metrics(
         return ({name: None for name in metric_names}, {name: "insufficient_data" for name in metric_names})
 
     status = "stale" if stale else "valid"
-    values = {
+    values: dict[str, float | None] = {
         "period_return": calculate_cumulative_return(clean),
         "annual_return": calculate_annual_return(clean),
         "annual_volatility": calculate_annualized_volatility(clean),

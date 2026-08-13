@@ -95,9 +95,14 @@ def test_allowlist_never_contains_shadow_trading_tools():
 def test_workflow_identity_is_not_read_from_request_helpers():
     from app.core.principal import Principal
 
-    principal = Principal("server-user", frozenset({"public", "research_reviewer"}))
+    principal = Principal(
+        "server-user",
+        frozenset({"public"}),
+        roles=frozenset({"research_reviewer"}),
+    )
     assert principal.user_id != _db_request()["user_id"]
-    assert principal.has_group("research_reviewer")
+    assert principal.has_role("research_reviewer")
+    assert not principal.has_group("research_reviewer")
 
 
 def test_workflow_trace_cost_summary_counts_retries_and_estimates():

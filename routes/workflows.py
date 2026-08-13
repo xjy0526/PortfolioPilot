@@ -4,14 +4,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
-from app.core.principal import Principal, get_principal
-from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
-from routes.research import _build_portfolio_risk_summary
+from app.core.principal import (
+    Principal,
+    get_principal,
+    require_portfolio_access,
+    require_tenant_access,
+    require_writable,
+)
 from workflows import ResearchReportWorkflow
 
 router = APIRouter()
@@ -24,33 +28,19 @@ async def start_research_report(
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
+        require_writable()
+        principal.require_authenticated()
         raw_portfolio_id = payload.get("portfolio_id")
-        portfolio_id = uuid.UUID(str(raw_portfolio_id)) if raw_portfolio_id else None
-        context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
-        if context is None or not context.summary.stocks:
-            return JSONResponse(
-                {"error": "No PostgreSQL valuation snapshot available"}, status_code=503
-            )
-        risk_summary = await _build_portfolio_risk_summary(
-            context.summary,
-            session=session,
-            as_of=context.valuation.as_of,
-        )
-        workflow_payload = {
-            **payload,
-            "_db_portfolio": {
-                "portfolio_id": str(context.portfolio.id),
-                "valuation_snapshot_id": str(context.valuation.id),
-                "valuation_input_hash": context.valuation.input_hash,
-                "as_of": context.valuation.as_of.isoformat(),
-                "tickers": [item.position.ticker for item in context.summary.stocks],
-                "risk_summary": risk_summary,
-            },
-        }
+        if not raw_portfolio_id:
+            return JSONResponse({"error": "portfolio_id is required"}, status_code=422)
+        portfolio_id = uuid.UUID(str(raw_portfolio_id))
+        await require_portfolio_access(session, principal, portfolio_id, "read")
         result = await ResearchReportWorkflow(session).start(
-            workflow_payload, principal=principal
+            {**payload, "portfolio_id": str(portfolio_id)}, principal=principal
         )
-        return JSONResponse(result, status_code=200 if result.get("idempotent_replay") else 201)
+        return JSONResponse(result, status_code=202)
+    except HTTPException:
+        raise
     except Exception as exc:
         return JSONResponse({"error": str(exc), "error_type": type(exc).__name__}, status_code=422)
 
@@ -62,8 +52,15 @@ async def get_workflow(
     session: AsyncSession = Depends(get_db_session),
 ):
     result = await ResearchReportWorkflow(session).get_run(run_id)
+    if result is not None and result["user_id"] != principal.user_id:
+        require_tenant_access(principal, str(result["tenant_id"]))
     if result is None or (
-        result["user_id"] != principal.user_id and not principal.has_group("research_reviewer")
+        result["user_id"] != principal.user_id
+        and not (
+            principal.has_role("research_reviewer")
+            and principal.tenant_id == result["tenant_id"]
+        )
+        and not principal.is_platform_admin
     ):
         return JSONResponse({"error": "Workflow run not found"}, status_code=404)
     return result
@@ -78,6 +75,7 @@ async def _review(
     session: AsyncSession,
 ):
     try:
+        require_writable()
         result = await ResearchReportWorkflow(session).decide(
             review_id,
             decision,

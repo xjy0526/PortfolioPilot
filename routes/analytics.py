@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from state import portfolio_data
 from config import settings
@@ -488,10 +489,13 @@ async def get_stock_news(ticker: str, limit: int = 5):
 @router.get("/api/risk")
 async def get_risk(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Portfolio-Risikokennzahlen: Beta, VaR, Max Drawdown (gecacht 15min)."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse({"error": "Keine Daten"}, status_code=503)
     summary = context.summary

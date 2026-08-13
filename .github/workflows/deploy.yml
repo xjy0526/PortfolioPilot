@@ -1,22 +1,26 @@
 name: Deploy PortfolioPilot
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION || 'asia-east1' }}
   SERVICE: portfolio-pilot
   ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY || 'portfolio-pilot' }}
+  DATABASE_URL_SECRET: ${{ vars.GCP_DATABASE_URL_SECRET || 'portfoliopilot-database-url' }}
+  QWEN_API_KEY_SECRET: ${{ vars.GCP_QWEN_API_KEY_SECRET || 'portfoliopilot-qwen-api-key' }}
 
 jobs:
   deploy:
     name: Deploy to Cloud Run
     runs-on: ubuntu-latest
     if: >-
-      ${{ vars.GCP_PROJECT_ID != '' &&
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          vars.GCP_PROJECT_ID != '' &&
           vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
           vars.GCP_SERVICE_ACCOUNT != '' }}
     permissions:
@@ -25,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -39,47 +45,73 @@ jobs:
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
       - name: Resolve image URI
-        run: echo "IMAGE_URI=${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE}" >> "$GITHUB_ENV"
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "IMAGE_URI=${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE}" >> "$GITHUB_ENV"
+          echo "DEPLOY_SHA=${DEPLOY_SHA}" >> "$GITHUB_ENV"
 
       - name: Build and push image
         run: |
-          docker build -t "${IMAGE_URI}:${GITHUB_SHA}" -t "${IMAGE_URI}:latest" .
-          docker push "${IMAGE_URI}:${GITHUB_SHA}"
-          docker push "${IMAGE_URI}:latest"
+          docker build -t "${IMAGE_URI}:${DEPLOY_SHA}" .
+          docker push "${IMAGE_URI}:${DEPLOY_SHA}"
 
-      - name: Deploy to Cloud Run
-        env:
-          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DASHBOARD_USER: ${{ secrets.DASHBOARD_USER }}
-          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+      - name: Deploy migration job
         run: |
-          DATABASE_ARGS=()
-          if [[ -n "${DATABASE_URL}" ]]; then
-            DATABASE_ARGS+=(--update-env-vars="DATABASE_URL=${DATABASE_URL}")
-          fi
-          gcloud run deploy "${SERVICE}" \
-            --image="${IMAGE_URI}:${GITHUB_SHA}" \
+          gcloud run jobs deploy "${SERVICE}-migrate" \
+            --image="${IMAGE_URI}:${DEPLOY_SHA}" \
             --region="${REGION}" \
-            --allow-unauthenticated \
-            --memory=1024Mi \
-            --cpu=1 \
-            --cpu-boost \
-            --no-cpu-throttling \
-            --min-instances=0 \
-            --max-instances=1 \
-            --timeout=300 \
-            --update-env-vars="ENVIRONMENT=production,AI_PROVIDER=qwen,DISPLAY_TIMEZONE=Asia/Shanghai" \
-            --update-env-vars="ENABLE_POLYMARKET=false,ENABLE_TELEGRAM=false,ENABLE_PARQET=false,ENABLE_SHADOW_AGENT=false" \
-            --update-env-vars="QWEN_API_KEY=${QWEN_API_KEY},FMP_API_KEY=${FMP_API_KEY}" \
-            --update-env-vars="DASHBOARD_USER=${DASHBOARD_USER},DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}" \
-            "${DATABASE_ARGS[@]}" \
+            --command=alembic \
+            --args=upgrade,head \
+            --set-env-vars="ENVIRONMENT=production,READ_ONLY_DEMO=true,RAG_ALLOW_HASHING_FALLBACK=false" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest" \
+            --max-retries=0 \
+            --task-timeout=600s \
             --quiet
 
-      - name: Show service URL
+      - name: Run migrations
+        run: |
+          gcloud run jobs execute "${SERVICE}-migrate" \
+            --region="${REGION}" \
+            --wait \
+            --quiet
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image="${IMAGE_URI}:${DEPLOY_SHA}" \
+            --region="${REGION}" \
+            --allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=1 \
+            --cpu-boost \
+            --min-instances=0 \
+            --max-instances=3 \
+            --timeout=300 \
+            --update-env-vars="ENVIRONMENT=production,READ_ONLY_DEMO=true,ALLOW_RUNTIME_SECRET_CONFIGURATION=false,ALLOW_DEV_IDENTITY_HEADERS=false" \
+            --update-env-vars="AI_PROVIDER=qwen,DISPLAY_TIMEZONE=Asia/Shanghai,EMBEDDING_PROVIDER=sentence_transformers,RAG_ALLOW_HASHING_FALLBACK=false" \
+            --update-env-vars="ENABLE_POLYMARKET=false,ENABLE_TELEGRAM=false,ENABLE_PARQET=false,ENABLE_SHADOW_AGENT=false" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest,QWEN_API_KEY=${QWEN_API_KEY_SECRET}:latest" \
+            --quiet
+
+      - name: Readiness and read-only smoke test
         run: |
           URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --format='value(status.url)')
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "${URL}/health/ready" > /tmp/readiness.json; then
+              break
+            fi
+            if [[ "${attempt}" == "30" ]]; then
+              cat /tmp/readiness.json || true
+              exit 1
+            fi
+            sleep 10
+          done
+          STATUS=$(curl --silent --output /tmp/read-only-smoke.json --write-out '%{http_code}' \
+            -X POST "${URL}/api/market-data/sync" \
+            -H 'Content-Type: application/json' \
+            -d '{}')
+          test "${STATUS}" = "403"
           echo "### PortfolioPilot deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "**URL:** ${URL}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Image:** ${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** ${IMAGE_URI}:${DEPLOY_SHA}" >> "$GITHUB_STEP_SUMMARY"

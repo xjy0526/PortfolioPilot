@@ -10,6 +10,15 @@ select = ["E9", "F63", "F7", "F82"]
 
 [tool.mypy]
 python_version = "3.12"
+# ``mypy .`` is the canonical command. This explicit migration boundary keeps
+# the new PostgreSQL/application core strict while the legacy dashboard,
+# fetchers, and their tests are converted incrementally.
+exclude = [
+    "^(tests|analytics|backtest|engine|evaluation|fetchers|portfolio_optimizer|prompts|rag|routes)/",
+    "^services/(?!llm_client\\.py$|market_data/postgres_provider\\.py$)",
+    "^scripts/(?!bootstrap_portfolio\\.py$)",
+    "^(cache_manager|config|database|logging_config|main|models|run_job|state)\\.py$",
+]
 files = [
     "services/llm_client.py",
     "services/market_data/postgres_provider.py",

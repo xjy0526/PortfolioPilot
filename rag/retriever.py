@@ -21,6 +21,11 @@ from rag.models import PermissionContext
 import numpy as np
 
 from config import BASE_DIR, settings
+from app.providers.embeddings import (
+    HashingEmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
+    build_embedding_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,39 +46,17 @@ class DocumentChunk:
     chunk_index: int
 
 
-class HashingEmbedder:
-    """Small deterministic embedding fallback with no external dependency."""
-
-    def __init__(self, dimensions: int = 384):
-        self.dimensions = dimensions
-        self.model_name = f"hashing-blake2b-{dimensions}"
-
-    def encode(self, texts: list[str]) -> np.ndarray:
-        vectors = np.zeros((len(texts), self.dimensions), dtype=np.float32)
-        for row, text in enumerate(texts):
-            tokens = re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
-            for token in tokens:
-                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-                bucket = int.from_bytes(digest[:4], "little") % self.dimensions
-                sign = 1.0 if digest[4] % 2 == 0 else -1.0
-                vectors[row, bucket] += sign
-            norm = np.linalg.norm(vectors[row])
-            if norm > 0:
-                vectors[row] /= norm
-        return vectors
+HashingEmbedder = HashingEmbeddingProvider
 
 
-class SentenceTransformerEmbedder:
+class SentenceTransformerEmbedder(SentenceTransformerEmbeddingProvider):
+    """Compatibility wrapper that applies the configured vector dimension."""
+
     def __init__(self, model_name: str):
-        from sentence_transformers import SentenceTransformer
-
-        self.model_name = model_name
-        self.model = SentenceTransformer(model_name)
-
-    def encode(self, texts: list[str]) -> np.ndarray:
-        return np.asarray(
-            self.model.encode(texts, normalize_embeddings=True),
-            dtype=np.float32,
+        super().__init__(
+            model_name,
+            expected_dimensions=settings.RAG_EMBEDDING_DIMENSION,
+            local_files_only=settings.ENVIRONMENT == "production",
         )
 
 
@@ -261,12 +244,7 @@ def _load_chunks(root: Path) -> list[DocumentChunk]:
 
 
 def _build_embedder() -> Embedder:
-    model_name = getattr(settings, "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-    try:
-        return SentenceTransformerEmbedder(model_name)
-    except Exception as exc:
-        logger.debug("sentence-transformers unavailable, using hashing embedder: %s", exc)
-        return HashingEmbedder(dimensions=settings.RAG_EMBEDDING_DIMENSION)
+    return build_embedding_provider(settings)
 
 
 def _read_document(path: Path) -> str:

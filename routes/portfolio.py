@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
+from app.core.principal import Principal, get_principal
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from app.db.models import Security
 from app.db.repositories import PortfolioValuationRepository, TransactionRepository
@@ -39,10 +40,13 @@ async def index():
 @router.get("/api/portfolio")
 async def get_portfolio(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Portfolio-Übersicht mit Scores."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse(
             {
@@ -59,10 +63,13 @@ async def get_portfolio(
 async def get_stock(
     ticker: str,
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Detaildaten einer einzelnen Aktie."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse({"error": "Daten werden geladen..."}, status_code=503)
     summary = context.summary
@@ -101,6 +108,7 @@ async def get_stock_history(ticker: str, period: str = "3month"):
 async def get_portfolio_history(
     days: int = 90,
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Portfolio-Verlauf: Investiertes Kapital + aktueller Wert ueber Zeit.
@@ -117,7 +125,9 @@ async def get_portfolio_history(
         demo_days = 365 if days <= 0 else days
         return get_demo_portfolio_history(days=demo_days)
 
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return []
     since = None if days <= 0 else datetime.now(UTC) - timedelta(days=days)
@@ -128,8 +138,19 @@ async def get_portfolio_history(
     return [
         {
             "date": item.valuation_date.isoformat(),
-            "total_value": float(item.total_market_value),
-            "invested_capital": float(item.total_cost_basis + item.cash_value),
+            "total_value": (
+                float(item.total_market_value)
+                if item.total_market_value is not None
+                else None
+            ),
+            "priced_market_value": float(item.priced_market_value),
+            "invested_capital": (
+                float(item.total_cost_basis + (item.cash_value or 0))
+                if item.total_cost_basis is not None
+                else None
+            ),
+            "valuation_status": item.valuation_status,
+            "coverage_ratio": float(item.coverage_ratio),
             "as_of": item.as_of.isoformat(),
             "input_hash": item.input_hash,
             "source": "postgresql_valuation_snapshot",
@@ -141,10 +162,13 @@ async def get_portfolio_history(
 @router.get("/api/portfolio/activities")
 async def get_portfolio_activities(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Alle Kauf/Verkauf/Dividenden-Transaktionen von Parqet."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return []
     rows = await TransactionRepository(session).list_for_portfolio(context.portfolio.id)
@@ -173,10 +197,13 @@ async def get_portfolio_activities(
 @router.get("/api/rebalancing")
 async def get_rebalancing(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Rebalancing-Empfehlungen."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None or not context.summary.rebalancing:
         return JSONResponse({"error": "Keine Rebalancing-Daten"}, status_code=503)
     return context.summary.rebalancing.model_dump()
@@ -185,10 +212,13 @@ async def get_rebalancing(
 @router.get("/api/tech-picks")
 async def get_tech_picks(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Tägliche Tech-Empfehlungen."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse({"error": "Daten werden geladen..."}, status_code=503)
     return [p.model_dump() for p in context.summary.tech_picks]
@@ -197,10 +227,13 @@ async def get_tech_picks(
 @router.get("/api/sectors")
 async def get_sectors(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Sektor-Allokation."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse({"error": "Daten werden geladen..."}, status_code=503)
     summary = context.summary
@@ -226,10 +259,13 @@ async def get_sectors(
 @router.get("/api/asset-allocation")
 async def get_asset_allocation(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Asset-/Markt-Allokation für globale Aktien, A-Shares und Polymarket."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None:
         return JSONResponse({"error": "Daten werden geladen..."}, status_code=503)
     summary = context.summary
@@ -264,10 +300,13 @@ async def get_asset_allocation(
 @router.get("/api/fear-greed")
 async def get_fear_greed(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Fear & Greed Index."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None or not context.summary.fear_greed:
         return {"value": 50, "label": "Neutral", "source": "N/A"}
     return context.summary.fear_greed.model_dump()

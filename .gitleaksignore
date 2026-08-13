@@ -1,0 +1,5 @@
+# Historical JWT fingerprints from a removed Parqet documentation snapshot.
+# The source file is deleted; these immutable commits require credential
+# revocation rather than weakening current-tree scanning or rewriting history.
+6ddd92ac3055d5fd02c00519325abeaaf6fa91e7:docs/Parqet API/Developer Hub _ Parqet.html:jwt:1
+c36689818a34bb56dd9027f6e71bd3d06fc3abac:docs/Parqet API/Developer Hub _ Parqet.html:jwt:1

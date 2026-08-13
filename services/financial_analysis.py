@@ -9,7 +9,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import LLMCallTrace
 
 from prompts.financial_analysis_models import validate_financial_analysis_output
 from prompts.financial_analysis_prompt import (
@@ -56,6 +59,8 @@ async def analyze_portfolio_with_llm(
     run_id: str = "",
     user_id: str = "",
     business_scene: str = "portfolio_financial_analysis",
+    trace_key: str = "",
+    release_transaction_before_provider: bool = False,
 ) -> dict[str, Any]:
     evidence = evidence or []
     if registry is None:
@@ -92,15 +97,31 @@ async def analyze_portfolio_with_llm(
             prompt_version=prompt_version,
             retry_instruction=retry_instruction,
         )
+        trace_id = (
+            trace_key if attempt == 0 else f"{trace_key}:retry:{attempt}"
+        ) if trace_key else str(uuid.uuid4())
+        trace_id = trace_id[:255]
         request = LLMRequest(
             prompt=prompt,
             system_instruction=SYSTEM_INSTRUCTION,
             model=prompt_version.model,
             temperature=prompt_version.temperature,
             output_schema=prompt_version.output_schema,
+            idempotency_key=trace_id,
         )
-        trace_id = str(uuid.uuid4())
         last_trace_id = trace_id
+        if trace_key:
+            existing_trace = await registry.session.scalar(
+                select(LLMCallTrace).where(LLMCallTrace.trace_key == trace_id)
+            )
+            if (
+                existing_trace is not None
+                and existing_trace.status == "success"
+                and existing_trace.response_payload
+            ):
+                return dict(existing_trace.response_payload)
+        if release_transaction_before_provider and registry.session.in_transaction():
+            await registry.session.commit()
         started = time.perf_counter()
         response = None
         try:
@@ -131,6 +152,14 @@ async def analyze_portfolio_with_llm(
                 if usage_source == "provider"
                 else "estimated_from_text"
             )
+            stored_result = {
+                **result,
+                "source": response.provider,
+                "ai_available": response.provider != "mock",
+                "prompt_id": prompt_version.prompt_id,
+                "prompt_version": prompt_version.version,
+                "llm_trace_id": trace_id,
+            }
             await registry.record_llm_call(
                 trace_id=trace_id,
                 prompt_id=prompt_version.prompt_id,
@@ -143,6 +172,7 @@ async def analyze_portfolio_with_llm(
                 input_hash=input_hash, retrieved_document_ids=document_ids,
                 retrieved_chunk_ids=chunk_ids, latency_ms=latency_ms,
                 response_text=response.text,
+                response_payload=stored_result,
                 data_as_of=data_as_of,
                 input_tokens=input_tokens, output_tokens=output_tokens,
                 cost_amount=cost_amount,
@@ -152,14 +182,9 @@ async def analyze_portfolio_with_llm(
                 cost_source=cost_source,
                 output_schema_valid=True, fallback_used=response.provider == "mock",
             )
-            result.update({
-                "source": response.provider,
-                "ai_available": response.provider != "mock",
-                "prompt_id": prompt_version.prompt_id,
-                "prompt_version": prompt_version.version,
-                "llm_trace_id": trace_id,
-            })
-            return result
+            if release_transaction_before_provider:
+                await registry.session.commit()
+            return stored_result
         except Exception as exc:
             last_error = exc
             latency_ms = (time.perf_counter() - started) * 1000
@@ -212,6 +237,8 @@ async def analyze_portfolio_with_llm(
                 error_type=type(exc).__name__,
                 data_as_of=data_as_of,
             )
+            if release_transaction_before_provider:
+                await registry.session.commit()
             logger.warning("Structured analysis attempt %s failed: %s", attempt + 1, exc)
 
     result = safe_financial_analysis_template(portfolio_risk_summary, evidence, language=language)

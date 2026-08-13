@@ -6,7 +6,8 @@ import hashlib
 import json
 import mimetypes
 import uuid
-from datetime import date
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.principal import Principal
-from app.core.resources import embedding_model_name, get_resources
+from app.core.resources import (
+    embedding_model_name,
+    embedding_model_version,
+    get_resources,
+)
+from app.providers.embeddings import EmbeddingProvider
+from app.storage.base import ObjectStorage
 from app.db.models import (
     ChunkEmbedding,
     DocumentChunk,
@@ -25,7 +32,7 @@ from app.db.models import (
     ResearchDocument,
 )
 from app.db.repositories.governance import ResearchRepository
-from config import BASE_DIR, settings
+from config import settings
 from rag.hybrid_retriever import Reranker, deduplicate_candidates, reciprocal_rank_fusion
 from rag.models import DocumentMetadata
 from rag.parsers import parse_document, structured_chunks
@@ -37,17 +44,38 @@ class KnowledgeIngestionError(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedIngestion:
+    job_id: uuid.UUID
+    checksum: str
+    source_checksum: str
+    filename: str
+    title: str
+    parser: str
+    content_type: str
+    content_length: int
+    page_count: int
+    metadata: dict[str, Any]
+    content_text: str
+    chunks: tuple[dict[str, Any], ...]
+    vectors: np.ndarray
+    model_name: str
+    model_version: str
+
+
 class PostgresKnowledgeService:
     def __init__(
         self,
         session: AsyncSession,
         *,
-        embedder: Any | None = None,
+        embedder: EmbeddingProvider | None = None,
+        storage: ObjectStorage | None = None,
         reranker: Reranker | None = None,
     ) -> None:
         self.session = session
         self.repository = ResearchRepository(session)
         self._embedder = embedder
+        self._storage = storage
         self.reranker = reranker
 
     async def queue_upload(
@@ -59,7 +87,7 @@ class PostgresKnowledgeService:
         principal: Principal,
         idempotency_key: str,
     ) -> tuple[IngestionJob, bool]:
-        principal.require_group("knowledge_admin")
+        principal.require_role("knowledge_admin", "platform_admin")
         if not filename or Path(filename).suffix.lower() not in {".txt", ".md", ".csv", ".pdf"}:
             raise KnowledgeIngestionError("Supported document types are txt, md, csv and pdf")
         if not content:
@@ -68,6 +96,26 @@ class PostgresKnowledgeService:
             raise KnowledgeIngestionError(
                 f"File size limit exceeded: {len(content)} > {settings.RAG_MAX_UPLOAD_BYTES}"
             )
+        metadata = dict(metadata)
+        confidentiality = str(metadata.get("confidentiality") or "public").lower()
+        requested_groups = {
+            str(item).strip().lower()
+            for item in metadata.get("permission_groups", [])
+            if str(item).strip()
+        }
+        if confidentiality == "public":
+            metadata["permission_groups"] = ["public"]
+        else:
+            if not requested_groups or "public" in requested_groups:
+                raise KnowledgeIngestionError(
+                    "Non-public documents require explicit non-public permission_groups"
+                )
+            unauthorized_groups = requested_groups - principal.permission_groups
+            if unauthorized_groups and not principal.is_platform_admin:
+                raise KnowledgeIngestionError(
+                    "Document permission_groups must be granted to the authenticated principal"
+                )
+            metadata["permission_groups"] = sorted(requested_groups)
         try:
             DocumentMetadata(
                 document_id=str(metadata.get("document_id") or "pending-validation"),
@@ -84,7 +132,10 @@ class PostgresKnowledgeService:
         if not key:
             raise KnowledgeIngestionError("Idempotency-Key header is required")
         checksum = hashlib.sha256(content).hexdigest()
-        existing = await self.repository.find_job(principal.user_id, key)
+        business_scene = "knowledge_ingestion"
+        existing = await self.repository.find_job(
+            principal.user_id, key, business_scene=business_scene
+        )
         if existing:
             if existing.checksum != checksum:
                 raise KnowledgeIngestionError(
@@ -92,23 +143,26 @@ class PostgresKnowledgeService:
                 )
             return existing, True
 
-        storage_root = Path(settings.RAG_INGESTION_DIR).expanduser()
-        if not storage_root.is_absolute():
-            storage_root = BASE_DIR / storage_root
-        storage_root.mkdir(parents=True, exist_ok=True)
         storage_name = f"{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
-        storage_path = storage_root / storage_name
-        await asyncio.to_thread(storage_path.write_bytes, content)
+        object_key = f"{settings.OBJECT_STORAGE_PREFIX.strip('/')}/{storage_name}"
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        storage = await self._get_storage()
+        storage_uri = await storage.put(object_key, content, content_type=content_type)
         job_id = uuid.uuid4()
         statement = (
             insert(IngestionJob)
             .values(
                 id=job_id,
                 user_id=principal.user_id,
+                business_scene=business_scene,
                 idempotency_key=key,
                 filename=Path(filename).name,
-                storage_path=str(storage_path),
+                storage_path=None,
+                storage_uri=storage_uri,
                 checksum=checksum,
+                content_length=len(content),
+                content_type=content_type,
+                retention_until=None,
                 code_version=settings.CODE_VERSION,
                 status="pending",
                 metadata_json=metadata,
@@ -117,15 +171,21 @@ class PostgresKnowledgeService:
                 error_message="",
             )
             .on_conflict_do_nothing(
-                index_elements=[IngestionJob.user_id, IngestionJob.idempotency_key]
+                index_elements=[
+                    IngestionJob.user_id,
+                    IngestionJob.business_scene,
+                    IngestionJob.idempotency_key,
+                ]
             )
             .returning(IngestionJob)
         )
         job = (await self.session.execute(statement)).scalar_one_or_none()
         if job is not None:
             return job, False
-        await asyncio.to_thread(storage_path.unlink, missing_ok=True)
-        replay = await self.repository.find_job(principal.user_id, key)
+        await storage.delete(storage_uri)
+        replay = await self.repository.find_job(
+            principal.user_id, key, business_scene=business_scene
+        )
         if replay is None:
             raise RuntimeError("Idempotent ingestion insert did not return a job")
         if replay.checksum != checksum:
@@ -134,15 +194,14 @@ class PostgresKnowledgeService:
             )
         return replay, True
 
-    async def process_job(self, job: IngestionJob) -> IngestionJob:
-        if job.status not in {"pending", "failed"}:
-            return job
-        job.status = "processing"
-        job.started_at = utc_now()
-        job.error_message = ""
-        await self.session.flush()
-
-        content = await asyncio.to_thread(Path(job.storage_path).read_bytes)
+    async def prepare_job(self, job: IngestionJob) -> PreparedIngestion:
+        """Parse and embed outside a database transaction."""
+        if job.status not in {"pending", "processing", "failed"}:
+            raise KnowledgeIngestionError(f"Job is not processable from status {job.status}")
+        storage = await self._get_storage()
+        content = await storage.get(job.storage_uri)
+        if hashlib.sha256(content).hexdigest() != job.checksum:
+            raise KnowledgeIngestionError("Stored object checksum does not match ingestion job")
         metadata = dict(job.metadata_json or {})
         source_checksum = str(metadata.get("source_checksum") or job.checksum)
         fallback_title = str(metadata.get("title") or Path(job.filename).stem).strip()
@@ -169,7 +228,46 @@ class PostgresKnowledgeService:
         metadata.setdefault("document_id", str(metadata.get("document_key") or uuid.uuid4()))
         metadata["title"] = str(metadata.get("title") or title or fallback_title)
         metadata["checksum"] = job.checksum
-        metadata["ingestion_status"] = "completed"
+        # ``prepared`` is an internal worker phase, not a persisted public job
+        # state. Keep metadata aligned with the governed status vocabulary.
+        metadata["ingestion_status"] = "processing"
+        validated = DocumentMetadata(**metadata)
+        texts = [str(item["text"]) for item in chunks]
+        embedder = await self._get_embedder()
+        vectors = np.asarray(await asyncio.to_thread(embedder.encode, texts), dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape != (
+            len(chunks),
+            settings.RAG_EMBEDDING_DIMENSION,
+        ):
+            raise KnowledgeIngestionError(
+                "Embedding dimension mismatch: "
+                f"expected {settings.RAG_EMBEDDING_DIMENSION}, got {tuple(vectors.shape)}"
+            )
+        return PreparedIngestion(
+            job_id=job.id,
+            checksum=job.checksum,
+            source_checksum=source_checksum,
+            filename=job.filename,
+            title=metadata["title"],
+            parser=parser,
+            content_type=job.content_type,
+            content_length=len(content),
+            page_count=max((block.page_number or 0 for block in blocks), default=0),
+            metadata=validated.model_dump(mode="json"),
+            content_text="\n\n".join(block.text for block in blocks),
+            chunks=tuple(dict(item) for item in chunks),
+            vectors=vectors,
+            model_name=embedding_model_name(embedder),
+            model_version=embedding_model_version(embedder),
+        )
+
+    async def persist_prepared(
+        self, job: IngestionJob, prepared: PreparedIngestion
+    ) -> IngestionJob:
+        """Persist one prepared document in a short, atomic DB transaction."""
+        if prepared.job_id != job.id or prepared.checksum != job.checksum:
+            raise KnowledgeIngestionError("Prepared ingestion does not match the claimed job")
+        metadata = dict(prepared.metadata)
         validated = DocumentMetadata(**metadata)
         document = await self.session.scalar(
             select(ResearchDocument).where(
@@ -189,47 +287,43 @@ class PostgresKnowledgeService:
             )
             self.session.add(document)
             await self.session.flush()
-        duplicate = await self.repository.find_checksum(source_checksum, document_id=document.id)
+        duplicate = await self.repository.find_checksum(
+            prepared.source_checksum, document_id=document.id
+        )
         if duplicate:
             job.document_id = document.id
             job.version_id = duplicate.id
             job.status = "duplicate"
             job.completed_at = utc_now()
+            job.retention_until = _retention_until(
+                settings.RAG_SUCCESS_SOURCE_RETENTION_DAYS
+            )
             return job
 
         current = await self.session.scalar(
             select(func.max(DocumentVersion.version)).where(DocumentVersion.document_id == document.id)
         )
         version_number = int(current or 0) + 1
-        page_count = max((block.page_number or 0 for block in blocks), default=0)
         version = DocumentVersion(
             document_id=document.id,
             version=version_number,
-            checksum=source_checksum,
+            checksum=prepared.source_checksum,
             stored_content_checksum=job.checksum,
             source_filename=job.filename,
-            parser=parser,
-            content_type=mimetypes.guess_type(job.filename)[0] or "application/octet-stream",
+            parser=prepared.parser,
+            content_type=prepared.content_type,
             metadata_json=validated.model_dump(mode="json"),
-            content_text="\n\n".join(block.text for block in blocks),
-            content_length=len(content),
-            page_count=page_count,
-            chunk_count=len(chunks),
+            content_text=prepared.content_text,
+            content_length=prepared.content_length,
+            page_count=prepared.page_count,
+            chunk_count=len(prepared.chunks),
             status="completed",
             error_message="",
         )
         self.session.add(version)
         await self.session.flush()
 
-        texts = [str(item["text"]) for item in chunks]
-        embedder = await self._get_embedder()
-        vectors = np.asarray(await asyncio.to_thread(embedder.encode, texts), dtype=np.float32)
-        if vectors.ndim != 2 or vectors.shape != (len(chunks), settings.RAG_EMBEDDING_DIMENSION):
-            raise KnowledgeIngestionError(
-                "Embedding dimension mismatch: "
-                f"expected {settings.RAG_EMBEDDING_DIMENSION}, got {tuple(vectors.shape)}"
-            )
-        for item, vector in zip(chunks, vectors, strict=True):
+        for item, vector in zip(prepared.chunks, prepared.vectors, strict=True):
             chunk_text = str(item["text"])
             content_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
             chunk = DocumentChunk(
@@ -258,7 +352,11 @@ class PostgresKnowledgeService:
             self.session.add(
                 ChunkEmbedding(
                     chunk_id=chunk.id,
-                    embedding_model=embedding_model_name(embedder),
+                    embedding_model=(
+                        f"{prepared.model_name}@{prepared.model_version}"
+                    )[:255],
+                    model_name=prepared.model_name,
+                    model_version=prepared.model_version,
                     dimensions=settings.RAG_EMBEDDING_DIMENSION,
                     embedding=vector.tolist(),
                     content_hash=content_hash,
@@ -274,16 +372,25 @@ class PostgresKnowledgeService:
         if document.status != "published":
             document.metadata_json = {
                 **validated.model_dump(mode="json"),
-                "source_checksum": source_checksum,
+                "source_checksum": prepared.source_checksum,
                 "stored_content_checksum": job.checksum,
             }
         job.document_id = document.id
         job.version_id = version.id
         job.status = "completed"
-        job.chunks_created = len(chunks)
+        job.chunks_created = len(prepared.chunks)
         job.completed_at = utc_now()
+        job.retention_until = _retention_until(settings.RAG_SUCCESS_SOURCE_RETENTION_DAYS)
         await self.session.flush()
         return job
+
+    async def process_job(self, job: IngestionJob) -> IngestionJob:
+        """Compatibility helper; workers use explicit prepare/persist phases."""
+        prepared = await self.prepare_job(job)
+        job.status = "processing"
+        job.started_at = utc_now()
+        job.error_message = ""
+        return await self.persist_prepared(job, prepared)
 
     async def retrieve_with_status(
         self,
@@ -327,7 +434,8 @@ class PostgresKnowledgeService:
         )
         dense = await self.repository.vector_search(
             query_vector,
-            embedding_model=embedding_model_name(embedder),
+            model_name=embedding_model_name(embedder),
+            model_version=embedding_model_version(embedder),
             groups=principal.permission_groups,
             as_of=reference_date,
             limit=pool_size,
@@ -362,10 +470,20 @@ class PostgresKnowledgeService:
             "retrieval_backend": "postgresql_fts+pgvector_rrf",
         }
 
-    async def _get_embedder(self) -> Any:
+    async def _get_embedder(self) -> EmbeddingProvider:
         if self._embedder is None:
             self._embedder = (await get_resources()).embedder
+        if self._embedder is None:
+            resources = await get_resources()
+            raise KnowledgeIngestionError(
+                f"Embedding provider unavailable: {resources.embedding_error or 'unknown'}"
+            )
         return self._embedder
+
+    async def _get_storage(self) -> ObjectStorage:
+        if self._storage is None:
+            self._storage = (await get_resources()).object_storage
+        return self._storage
 
 
 def _citation(item: dict[str, Any]) -> dict[str, Any]:
@@ -389,3 +507,7 @@ def _empty_retrieval(normalized_query: str) -> dict[str, Any]:
         "evidence_insufficient": True,
         "retrieval_backend": "postgresql_fts+pgvector_rrf",
     }
+
+
+def _retention_until(days: int) -> datetime:
+    return datetime.now(UTC) + timedelta(days=max(0, days))

@@ -8,7 +8,11 @@ from app.db.repositories.governance import (
     ResearchRepository,
     WorkflowRepository,
 )
-from app.db.repositories.identity import PortfolioRepository, UserRepository
+from app.db.repositories.identity import (
+    PortfolioMembershipRepository,
+    PortfolioRepository,
+    UserRepository,
+)
 from app.db.repositories.market import (
     FxRateRepository,
     PriceBarRepository,
@@ -30,6 +34,7 @@ __all__ = [
     "ImportBatchRepository",
     "LLMTraceRepository",
     "PortfolioRepository",
+    "PortfolioMembershipRepository",
     "PromptRepository",
     "PortfolioValuationRepository",
     "PositionSnapshotRepository",

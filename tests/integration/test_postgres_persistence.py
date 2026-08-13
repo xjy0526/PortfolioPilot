@@ -26,6 +26,8 @@ from app.db.repositories import (
     TransactionRepository,
     UserRepository,
 )
+from app.api.health import _alembic_head_revision
+from app.db.repositories.health import HealthRepository
 from scripts.migrate_sqlite_to_postgres import LEGACY_USER_EMAIL, migrate
 from app.services.backtest_persistence import BacktestPersistenceService
 
@@ -50,15 +52,18 @@ async def _factory() -> tuple[object, async_sessionmaker[AsyncSession]]:
 
 @pytest.mark.asyncio
 async def test_alembic_created_tables_and_pgvector_extension():
-    engine, _ = await _factory()
+    engine, factory = await _factory()
     try:
         async with engine.connect() as connection:
             table_names = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
             vector_version = await connection.scalar(
                 text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
             )
+        async with factory() as session:
+            current_revision = await HealthRepository(session).alembic_revision()
         assert set(Base.metadata.tables).issubset(table_names)
         assert vector_version
+        assert current_revision == _alembic_head_revision()
     finally:
         await engine.dispose()
 

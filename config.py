@@ -5,6 +5,7 @@ Type-Safety und Validierung durch Pydantic.
 """
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import computed_field, field_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -57,7 +58,13 @@ class Settings(BaseSettings):
     SERVER_PORT: int = 8000
 
     # Environment
-    ENVIRONMENT: str = "development"
+    ENVIRONMENT: Literal["development", "test", "production"] = "development"
+
+    # Production safety. READ_ONLY_DEMO defaults to True in production and
+    # False elsewhere when it is not explicitly configured.
+    READ_ONLY_DEMO: bool | None = None
+    ALLOW_RUNTIME_SECRET_CONFIGURATION: bool = False
+    ALLOW_DEV_IDENTITY_HEADERS: bool = False
 
     # PostgreSQL. Engine construction is lazy and never creates tables; schema
     # changes are owned exclusively by Alembic.
@@ -97,13 +104,22 @@ class Settings(BaseSettings):
     OPENAI_COMPATIBLE_API_KEY: str = ""
     OPENAI_COMPATIBLE_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_COMPATIBLE_MODEL: str = "gpt-4.1-mini"
+    PROVIDER_BASE_URL_ALLOWED_HOSTS: str = (
+        "dashscope.aliyuncs.com,api.openai.com,financialmodelingprep.com"
+    )
 
     # AI Finance Agent
     AI_AGENT_TIME: str = "16:30"
 
     # Local RAG for financial evidence
     RAG_DOCUMENT_DIR: str = "rag_documents"
-    RAG_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_PROVIDER: Literal["sentence_transformers", "hashing"] = (
+        "sentence_transformers"
+    )
+    RAG_EMBEDDING_MODEL: str = (
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
+    RAG_ALLOW_HASHING_FALLBACK: bool | None = None
     RAG_CHUNK_SIZE: int = 900
     RAG_TOP_K: int = 5
     RAG_VECTOR_BACKEND: str = "pgvector"
@@ -118,10 +134,32 @@ class Settings(BaseSettings):
     RAG_MAX_CHUNKS: int = 5000
     RAG_PARSE_TIMEOUT_SECONDS: int = 60
     RAG_INGESTION_DIR: str = "data/ingestion"
+    RAG_SUCCESS_SOURCE_RETENTION_DAYS: int = 0
+    RAG_FAILURE_SOURCE_RETENTION_DAYS: int = 7
+
+    # Object storage. Local storage is suitable for a single-host development
+    # setup; production should use an S3-compatible shared bucket.
+    OBJECT_STORAGE_BACKEND: Literal["local", "s3"] = "local"
+    OBJECT_STORAGE_LOCAL_ROOT: str = "data/object_storage"
+    OBJECT_STORAGE_BUCKET: str = "portfoliopilot-ingestion"
+    OBJECT_STORAGE_PREFIX: str = "research-ingestion"
+    OBJECT_STORAGE_ENDPOINT_URL: str = ""
+    OBJECT_STORAGE_REGION: str = ""
+    OBJECT_STORAGE_ACCESS_KEY_ID: str = ""
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: str = ""
+
+    # Durable workflow worker recovery.
+    WORKFLOW_LEASE_SECONDS: int = 60
+    WORKFLOW_MAX_ATTEMPTS: int = 5
+    WORKFLOW_RETRY_BASE_SECONDS: int = 2
 
     # Server-derived local principal used only when Basic Auth is disabled.
     LOCAL_PRINCIPAL_USER: str = "local-user"
-    LOCAL_PRINCIPAL_GROUPS: str = "public,knowledge_admin,research_reviewer"
+    LOCAL_PRINCIPAL_TENANT: str = "default"
+    LOCAL_PRINCIPAL_ROLES: str = (
+        "platform_admin,operator,market_data_admin,knowledge_admin,research_reviewer"
+    )
+    LOCAL_PRINCIPAL_GROUPS: str = "public"
 
     # Strategy backtest
     BACKTEST_PRICE_CSV: str = ""
@@ -139,6 +177,9 @@ class Settings(BaseSettings):
     # Dashboard-Zugangsschutz (Basic Auth)
     DASHBOARD_USER: str = ""
     DASHBOARD_PASSWORD: str = ""
+    DASHBOARD_TENANT_ID: str = "default"
+    DASHBOARD_ROLES: str = "platform_admin"
+    DASHBOARD_PERMISSION_GROUPS: str = "public"
 
     # ── Computed Fields ──
 
@@ -211,6 +252,25 @@ class Settings(BaseSettings):
 
     @computed_field
     @property
+    def read_only_demo(self) -> bool:
+        return bool(self.READ_ONLY_DEMO)
+
+    @computed_field
+    @property
+    def hashing_fallback_allowed(self) -> bool:
+        return bool(self.RAG_ALLOW_HASHING_FALLBACK)
+
+    @computed_field
+    @property
+    def provider_base_url_allowed_hosts(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().lower()
+            for item in self.PROVIDER_BASE_URL_ALLOWED_HOSTS.split(",")
+            if item.strip()
+        )
+
+    @computed_field
+    @property
     def fund_research_mode(self) -> bool:
         return self.APP_MODE == "fund_research"
 
@@ -245,7 +305,72 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator(
+        "WORKFLOW_LEASE_SECONDS",
+        "WORKFLOW_MAX_ATTEMPTS",
+        "WORKFLOW_RETRY_BASE_SECONDS",
+    )
+    @classmethod
+    def validate_positive_worker_setting(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("Workflow worker settings must be positive")
+        return value
+
+    def validate_provider_base_url(self, value: str, *, setting_name: str) -> str:
+        """Validate an operator-supplied provider URL without exposing secrets."""
+        normalized = value.strip().rstrip("/")
+        parsed = urlparse(normalized)
+        host = (parsed.hostname or "").lower()
+        local_host = host in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and not (
+            self.ENVIRONMENT in {"development", "test"} and local_host
+        ):
+            raise ValueError(f"{setting_name} must use HTTPS")
+        if host not in self.provider_base_url_allowed_hosts and not (
+            self.ENVIRONMENT in {"development", "test"} and local_host
+        ):
+            raise ValueError(f"{setting_name} host is not allowlisted")
+        return normalized
+
+    def validate_runtime_configuration(self) -> None:
+        """Fail closed when a production deployment has an unsafe identity mode."""
+        if self.ENVIRONMENT != "production":
+            return
+        if self.ALLOW_DEV_IDENTITY_HEADERS:
+            raise RuntimeError("Development identity headers are forbidden in production")
+        if not self.read_only_demo and not self.auth_configured:
+            raise RuntimeError(
+                "Production must enable READ_ONLY_DEMO or configure authentication"
+            )
+        if not self.read_only_demo and self.OBJECT_STORAGE_BACKEND != "s3":
+            raise RuntimeError(
+                "Writable production deployments require S3-compatible object storage"
+            )
+        self.validate_provider_base_url(self.QWEN_BASE_URL, setting_name="QWEN_BASE_URL")
+        self.validate_provider_base_url(
+            self.OPENAI_COMPATIBLE_BASE_URL,
+            setting_name="OPENAI_COMPATIBLE_BASE_URL",
+        )
+        self.validate_provider_base_url(self.FMP_BASE_URL, setting_name="FMP_BASE_URL")
+        if self.ENABLE_PARQET:
+            self.validate_provider_base_url(
+                self.PARQET_API_BASE_URL,
+                setting_name="PARQET_API_BASE_URL",
+            )
+
     def model_post_init(self, __context) -> None:
+        if self.READ_ONLY_DEMO is None:
+            object.__setattr__(
+                self,
+                "READ_ONLY_DEMO",
+                self.ENVIRONMENT == "production",
+            )
+        if self.RAG_ALLOW_HASHING_FALLBACK is None:
+            object.__setattr__(
+                self,
+                "RAG_ALLOW_HASHING_FALLBACK",
+                self.ENVIRONMENT in {"development", "test"},
+            )
         # Sync PORT → SERVER_PORT (Cloud Run setzt PORT)
         if self.PORT != 8000 and self.SERVER_PORT == 8000:
             object.__setattr__(self, "SERVER_PORT", self.PORT)

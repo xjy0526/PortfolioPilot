@@ -18,6 +18,7 @@ from app.core.resources import close_resources, initialize_resources
 from cache_manager import CacheManager
 from config import settings
 from logging_config import setup_logging
+from middleware.auth import BasicAuthMiddleware, ReadOnlyDemoMiddleware
 from routes.analysis import router as analysis_router
 from routes.analytics import router as analytics_router
 from routes.app_settings import router as app_settings_router
@@ -51,6 +52,7 @@ async def reload_portfolio_and_subscribe() -> None:
 async def lifespan(app: FastAPI):
     """Initialize only compatibility storage; scheduled work runs in workers."""
     logger.info("PortfolioPilot starting")
+    settings.validate_runtime_configuration()
     CacheManager.clear_volatile_caches()
     CacheManager.cleanup_stale_files()
     await initialize_resources()
@@ -80,11 +82,12 @@ app = FastAPI(
     dependencies=[Depends(get_db_session)],
 )
 app.add_middleware(GZipMiddleware, minimum_size=500)
-
+app.add_middleware(BasicAuthMiddleware)
+# Starlette executes the most recently added middleware first. Keep the
+# deployment-wide read-only gate outside authentication so every mutation is
+# consistently rejected with 403, including anonymous requests.
+app.add_middleware(ReadOnlyDemoMiddleware)
 if settings.auth_configured:
-    from middleware.auth import BasicAuthMiddleware
-
-    app.add_middleware(BasicAuthMiddleware)
     logger.info("Dashboard password protection enabled")
 
 STATIC_DIR.mkdir(exist_ok=True)

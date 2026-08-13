@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -103,6 +103,10 @@ class ImportBatch(UUIDTimestampMixin, Base):
         UniqueConstraint(
             "portfolio_id", "source", "file_sha256", name="uq_import_batches_portfolio_source_hash"
         ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','completed_with_errors','failed','duplicate')",
+            name="import_batch_status_allowed",
+        ),
     )
 
     portfolio_id: Mapped[uuid.UUID] = mapped_column(
@@ -111,7 +115,7 @@ class ImportBatch(UUIDTimestampMixin, Base):
     source: Mapped[str] = mapped_column(String(80), nullable=False)
     source_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="processing")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     total_rows: Mapped[int] = mapped_column(nullable=False, default=0)
     accepted_rows: Mapped[int] = mapped_column(nullable=False, default=0)
     rejected_rows: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -127,6 +131,18 @@ class PortfolioValuationSnapshot(UUIDTimestampMixin, Base):
         UniqueConstraint(
             "portfolio_id", "as_of", "source", name="uq_portfolio_valuations_portfolio_as_of_source"
         ),
+        CheckConstraint(
+            "valuation_status IN ('complete','partial','unavailable')",
+            name="valuation_status_allowed",
+        ),
+        CheckConstraint(
+            "coverage_ratio >= 0 AND coverage_ratio <= 1",
+            name="valuation_coverage_ratio_range",
+        ),
+        CheckConstraint(
+            "priced_asset_count >= 0 AND unpriced_asset_count >= 0",
+            name="valuation_asset_counts_nonnegative",
+        ),
     )
 
     portfolio_id: Mapped[uuid.UUID] = mapped_column(
@@ -135,10 +151,31 @@ class PortfolioValuationSnapshot(UUIDTimestampMixin, Base):
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     valuation_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
-    total_market_value: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
-    total_cost_basis: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
-    cash_value: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
-    unrealized_pnl: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    total_market_value: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    priced_market_value: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0")
+    )
+    total_cost_basis: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cash_value: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    valuation_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="complete"
+    )
+    priced_asset_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unpriced_asset_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unpriced_assets: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    data_as_of_earliest: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    data_as_of_latest: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    max_staleness_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coverage_ratio: Mapped[Decimal] = mapped_column(
+        WEIGHT_NUMERIC, nullable=False, default=Decimal("1")
+    )
     data_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(String(80), nullable=False)
     sync_run_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -197,6 +234,13 @@ class PositionSnapshot(UUIDTimestampMixin, Base):
     market_value_base: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
     cost_basis_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
     unrealized_pnl_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cost_basis_native: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cost_basis_base_at_trade: Mapped[Decimal | None] = mapped_column(
+        MONEY_NUMERIC, nullable=True
+    )
+    local_price_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    fx_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    total_pnl_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
     weight: Mapped[Decimal | None] = mapped_column(WEIGHT_NUMERIC, nullable=True)
     base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
     snapshot_data: Mapped[dict[str, Any]] = mapped_column(

@@ -52,13 +52,24 @@ class ExistingJobRepositoryStub:
     def __init__(self, checksum: str) -> None:
         self.job = SimpleNamespace(checksum=checksum)
 
-    async def find_job(self, _user_id: str, _key: str):
+    async def find_job(
+        self, _user_id: str, _key: str, *, business_scene: str = "knowledge_ingestion"
+    ):
+        assert business_scene == "knowledge_ingestion"
         return self.job
 
 
 class WrongDimensionEmbedder:
     def encode(self, texts: list[str]) -> np.ndarray:
         return np.zeros((len(texts), 3), dtype=np.float32)
+
+
+def _knowledge_admin(*groups: str) -> Principal:
+    return Principal(
+        "admin",
+        frozenset(groups or ("public",)),
+        roles=frozenset({"knowledge_admin"}),
+    )
 
 
 def _candidate(channel: str, text: str) -> dict:
@@ -152,7 +163,7 @@ async def test_upload_size_limit_is_enforced_before_database_access(monkeypatch)
             content=b"12345",
             filename="risk.md",
             metadata={},
-            principal=Principal("admin", frozenset({"knowledge_admin"})),
+            principal=_knowledge_admin(),
             idempotency_key="size-test",
         )
 
@@ -170,7 +181,7 @@ async def test_upload_idempotency_key_rejects_different_content():
             content=b"different public filing",
             filename="filing.md",
             metadata={},
-            principal=Principal("admin", frozenset({"knowledge_admin"})),
+            principal=_knowledge_admin(),
             idempotency_key="same-key",
         )
 
@@ -184,16 +195,21 @@ async def test_restricted_upload_requires_explicit_server_acl_before_database_ac
             content=b"restricted research",
             filename="restricted.md",
             metadata={"confidentiality": "restricted"},
-            principal=Principal("admin", frozenset({"knowledge_admin"})),
+            principal=_knowledge_admin(),
             idempotency_key="restricted-key",
         )
 
 
 def test_principal_permissions_are_server_owned_and_case_normalized():
-    principal = Principal("server-user", frozenset({"public", "research_reviewer"}))
+    principal = Principal(
+        "server-user",
+        frozenset({"public", "deal_team"}),
+        roles=frozenset({"research_reviewer"}),
+    )
     assert principal.user_id == "server-user"
-    assert principal.has_group("research_reviewer")
-    principal.require_any_group("research_reviewer", "knowledge_admin")
+    assert principal.has_role("research_reviewer")
+    assert not principal.has_group("research_reviewer")
+    principal.require_any_group("deal_team", "investment_committee")
     assert not principal.has_group("client-claimed-admin")
 
 

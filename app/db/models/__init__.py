@@ -6,7 +6,7 @@ from app.db.models.backtest import (
     BacktestRun,
     BacktestStrategyResult,
 )
-from app.db.models.identity import Portfolio, User
+from app.db.models.identity import Portfolio, PortfolioMembership, User
 from app.db.models.governance import (
     ChunkEmbedding,
     DocumentChunk,
@@ -45,6 +45,7 @@ __all__ = [
     "IngestionJob",
     "LLMCallTrace",
     "Portfolio",
+    "PortfolioMembership",
     "PortfolioValuationSnapshot",
     "PositionSnapshot",
     "PriceBar",

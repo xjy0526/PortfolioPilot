@@ -17,6 +17,7 @@ class LLMRequest:
     model: str = ""
     temperature: float = 0.2
     output_schema: dict[str, Any] = field(default_factory=dict)
+    idempotency_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,12 @@ class OptionalOpenAICompatibleProvider:
         }
         if request.output_schema:
             payload["response_format"] = {"type": "json_object"}
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if request.idempotency_key:
+            headers["Idempotency-Key"] = request.idempotency_key
         if self.http_client is None:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await self._post(client, headers, payload)

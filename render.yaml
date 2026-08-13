@@ -7,7 +7,8 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     autoDeployTrigger: commit
-    healthCheckPath: /health/live
+    healthCheckPath: /health/ready
+    preDeployCommand: alembic upgrade head
     maxShutdownDelaySeconds: 120
     disk:
       name: portfolio-pilot-data
@@ -16,6 +17,12 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
+      - key: READ_ONLY_DEMO
+        value: true
+      - key: ALLOW_RUNTIME_SECRET_CONFIGURATION
+        value: false
+      - key: ALLOW_DEV_IDENTITY_HEADERS
+        value: false
       - key: AI_PROVIDER
         value: qwen
       - key: DISPLAY_TIMEZONE
@@ -32,6 +39,12 @@ services:
         value: https://dashscope.aliyuncs.com/compatible-mode/v1
       - key: QWEN_MODEL
         value: qwen-plus
+      - key: EMBEDDING_PROVIDER
+        value: sentence_transformers
+      - key: RAG_EMBEDDING_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: RAG_ALLOW_HASHING_FALLBACK
+        value: false
       - key: PARQET_PORTFOLIO_CSV
         value: /app/cache/portfolio.csv
       - key: RAG_DOCUMENT_DIR

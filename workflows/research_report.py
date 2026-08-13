@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -13,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.principal import Principal
+from app.core.principal import Principal, require_tenant_access
 from app.db.models import (
     LLMCallTrace,
     PublishedReport,
@@ -60,6 +61,10 @@ class WorkflowLimitError(RuntimeError):
     pass
 
 
+class WorkflowNodeExecutionError(RuntimeError):
+    pass
+
+
 class ResearchReportWorkflow:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -75,6 +80,7 @@ class ResearchReportWorkflow:
             key: value
             for key, value in payload.items()
             if key not in {"user_id", "permission_groups", "reviewer_id"}
+            and not key.startswith("_")
         }
         context = {
             "request": {
@@ -83,6 +89,8 @@ class ResearchReportWorkflow:
                 "permission_groups": sorted(principal.permission_groups),
             },
             "permission_groups": sorted(principal.permission_groups),
+            "roles": sorted(principal.roles),
+            "tenant_id": principal.tenant_id,
             "language": payload.get("language", "zh"),
         }
         run_id = uuid.uuid4()
@@ -91,9 +99,10 @@ class ResearchReportWorkflow:
             .values(
                 id=run_id,
                 user_id=principal.user_id,
+                tenant_id=principal.tenant_id,
                 business_scene=business_scene,
                 idempotency_key=idempotency_key,
-                status="DRAFT",
+                status="PENDING",
                 max_steps=max(1, int(payload.get("max_steps", 30))),
                 timeout_seconds=max(1, int(payload.get("timeout_seconds", 120))),
                 node_timeout_seconds=max(1, int(payload.get("node_timeout_seconds", 45))),
@@ -103,9 +112,14 @@ class ResearchReportWorkflow:
                 current_step="",
                 iteration=1,
                 context_json=context,
-                started_at=utc_now(),
+                started_at=None,
                 error_type="",
                 code_version=settings.CODE_VERSION,
+                lease_owner=None,
+                heartbeat_at=None,
+                lease_expires_at=None,
+                attempt=0,
+                next_retry_at=None,
             )
             .on_conflict_do_nothing(
                 index_elements=[
@@ -127,7 +141,6 @@ class ResearchReportWorkflow:
             result["idempotent_replay"] = bool(supplied_key)
             return result
 
-        await self._execute_until_review(run.id)
         result = await self.get_run(run.id) or {}
         result["idempotent_replay"] = False
         return result
@@ -192,21 +205,19 @@ class ResearchReportWorkflow:
         principal: Principal,
         feedback: str = "",
     ) -> dict[str, Any] | None:
-        principal.require_group("research_reviewer")
+        principal.require_role("research_reviewer", "platform_admin")
         if decision not in {"approve", "reject", "request_changes"}:
             raise ValueError("Unsupported review decision")
         task = await self.repository.get_review(review_id, for_update=True)
         if task is None:
             return None
+        run = await self._require_run(task.workflow_run_id)
+        require_tenant_access(principal, run.tenant_id)
         existing = await self.session.scalar(
-            select(ReviewDecision).where(
-                ReviewDecision.review_task_id == review_id,
-                ReviewDecision.decision == decision,
-                ReviewDecision.reviewer_id == principal.user_id,
-            )
+            select(ReviewDecision).where(ReviewDecision.review_task_id == review_id)
         )
         if existing:
-            return await self.get_run(task.workflow_run_id)
+            raise ValueError("Review task is already completed")
         if task.status != "PENDING":
             raise ValueError("Review task is already completed")
 
@@ -231,33 +242,23 @@ class ResearchReportWorkflow:
             .where(LLMCallTrace.workflow_run_id == task.workflow_run_id)
             .values(review_decision=decision, review_feedback=feedback)
         )
-        run = await self._require_run(task.workflow_run_id)
         context = dict(run.context_json)
         context["review_decision"] = decision
         context["review_feedback"] = feedback
         context["reviewer_id"] = principal.user_id
         _persist_context(run, context)
-        context = await self._run_step(run, "approve_or_reject", context)
-        if run.status == "FAILED":
-            return await self.get_run(run.id)
-        if decision == "approve":
-            run.status = "APPROVED"
-            context = await self._run_step(run, "publish_report", context)
-            if run.status != "FAILED":
-                run.status = "PUBLISHED"
-                run.current_step = "publish_report"
-                run.completed_at = utc_now()
-        elif decision == "reject":
-            run.status = "REJECTED"
-            run.current_step = "approve_or_reject"
-            run.completed_at = utc_now()
-        else:
-            run.status = "DRAFT"
-            run.iteration += 1
-            await self.session.flush()
-            await self._execute_until_review(run.id, revision_feedback=feedback)
-        if decision != "request_changes":
-            _persist_context(run, context)
+        run.status = "PENDING"
+        run.current_step = ""
+        # ``started_at`` is the start of the current active execution window.
+        # Human review can take hours or days and must not consume the worker
+        # execution timeout; individual step timestamps retain the audit trail.
+        run.started_at = None
+        run.completed_at = None
+        run.error_type = ""
+        run.lease_owner = None
+        run.heartbeat_at = None
+        run.lease_expires_at = None
+        run.next_retry_at = None
         await self.session.flush()
         return await self.get_run(run.id)
 
@@ -271,6 +272,7 @@ class ResearchReportWorkflow:
         return {
             "run_id": str(run.id),
             "user_id": run.user_id,
+            "tenant_id": run.tenant_id,
             "business_scene": run.business_scene,
             "status": run.status,
             "max_steps": run.max_steps,
@@ -286,6 +288,13 @@ class ResearchReportWorkflow:
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "error_type": run.error_type,
+            "lease_owner": run.lease_owner,
+            "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+            "lease_expires_at": (
+                run.lease_expires_at.isoformat() if run.lease_expires_at else None
+            ),
+            "attempt": run.attempt,
+            "next_retry_at": run.next_retry_at.isoformat() if run.next_retry_at else None,
             "steps": [
                 {
                     "step_id": str(item.id),
@@ -315,6 +324,127 @@ class ResearchReportWorkflow:
             "report_id": str(report.id) if report else None,
         }
 
+    async def process_next_node(
+        self,
+        run_id: uuid.UUID,
+        *,
+        lease_owner: str,
+    ) -> dict[str, Any]:
+        """Execute one idempotent node for a run currently owned by a worker."""
+        run = await self.repository.get_run(run_id, for_update=True)
+        if run is None:
+            raise ValueError("Workflow run not found")
+        if run.status != "RUNNING" or run.lease_owner != lease_owner:
+            raise ValueError("Workflow lease is not owned by this worker")
+        await self._check_limits(run)
+        context = dict(run.context_json)
+        node = await self._next_node(run, context)
+        if node is None:
+            await self._converge_completed_run(run, context)
+            return {"run_id": str(run.id), "status": run.status, "node": None}
+        context = await self._run_step(run, node, context)
+        if run.status == "FAILED":
+            return {"run_id": str(run.id), "status": run.status, "node": node}
+
+        if node == "request_human_review":
+            run.status = "PENDING_REVIEW"
+            self._clear_lease(run)
+        elif node == "approve_or_reject":
+            decision = str(context.get("review_decision") or "")
+            if decision == "reject":
+                run.status = "REJECTED"
+                run.completed_at = utc_now()
+                self._clear_lease(run)
+            elif decision == "request_changes":
+                run.iteration += 1
+                context["revision_feedback"] = str(
+                    context.get("review_feedback") or ""
+                )
+                context.pop("review_decision", None)
+                context.pop("reviewer_id", None)
+                run.status = "PENDING"
+                self._clear_lease(run)
+        elif node == "publish_report":
+            run.status = "PUBLISHED"
+            run.completed_at = utc_now()
+            self._clear_lease(run)
+        else:
+            run.heartbeat_at = utc_now()
+            run.lease_expires_at = utc_now() + timedelta(
+                seconds=settings.WORKFLOW_LEASE_SECONDS
+            )
+        _persist_context(run, context)
+        await self.session.flush()
+        return {"run_id": str(run.id), "status": run.status, "node": node}
+
+    async def mark_retry_or_failed(
+        self,
+        run_id: uuid.UUID,
+        *,
+        lease_owner: str,
+        error_type: str,
+        terminal: bool = False,
+    ) -> None:
+        run = await self.repository.get_run(run_id, for_update=True)
+        if run is None or run.lease_owner != lease_owner:
+            return
+        run.error_type = error_type[:255]
+        self._clear_lease(run)
+        if terminal or run.attempt >= settings.WORKFLOW_MAX_ATTEMPTS:
+            run.status = "FAILED"
+            run.completed_at = utc_now()
+            return
+        run.status = "RETRY"
+        delay = settings.WORKFLOW_RETRY_BASE_SECONDS * (2 ** max(0, run.attempt - 1))
+        run.next_retry_at = utc_now() + timedelta(seconds=delay)
+
+    async def _converge_completed_run(
+        self, run: WorkflowRun, context: dict[str, Any]
+    ) -> None:
+        decision = str(context.get("review_decision") or "")
+        if decision == "approve":
+            run.status = "PUBLISHED"
+            run.completed_at = utc_now()
+        elif decision == "reject":
+            run.status = "REJECTED"
+            run.completed_at = utc_now()
+        elif decision == "request_changes":
+            run.iteration += 1
+            context["revision_feedback"] = str(context.get("review_feedback") or "")
+            context.pop("review_decision", None)
+            context.pop("reviewer_id", None)
+            run.status = "PENDING"
+        else:
+            run.status = "PENDING_REVIEW"
+        self._clear_lease(run)
+        _persist_context(run, context)
+        await self.session.flush()
+
+    async def _next_node(
+        self, run: WorkflowRun, context: dict[str, Any]
+    ) -> str | None:
+        decision = str(context.get("review_decision") or "")
+        if decision in {"approve", "reject", "request_changes"}:
+            candidates = ["approve_or_reject"]
+            if decision == "approve":
+                candidates.append("publish_report")
+        else:
+            start = "generate_draft" if context.get("revision_feedback") else "validate_input"
+            candidates = WORKFLOW_NODES[
+                WORKFLOW_NODES.index(start) : WORKFLOW_NODES.index("request_human_review") + 1
+            ]
+        for node in candidates:
+            step = await self.repository.get_step(run.id, node, run.iteration)
+            if step is None or step.status != "COMPLETED":
+                return node
+        return None
+
+    @staticmethod
+    def _clear_lease(run: WorkflowRun) -> None:
+        run.lease_owner = None
+        run.heartbeat_at = None
+        run.lease_expires_at = None
+
     async def get_report(
         self,
         report_id: uuid.UUID,
@@ -327,7 +457,11 @@ class ResearchReportWorkflow:
         run = await self.repository.get_run(report.workflow_run_id)
         if run is None or (
             run.user_id != principal.user_id
-            and not principal.has_group("research_reviewer")
+            and not (
+                principal.has_role("research_reviewer")
+                and principal.tenant_id == run.tenant_id
+            )
+            and not principal.is_platform_admin
         ):
             return None
         return {
@@ -348,29 +482,52 @@ class ResearchReportWorkflow:
             settings.fund_research_mode and node in SHADOW_TRADING_TOOLS
         ):
             raise PermissionError(f"Tool is not allowlisted: {node}")
-        existing = await self.session.scalar(
-            select(WorkflowStep).where(
-                WorkflowStep.workflow_run_id == run.id,
-                WorkflowStep.step_name == node,
-                WorkflowStep.iteration == run.iteration,
-                WorkflowStep.status == "COMPLETED",
-            )
+        existing = await self.repository.get_step(
+            run.id, node, run.iteration, for_update=True
         )
-        if existing:
+        if existing is not None and existing.status == "COMPLETED":
             return context
-        step = WorkflowStep(
-            workflow_run_id=run.id,
-            step_name=node,
-            iteration=run.iteration,
-            status="RUNNING",
-            input_summary=_summarize_context(context),
-            output_summary={},
-            started_at=utc_now(),
-            error_type="",
-        )
-        self.session.add(step)
+        if existing is None:
+            step_count = await self.session.scalar(
+                select(func.count(WorkflowStep.id)).where(
+                    WorkflowStep.workflow_run_id == run.id
+                )
+            )
+            if int(step_count or 0) >= run.max_steps:
+                raise WorkflowLimitError("max_steps exceeded")
+        if existing is None:
+            step = WorkflowStep(
+                workflow_run_id=run.id,
+                step_name=node,
+                iteration=run.iteration,
+                status="RUNNING",
+                input_summary=_summarize_context(context),
+                output_summary={},
+                started_at=utc_now(),
+                error_type="",
+            )
+            self.session.add(step)
+        else:
+            step = existing
+            step.status = "RUNNING"
+            step.input_summary = _summarize_context(context)
+            step.output_summary = {}
+            step.started_at = utc_now()
+            step.completed_at = None
+            step.error_type = ""
         run.current_step = node
         await self.session.flush()
+        if node in {"retrieve_evidence", "generate_draft"}:
+            # Persist the RUNNING checkpoint before CPU/network-bound work.
+            checkpoint_time = utc_now()
+            run.heartbeat_at = checkpoint_time
+            run.lease_expires_at = checkpoint_time + timedelta(
+                seconds=max(
+                    settings.WORKFLOW_LEASE_SECONDS,
+                    run.node_timeout_seconds + 5,
+                )
+            )
+            await self.session.commit()
         try:
             async with asyncio.timeout(run.node_timeout_seconds):
                 context = await self._execute_node(node, run, context)
@@ -385,11 +542,12 @@ class ResearchReportWorkflow:
             step.completed_at = utc_now()
             step.error_type = "NodeTimeoutError" if isinstance(exc, TimeoutError) else type(exc).__name__
             step.output_summary = {"error": str(exc)[:500]}
-            run.status = "FAILED"
             run.error_type = step.error_type
-            run.completed_at = utc_now()
-            await self.session.flush()
-            return context
+            _persist_context(run, context)
+            # Persist the failed-node checkpoint before the worker schedules a
+            # retry in a fresh transaction.
+            await self.session.commit()
+            raise WorkflowNodeExecutionError(step.error_type) from exc
 
     async def _execute_node(
         self,
@@ -401,22 +559,62 @@ class ResearchReportWorkflow:
         if node == "validate_input":
             context["input_valid"] = bool(run.user_id)
         elif node == "load_portfolio":
-            db_portfolio = request.get("_db_portfolio") or {}
-            if not db_portfolio.get("valuation_snapshot_id"):
+            from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
+
+            portfolio_id = uuid.UUID(str(request["portfolio_id"]))
+            principal = Principal(
+                run.user_id,
+                frozenset(context["permission_groups"]),
+                authenticated=True,
+                tenant_id=run.tenant_id,
+                roles=frozenset(context.get("roles", [])),
+            )
+            loaded = await LegacyPortfolioAdapter(self.session).load(
+                portfolio_id=portfolio_id,
+                principal=principal,
+            )
+            if loaded is None:
                 raise ValueError("No PostgreSQL valuation snapshot available")
-            context["portfolio_tickers"] = list(db_portfolio.get("tickers") or [])
+            context["portfolio_summary"] = loaded.summary.model_dump(mode="json")
+            context["portfolio_tickers"] = [
+                item.position.ticker for item in loaded.summary.stocks
+            ]
             context["portfolio_lineage"] = {
-                key: db_portfolio.get(key)
-                for key in ("portfolio_id", "valuation_snapshot_id", "valuation_input_hash", "as_of")
+                "portfolio_id": str(loaded.portfolio.id),
+                "valuation_snapshot_id": str(loaded.valuation.id),
+                "valuation_input_hash": loaded.valuation.input_hash,
+                "as_of": loaded.valuation.as_of.isoformat(),
+                "valuation_status": loaded.valuation.valuation_status,
+                "coverage_ratio": float(loaded.valuation.coverage_ratio),
             }
         elif node == "calculate_risk":
-            risk_summary = (request.get("_db_portfolio") or {}).get("risk_summary")
-            if not isinstance(risk_summary, dict):
-                raise ValueError("Database-backed risk summary is required")
+            from models import PortfolioSummary
+            from routes.research import _build_portfolio_risk_summary
+
+            portfolio_summary = PortfolioSummary.model_validate(context["portfolio_summary"])
+            risk_summary = await _build_portfolio_risk_summary(
+                portfolio_summary,
+                session=self.session,
+                as_of=datetime.fromisoformat(
+                    context["portfolio_lineage"]["as_of"].replace("Z", "+00:00")
+                ),
+            )
+            risk_summary["valuation_status"] = context["portfolio_lineage"][
+                "valuation_status"
+            ]
+            risk_summary["valuation_coverage_ratio"] = context["portfolio_lineage"][
+                "coverage_ratio"
+            ]
             context["risk_summary"] = risk_summary
         elif node == "retrieve_evidence":
             query = str(request.get("query") or "public fund portfolio risk policy evidence")
-            principal = Principal(run.user_id, frozenset(context["permission_groups"]))
+            principal = Principal(
+                run.user_id,
+                frozenset(context["permission_groups"]),
+                authenticated=True,
+                tenant_id=run.tenant_id,
+                roles=frozenset(context.get("roles", [])),
+            )
             result = await PostgresKnowledgeService(self.session).retrieve_with_status(
                 query,
                 top_k=int(request.get("top_k", 5)),
@@ -436,6 +634,8 @@ class ResearchReportWorkflow:
                 user_id=run.user_id,
                 business_scene=run.business_scene,
                 session=self.session,
+                trace_key=f"workflow:{run.id}:generate_draft:{run.iteration}",
+                release_transaction_before_provider=True,
             )
             context["draft"] = draft
             trace = await self.session.scalar(
@@ -495,13 +695,29 @@ class ResearchReportWorkflow:
                 raise ValueError(f"Forbidden expressions: {', '.join(matches)}")
             context["rules_valid"] = True
         elif node == "request_human_review":
-            review = ReviewTask(
-                workflow_run_id=run.id,
-                status="PENDING",
-                assigned_group="research_reviewer",
+            statement = (
+                insert(ReviewTask)
+                .values(
+                    workflow_run_id=run.id,
+                    iteration=run.iteration,
+                    status="PENDING",
+                    assigned_group="research_reviewer",
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[ReviewTask.workflow_run_id, ReviewTask.iteration]
+                )
+                .returning(ReviewTask)
             )
-            self.session.add(review)
-            await self.session.flush()
+            review = (await self.session.execute(statement)).scalar_one_or_none()
+            if review is None:
+                review = await self.session.scalar(
+                    select(ReviewTask).where(
+                        ReviewTask.workflow_run_id == run.id,
+                        ReviewTask.iteration == run.iteration,
+                    )
+                )
+            if review is None:
+                raise RuntimeError("Idempotent review task insert failed")
             context["review_id"] = str(review.id)
         elif node == "approve_or_reject":
             if context.get("review_decision") not in {"approve", "reject", "request_changes"}:
@@ -514,25 +730,39 @@ class ResearchReportWorkflow:
                 for flag in ("numbers_valid", "citations_valid", "permissions_valid", "rules_valid")
             ):
                 raise ValueError("Pre-publication controls have not all passed")
-            report = PublishedReport(
-                workflow_run_id=run.id,
-                report_json=context["draft"],
-                published_by=str(context["reviewer_id"]),
-                published_at=utc_now(),
+            publish_statement = (
+                insert(PublishedReport)
+                .values(
+                    workflow_run_id=run.id,
+                    report_json=context["draft"],
+                    published_by=str(context["reviewer_id"]),
+                    published_at=utc_now(),
+                )
+                .on_conflict_do_nothing(index_elements=[PublishedReport.workflow_run_id])
+                .returning(PublishedReport)
             )
-            self.session.add(report)
-            await self.session.flush()
-            context["report_id"] = str(report.id)
+            published_report = (
+                await self.session.execute(publish_statement)
+            ).scalar_one_or_none()
+            if published_report is None:
+                published_report = await self.repository.report_for_run(run.id)
+            if published_report is None:
+                raise RuntimeError("Idempotent report publication failed")
+            context["report_id"] = str(published_report.id)
         return context
 
     async def _check_limits(self, run: WorkflowRun) -> None:
         count = await self.session.scalar(
             select(func.count(WorkflowStep.id)).where(WorkflowStep.workflow_run_id == run.id)
         )
-        if int(count or 0) >= run.max_steps:
+        if int(count or 0) > run.max_steps:
             raise WorkflowLimitError("max_steps exceeded")
         if run.cost_amount > run.cost_budget:
             raise WorkflowLimitError("cost budget exceeded")
+        if run.started_at is not None:
+            elapsed = utc_now() - run.started_at
+            if elapsed.total_seconds() > run.timeout_seconds:
+                raise WorkflowLimitError("workflow timeout exceeded")
 
     async def _require_run(self, run_id: uuid.UUID) -> WorkflowRun:
         run = await self.repository.get_run(run_id)

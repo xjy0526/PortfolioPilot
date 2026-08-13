@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
-from app.core.principal import Principal, get_principal
+from app.core.principal import Principal, get_principal, require_writable
 from prompts.financial_analysis_prompt import ensure_financial_analysis_prompt
 from prompts.registry import PromptRegistry
 
@@ -26,7 +26,7 @@ async def list_prompts(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    principal.require_role("knowledge_admin", "platform_admin")
     prompts = await (await _registry(session)).list_prompts()
     return {"count": len(prompts), "prompts": prompts}
 
@@ -37,7 +37,8 @@ async def create_prompt(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     try:
         template, version = await (await _registry(session)).create_prompt(payload)
         return JSONResponse(
@@ -57,7 +58,8 @@ async def create_prompt_version(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     try:
         version = await (await _registry(session)).create_version(prompt_id, payload)
         if version is None:
@@ -74,7 +76,8 @@ async def publish_prompt_version(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     deployment = await (await _registry(session)).publish(
         prompt_id, version, deployed_by=principal.user_id
     )
@@ -90,7 +93,8 @@ async def rollback_prompt(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    require_writable()
+    principal.require_role("knowledge_admin", "platform_admin")
     target = (payload or {}).get("target_version")
     deployment = await (await _registry(session)).rollback(
         prompt_id,
@@ -108,7 +112,7 @@ async def compare_prompt_versions(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_group("knowledge_admin")
+    principal.require_role("knowledge_admin", "platform_admin")
     try:
         result = await (await _registry(session)).compare_versions(
             str(payload["prompt_id"]),

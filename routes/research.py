@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
-from app.core.principal import Principal, get_principal
+from app.core.principal import Principal, get_principal, require_portfolio_access
+from app.db.repositories import PortfolioRepository, PortfolioValuationRepository
 from app.services.research_knowledge import PostgresKnowledgeService
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from analytics.risk_metrics import build_portfolio_risk_summary
@@ -30,6 +31,7 @@ from services.financial_analysis import (
 )
 from services.market_data.postgres_provider import PostgresPriceHistoryProvider
 from services.market_data.price_history_service import PriceHistoryService
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,19 @@ router = APIRouter()
 @router.get("/api/portfolio/risk-summary")
 async def get_portfolio_risk_summary(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Return structured portfolio risk metrics for frontend and LLM usage."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if portfolio_id is not None:
+        await require_portfolio_access(session, principal, portfolio_id, "read")
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None or not context.summary.stocks:
-        return JSONResponse({"error": "No portfolio data available"}, status_code=503)
+        return await _portfolio_data_unavailable(
+            session, portfolio_id=portfolio_id, principal=principal
+        )
 
     try:
         return await _build_portfolio_risk_summary(
@@ -70,9 +79,15 @@ async def analyze_portfolio_endpoint(
         portfolio_id = uuid.UUID(str(raw_portfolio_id)) if raw_portfolio_id else None
     except ValueError:
         return JSONResponse({"error": "Invalid portfolio_id"}, status_code=422)
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if portfolio_id is not None:
+        await require_portfolio_access(session, principal, portfolio_id, "read")
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None or not context.summary.stocks:
-        return JSONResponse({"error": "No portfolio data available"}, status_code=503)
+        return await _portfolio_data_unavailable(
+            session, portfolio_id=portfolio_id, principal=principal
+        )
 
     language = data.get("lang") or data.get("language") or "zh"
     try:
@@ -146,12 +161,19 @@ async def rag_retrieve_endpoint(
 @router.get("/api/portfolio/rebalance")
 async def get_portfolio_rebalance(
     portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Return deterministic allocation research without placing trades."""
-    context = await LegacyPortfolioAdapter(session).load(portfolio_id=portfolio_id)
+    if portfolio_id is not None:
+        await require_portfolio_access(session, principal, portfolio_id, "read")
+    context = await LegacyPortfolioAdapter(session).load(
+        portfolio_id=portfolio_id, principal=principal
+    )
     if context is None or not context.summary.stocks:
-        return JSONResponse({"error": "No portfolio data available"}, status_code=503)
+        return await _portfolio_data_unavailable(
+            session, portfolio_id=portfolio_id, principal=principal
+        )
 
     try:
         risk_summary = await _build_portfolio_risk_summary(
@@ -230,6 +252,59 @@ def _optional_prices_path() -> Path | None:
             path = BASE_DIR / path
         return resolve_prices_csv(path)
     return resolve_prices_csv()
+
+
+async def _portfolio_data_unavailable(
+    session: AsyncSession,
+    *,
+    portfolio_id: uuid.UUID | None,
+    principal: Principal,
+) -> JSONResponse:
+    """Explain incomplete valuation state without exposing inaccessible portfolios."""
+    portfolio = None
+    if portfolio_id is not None:
+        portfolio = await require_portfolio_access(
+            session, principal, portfolio_id, "read"
+        )
+    else:
+        accessible = await PortfolioRepository(session).list_accessible(
+            user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
+            platform_admin=principal.is_platform_admin,
+        )
+        portfolio = accessible[0] if accessible else None
+    if portfolio is None:
+        return JSONResponse(
+            {"error": "No portfolio data available", "valuation_status": "missing"},
+            status_code=503,
+        )
+    valuation = await PortfolioValuationRepository(session).latest_at_or_before(
+        portfolio.id,
+        utc_now(),
+        preferred_source="ledger_rebuild",
+    )
+    if valuation is None:
+        return JSONResponse(
+            {
+                "error": "No valuation snapshot available",
+                "portfolio_id": str(portfolio.id),
+                "valuation_status": "missing",
+            },
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "error": "Portfolio valuation is incomplete; risk and AI analysis were not run",
+            "portfolio_id": str(portfolio.id),
+            "valuation_status": valuation.valuation_status,
+            "coverage_ratio": float(valuation.coverage_ratio),
+            "priced_asset_count": valuation.priced_asset_count,
+            "unpriced_asset_count": valuation.unpriced_asset_count,
+            "unpriced_assets": valuation.unpriced_assets,
+            "warnings": valuation.warnings,
+        },
+        status_code=422,
+    )
 
 
 async def _build_portfolio_risk_summary(

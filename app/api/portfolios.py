@@ -14,6 +14,12 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
+from app.core.principal import (
+    Principal,
+    get_principal,
+    require_portfolio_access,
+    require_writable,
+)
 from app.db.models import Security
 from app.db.repositories import (
     ImportBatchRepository,
@@ -34,20 +40,24 @@ logger = logging.getLogger(__name__)
 
 @router.get("/portfolios")
 async def list_portfolios(
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict[str, object]]:
-    portfolios = await PortfolioRepository(session).list_active()
+    portfolios = await PortfolioRepository(session).list_accessible(
+        user_id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        platform_admin=principal.is_platform_admin,
+    )
     return [_portfolio_payload(item) for item in portfolios]
 
 
 @router.get("/portfolios/{portfolio_id}")
 async def get_portfolio(
     portfolio_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
-    portfolio = await PortfolioRepository(session).get(portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = await require_portfolio_access(session, principal, portfolio_id, "read")
     return _portfolio_payload(portfolio)
 
 
@@ -55,9 +65,10 @@ async def get_portfolio(
 async def list_transactions(
     portfolio_id: uuid.UUID,
     as_of: datetime | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict[str, object]]:
-    await _require_portfolio(session, portfolio_id)
+    await require_portfolio_access(session, principal, portfolio_id, "read")
     rows = await TransactionRepository(session).list_for_portfolio(
         portfolio_id,
         as_of=_as_utc(as_of) if as_of else None,
@@ -92,9 +103,10 @@ async def list_transactions(
 async def get_positions(
     portfolio_id: uuid.UUID,
     as_of: datetime | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
-    await _require_portfolio(session, portfolio_id)
+    await require_portfolio_access(session, principal, portfolio_id, "read")
     rebuilt = await TransactionLedgerService(session).rebuild(
         portfolio_id,
         as_of=_as_utc(as_of or utc_now()),
@@ -130,9 +142,10 @@ async def get_positions(
 async def get_valuation(
     portfolio_id: uuid.UUID,
     as_of: datetime | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
-    await _require_portfolio(session, portfolio_id)
+    await require_portfolio_access(session, principal, portfolio_id, "read")
     cutoff = _as_utc(as_of or utc_now())
     valuation = await PortfolioValuationRepository(session).latest_at_or_before(
         portfolio_id,
@@ -152,8 +165,12 @@ async def get_valuation(
 async def rebuild_portfolio(
     portfolio_id: uuid.UUID,
     as_of: datetime | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
+    require_writable()
+    principal.require_role("operator", "admin", "platform_admin")
+    await require_portfolio_access(session, principal, portfolio_id, "write")
     try:
         result = await PortfolioValuationService(session).value(
             portfolio_id=portfolio_id,
@@ -173,8 +190,11 @@ async def import_transactions(
     portfolio_id: uuid.UUID,
     file: UploadFile = File(...),
     source: str = Query(default="csv_upload", min_length=1, max_length=80),
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
+    require_writable()
+    await require_portfolio_access(session, principal, portfolio_id, "write")
     content = await file.read(settings.MAX_TRANSACTION_IMPORT_BYTES + 1)
     if len(content) > settings.MAX_TRANSACTION_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="CSV exceeds configured upload limit")
@@ -203,11 +223,13 @@ async def import_transactions(
 @router.get("/import-batches/{batch_id}/errors")
 async def download_import_errors(
     batch_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     batch = await ImportBatchRepository(session).get(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Import batch not found")
+    await require_portfolio_access(session, principal, batch.portfolio_id, "read")
     errors = list((batch.error_summary or {}).get("errors", []))
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=["line", "error", "row_json"])
@@ -229,17 +251,11 @@ async def download_import_errors(
     )
 
 
-async def _require_portfolio(session: AsyncSession, portfolio_id: uuid.UUID):
-    portfolio = await PortfolioRepository(session).get(portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return portfolio
-
-
 def _portfolio_payload(portfolio) -> dict[str, object]:
     return {
         "id": str(portfolio.id),
         "user_id": str(portfolio.user_id),
+        "tenant_id": portfolio.tenant_id,
         "name": portfolio.name,
         "description": portfolio.description,
         "base_currency": portfolio.base_currency,
@@ -272,6 +288,11 @@ async def _valuation_payload(session, valuation, positions) -> dict[str, object]
                 "market_value_base": row.market_value_base,
                 "cost_basis_base": row.cost_basis_base,
                 "unrealized_pnl_base": row.unrealized_pnl_base,
+                "cost_basis_native": row.cost_basis_native,
+                "cost_basis_base_at_trade": row.cost_basis_base_at_trade,
+                "local_price_pnl": row.local_price_pnl,
+                "fx_pnl": row.fx_pnl,
+                "total_pnl_base": row.total_pnl_base,
                 "weight": row.weight,
                 "base_currency": row.base_currency,
                 "lineage": row.snapshot_data,
@@ -286,9 +307,26 @@ async def _valuation_payload(session, valuation, positions) -> dict[str, object]
         ),
         "base_currency": valuation.base_currency,
         "total_market_value": valuation.total_market_value,
+        "priced_market_value": valuation.priced_market_value,
         "total_cost_basis": valuation.total_cost_basis,
         "cash_value": valuation.cash_value,
         "unrealized_pnl": valuation.unrealized_pnl,
+        "valuation_status": valuation.valuation_status,
+        "priced_asset_count": valuation.priced_asset_count,
+        "unpriced_asset_count": valuation.unpriced_asset_count,
+        "unpriced_assets": valuation.unpriced_assets,
+        "data_as_of_earliest": (
+            _as_utc(valuation.data_as_of_earliest).isoformat()
+            if valuation.data_as_of_earliest
+            else None
+        ),
+        "data_as_of_latest": (
+            _as_utc(valuation.data_as_of_latest).isoformat()
+            if valuation.data_as_of_latest
+            else None
+        ),
+        "max_staleness_days": valuation.max_staleness_days,
+        "coverage_ratio": valuation.coverage_ratio,
         "history_completeness": valuation.history_completeness,
         "input_hash": valuation.input_hash,
         "source": valuation.source,

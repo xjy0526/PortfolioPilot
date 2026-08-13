@@ -32,7 +32,9 @@ app/db/models/              SQLAlchemy Declarative Mapping
 app/db/repositories/        SQL 查询与原子 upsert 边界
 app/domain/                 不依赖 HTTP 的账本结果模型
 app/providers/market_data/  Tushare/yfinance 统一 Provider 合同
+app/providers/embeddings.py 应用级复用的语义/测试 Embedding Provider
 app/services/               账本、导入、持仓重建、估值、兼容适配
+app/storage/                Local/S3-compatible 对象存储协议
 app/workers/                独立 Session、互斥锁和可追踪任务入口
 analytics/                  确定性风险指标
 backtest/                   point-in-time 回测、权重漂移与可用性矩阵
@@ -129,6 +131,9 @@ python -m app.workers.run_market_sync
 python -m app.workers.run_position_rebuild
 python -m app.workers.run_daily_pipeline
 python -m app.workers.run_knowledge_ingestion --once
+python -m app.workers.run_research_workflow --once
+python -m app.workers.run_embedding_backfill
+python -m app.workers.run_storage_cleanup
 ```
 
 Web 进程不再运行 APScheduler，也不会在启动时自动请求行情或修改组合状态；定时调度应由 cron、CI scheduler、Cloud Scheduler 或独立任务平台调用 Worker。
@@ -156,7 +161,9 @@ POST /api/market-data/sync
 
 检索先在数据库内执行 ACL、发布版本、有效期与元数据过滤，再分别运行 PostgreSQL `tsvector` 全文检索和 pgvector cosine 检索，最后用 RRF 合并，可配置 Reranker。所有权限来自服务端 `Principal`；客户端 Body/Header 不能声明 `user_id`、permission groups 或 reviewer identity。
 
-Qwen/OpenAI-Compatible HTTP client 与 Embedder 在应用 lifespan 内复用。每次 LLM Trace 保存 Prompt 版本、模型、证据 ID、数据截止时间、代码版本、Provider 原始 usage、usage 来源和成本来源。Provider 未返回 usage 或账单金额时分别标记为估算，不冒充真实成本。
+Qwen/OpenAI-Compatible HTTP client 与 Embedder 在应用 lifespan 内复用。默认 Embedder 是 384 维多语言 SentenceTransformer；production 禁止 hashing fallback，资源不可用会使 readiness 失败。每次 LLM Trace 保存 Prompt 版本、模型、证据 ID、数据截止时间、代码版本、Provider 原始 usage、usage 来源和成本来源。Provider 未返回 usage 或账单金额时分别标记为估算，不冒充真实成本。
+
+Workflow 的 POST 入口只创建 `PENDING` run 并返回 202。独立 Worker 以 `FOR UPDATE SKIP LOCKED` 领取任务，使用 `lease_owner/heartbeat_at/lease_expires_at` 处理进程崩溃；每个节点单独提交 checkpoint。节点唯一键、稳定 LLM Trace key、ReviewTask iteration 唯一键和 PublishedReport run 唯一键共同保证恢复幂等。
 
 SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。完整边界见 [current-limitations.md](current-limitations.md)。
 

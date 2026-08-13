@@ -17,7 +17,7 @@ async def get_evaluation_dashboard(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_any_group("research_reviewer", "knowledge_admin")
+    principal.require_role("research_reviewer", "knowledge_admin", "platform_admin")
     return await evaluation_dashboard(session, limit)
 
 
@@ -27,6 +27,6 @@ async def get_evaluation_traces(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    principal.require_any_group("research_reviewer", "knowledge_admin")
+    principal.require_role("research_reviewer", "knowledge_admin", "platform_admin")
     traces = await PromptRegistry(session).list_traces(limit)
     return {"count": len(traces), "traces": traces}
