@@ -1,9 +1,4 @@
-"""Evaluate structured LLM financial analysis quality.
-
-The evaluator uses synthetic portfolio-risk scenarios with known expected risk
-signals. It can call the real Qwen-compatible analysis path, but defaults to a
-deterministic mock response when no Qwen API key is configured.
-"""
+"""Evaluate structured LLM financial analysis quality with explicit modes."""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +11,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from evaluation.reporting import (
+    EVALUATION_MODES,
+    build_evaluation_metadata,
+    require_automated_runner_mode,
+    validate_evaluation_report,
+)
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
     parse_llm_json_response,
@@ -30,12 +31,6 @@ RISK_ALIASES: dict[str, list[str]] = {
     "prediction_market_exposure": ["prediction market", "polymarket", "预测市场"],
     "low_risk": ["low risk", "低风险", "defensive", "稳健"],
     "multi_asset_diversification": ["diversified", "diversification", "多资产", "分散"],
-}
-EVALUATION_MODES = {
-    "synthetic_smoke",
-    "live_model_eval",
-    "human_gold_eval",
-    "production_monitoring",
 }
 
 
@@ -61,24 +56,26 @@ async def run_llm_evaluation(
     """Run the evaluation suite and optionally write an evaluation report."""
     if use_mock is not None:
         mode = "synthetic_smoke" if use_mock else "live_model_eval"
-    if mode not in {"synthetic_smoke", "live_model_eval"}:
-        raise ValueError("LLM test execution supports synthetic_smoke or live_model_eval")
-    if mode == "live_model_eval" and not settings.qwen_configured:
-        raise RuntimeError("live_model_eval requires an explicit QWEN_API_KEY")
-    if mode == "live_model_eval" and session is None:
+    canonical_mode = require_automated_runner_mode(mode)
+    if canonical_mode == "live_model_eval" and not _ai_provider_configured():
+        raise RuntimeError(
+            "live_model_eval requires an API key for the configured AI_PROVIDER; "
+            "mock fallback is disabled"
+        )
+    if canonical_mode == "live_model_eval" and session is None:
         from app.db.session import AsyncSessionFactory
 
         async with AsyncSessionFactory() as owned_session:
             report = await run_llm_evaluation(
                 output_path=output_path,
                 language=language,
-                mode=mode,
+                mode=canonical_mode,
                 session=owned_session,
             )
             await owned_session.commit()
             return report
     cases = build_portfolio_risk_test_cases()
-    effective_mock = mode == "synthetic_smoke"
+    effective_mock = canonical_mode == "synthetic_smoke"
     case_results = []
 
     for case in cases:
@@ -91,15 +88,46 @@ async def run_llm_evaluation(
         case_results.append(result)
 
     metrics = aggregate_metrics(case_results)
+    provider_name, model_name = _evaluation_model_identity(effective_mock)
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,
-        "data_classification": "synthetic" if effective_mock else "live_model",
-        "model": settings.QWEN_MODEL if not effective_mock else "mock-llm-financial-analysis",
+        **build_evaluation_metadata(
+            evaluation_mode=canonical_mode,
+            model_provider=provider_name,
+            model_name=model_name,
+            dataset_name="portfolio_risk_cases",
+            dataset_version="v1",
+            mock_response_used=effective_mock,
+            synthetic_data_used=True,
+        ),
+        # Compatibility aliases for existing report consumers.
+        "mode": canonical_mode,
+        "model": model_name,
+        "data_classification": (
+            "synthetic_fixture_with_mock_responses"
+            if effective_mock
+            else "synthetic_fixture_with_live_model_eval_responses"
+        ),
+        "evaluation_status": (
+            "completed" if all(not item["error"] for item in case_results)
+            else "completed_with_case_errors"
+        ),
         "test_case_count": len(cases),
+        "valid_response_case_count": sum(bool(item["json_valid"]) for item in case_results),
         "metrics": metrics,
+        "metric_sample_sizes": {name: len(case_results) for name in metrics},
+        "metric_disclosures": {
+            "hallucination_flag_rate": {
+                "evaluation_mode": canonical_mode,
+                "sample_size": len(case_results),
+                "valid_response_case_count": sum(
+                    bool(item["json_valid"]) for item in case_results
+                ),
+                "is_real_model_quality_claim": canonical_mode == "live_model_eval",
+            }
+        },
         "cases": case_results,
     }
+    validate_evaluation_report(report)
 
     if output_path:
         path = Path(output_path)
@@ -132,6 +160,7 @@ async def evaluate_case(
                 evidence=case.evidence,
                 language=language,
                 session=session,
+                allow_fallback=False,
             )
             raw_response = json.dumps(parsed, ensure_ascii=False)
         json_valid = True
@@ -178,6 +207,23 @@ async def evaluate_case(
         "evidence_used_values": response.get("evidence_used", []) if response else [],
         "error": error,
     }
+
+
+def _ai_provider_configured() -> bool:
+    configured = getattr(settings, "ai_configured", None)
+    if configured is not None:
+        return bool(configured)
+    return bool(getattr(settings, "qwen_configured", False))
+
+
+def _evaluation_model_identity(use_mock: bool) -> tuple[str, str]:
+    if use_mock:
+        return "deterministic_mock", "portfolio-risk-mock-v1"
+    provider = str(getattr(settings, "AI_PROVIDER", "qwen") or "qwen").strip().lower()
+    configured_model = getattr(settings, "configured_ai_model", None)
+    if configured_model:
+        return provider, str(configured_model)
+    return provider, str(getattr(settings, "QWEN_MODEL", "unknown"))
 
 
 def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:

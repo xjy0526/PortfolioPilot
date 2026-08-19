@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ReviewDecision, WorkflowRun, WorkflowStep
-from evaluation.llm_eval import EVALUATION_MODES, run_llm_evaluation_sync
+from evaluation.llm_eval import run_llm_evaluation_sync
+from evaluation.reporting import (
+    EVALUATION_MODES,
+    build_evaluation_metadata,
+    report_metadata_view,
+    require_automated_runner_mode,
+    validate_evaluation_report,
+)
 from evaluation.retrieval_eval import run_retrieval_evaluation
 from prompts.registry import PromptRegistry
 from rag.parsers import parse_document, structured_chunks
@@ -31,21 +37,25 @@ def run_full_evaluation(
     top_k: int = 5,
     mode: str = "synthetic_smoke",
 ) -> dict[str, Any]:
-    if mode not in EVALUATION_MODES:
-        raise ValueError(f"Unsupported evaluation mode: {mode}")
-    if mode not in {"synthetic_smoke", "live_model_eval"}:
-        raise ValueError(
-            "human_gold_eval and production_monitoring require externally supplied reviewed outputs"
-        )
+    canonical_mode = require_automated_runner_mode(mode)
+    generation = run_llm_evaluation_sync(mode=canonical_mode)
     retrieval = run_retrieval_evaluation(top_k=top_k)
-    generation = run_llm_evaluation_sync(mode=mode)
     workflow = _empty_workflow_metrics()
     badcases = _build_badcases(retrieval, generation)
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,
-        "evaluation_mode_taxonomy": sorted(EVALUATION_MODES),
-        "mock_response_used": mode == "synthetic_smoke",
+        **build_evaluation_metadata(
+            evaluation_mode=canonical_mode,
+            model_provider=str(generation["model_provider"]),
+            model_name=str(generation["model_name"]),
+            dataset_name="portfolio_risk_and_retrieval_gold",
+            dataset_version="v1",
+            mock_response_used=bool(generation["mock_response_used"]),
+            synthetic_data_used=True,
+        ),
+        # Compatibility alias for existing report consumers.
+        "mode": canonical_mode,
+        "evaluation_mode_taxonomy": list(EVALUATION_MODES),
+        "evaluation_status": generation["evaluation_status"],
         "layers": {
             "retrieval": {
                 "metrics": retrieval["metrics"],
@@ -66,6 +76,9 @@ def run_full_evaluation(
                     "claim_support_rate": generation["metrics"]["claim_support_rate"],
                 },
                 "case_count": generation["test_case_count"],
+                "valid_response_case_count": generation["valid_response_case_count"],
+                "metric_sample_sizes": generation["metric_sample_sizes"],
+                "metric_disclosures": generation["metric_disclosures"],
                 "cases": generation["cases"],
             },
             "workflow": workflow,
@@ -83,6 +96,7 @@ def run_full_evaluation(
         "badcases": badcases,
         "badcase_distribution": {label: sum(item["label"] == label for item in badcases) for label in BADCASE_LABELS},
     }
+    validate_evaluation_report(report)
     if output_path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,15 +104,49 @@ def run_full_evaluation(
     return report
 
 
-async def evaluation_dashboard(session: AsyncSession, limit: int = 100) -> dict[str, Any]:
+async def evaluation_dashboard(
+    session: AsyncSession,
+    limit: int = 100,
+    *,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
     traces = await PromptRegistry(session).list_traces(limit)
     workflow_metrics = await _workflow_metrics(session)
-    report_path = Path(__file__).resolve().parent.parent / "cache" / "full_evaluation_report.json"
-    full_report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    resolved_report_path = report_path or (
+        Path(__file__).resolve().parent.parent / "cache" / "full_evaluation_report.json"
+    )
+    full_report = (
+        json.loads(resolved_report_path.read_text(encoding="utf-8"))
+        if resolved_report_path.exists()
+        else {}
+    )
+    metadata = report_metadata_view(full_report)
+    generation_layer = full_report.get("layers", {}).get("generation", {}) if metadata else {}
+    generation_metrics = generation_layer.get("metrics", {})
+    evaluation_report = (
+        {
+            "status": "available",
+            **metadata,
+            "case_count": int(generation_layer.get("case_count", 0)),
+            "valid_response_case_count": int(
+                generation_layer.get("valid_response_case_count", 0)
+            ),
+            "hallucination_flag_rate": generation_metrics.get("hallucination_rate"),
+            "metric_disclosures": generation_layer.get("metric_disclosures", {}),
+        }
+        if metadata is not None
+        else {
+            "status": "unavailable",
+            "reason": "No evaluation report with complete provenance is available",
+        }
+    )
     return {
         "metric_trends": _trace_trends(traces),
         "prompt_comparisons": [],
-        "badcase_distribution": full_report.get("badcase_distribution", {}),
+        "badcase_distribution": (
+            full_report.get("badcase_distribution", {}) if metadata is not None else {}
+        ),
+        "evaluation_report": evaluation_report,
         "latency_cost": {
             "average_latency_ms": _average(traces, "duration_ms"),
             "total_cost_amount": round(
@@ -153,7 +201,7 @@ async def _workflow_metrics(session: AsyncSession) -> dict[str, Any]:
             "failure_rate": round(failed / run_count, 4) if run_count else 0.0,
         },
         "run_count": run_count,
-        "data_source": "postgresql_production_runs",
+        "data_source": "postgresql_workflow_runs",
     }
 
 
@@ -275,6 +323,7 @@ def _trace_trends(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "duration_ms": item.get("duration_ms", 0),
             "cost_amount": item.get("cost_amount"),
             "cost_source": item.get("cost_source"),
+            "output_schema_valid": item.get("output_schema_valid"),
             "status": item["status"],
         }
         for item in reversed(traces)

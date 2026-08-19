@@ -173,4 +173,4 @@ SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._g
 
 `backtest_runs` 保存数据、代码、配置和组合快照 provenance；`backtest_rebalance_snapshots` 保存每次调仓前后权重、eligible universe、排除原因和成本；`backtest_strategy_results` 保存策略指标与 NAV。相同组合快照、价格数据、配置和代码版本生成相同缓存键。
 
-确定性优化器独占 `target_weight`。LLM 合同只输出 `research_observations` 与 `review_priorities`，旧 `rebalance_suggestions` 仅为 deprecated 兼容字段。评测明确区分 synthetic smoke、live model、human gold 与 production monitoring，CI 不调用真实模型。
+确定性优化器独占 `target_weight`。LLM 合同只输出 `research_observations` 与 `review_priorities`，旧 `rebalance_suggestions` 仅为 deprecated 兼容字段。评测明确区分 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 与 `production_monitoring`，CI 不调用真实模型。所有评测报告都携带 commit、模式、模型、数据集版本和 mock/人工/生产数据披露；缺少相应受控数据源的模式拒绝执行。

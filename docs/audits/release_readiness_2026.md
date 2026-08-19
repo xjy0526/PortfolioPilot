@@ -7,6 +7,8 @@
 > 审计提交：`bb4e5d9e176503cc7d19b047583a70c1ac9fdde6`
 >
 > 执行日期：2026-08-19；本轮命令完成时间约为 2026-08-19 10:37 UTC（18:37 Asia/Shanghai）。
+>
+> 指标口径：本文全部测试数、覆盖率和 synthetic 指标均为上述 commit 与日期的历史快照，不代表后续提交或真实模型效果。
 
 ## 1. 执行结论
 
@@ -155,7 +157,7 @@ PR #2 的上述检查完成于 2026-08-13 UTC，检查对象就是本次审计 S
 - PostgreSQL 开发服务：`docker-compose.yml`，镜像为 `pgvector/pgvector:0.8.2-pg16`。
 - GCP 部署：`.github/workflows/deploy.yml`，只在 `main` 的 CI 成功后执行 migration job 和 Cloud Run 部署。
 - Render Blueprint：`render.yaml`，与 GCP 部署并存。
-- CI：`.github/workflows/ci.yml`，包含 Python 3.12、PostgreSQL、Ruff、Mypy、Alembic 往返、synthetic smoke、pytest coverage、pip-audit、Gitleaks 和 Docker build。
+- CI：`.github/workflows/ci.yml`，包含 Python 3.12、PostgreSQL、Ruff、Mypy、Alembic 往返、`synthetic_smoke`、pytest coverage、pip-audit、Gitleaks 和 Docker build。
 
 ### 3.10 测试目录与 marker
 
@@ -389,7 +391,7 @@ python -m evaluation.run_full_eval \
 6. 当前报告缺少内建 commit SHA、真实模型布尔值和人工标注布尔值。
 7. 版本化 generation/retrieval JSONL 与实际 full eval case source 尚未统一。
 
-在补齐上述问题前，只能对外表述为：“在 SHA `bb4e5d9` 上，synthetic smoke 工程链路通过”；不能表述为模型准确率、生产召回率或机构业务效果。
+在补齐上述问题前，只能对外表述为：“在 SHA `bb4e5d9` 上，`synthetic_smoke` 工程链路通过”；不能表述为模型准确率、生产召回率或机构业务效果。
 
 ## 14. 推荐提交与合并顺序
 

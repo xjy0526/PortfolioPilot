@@ -181,6 +181,7 @@ validation, trigger one retry and then use the safe fallback.
 ## Evaluation & Trace (`routes/evaluation.py`)
 
 评测面板与全局 Trace 要求 `research_reviewer` 或 `knowledge_admin`；不会读取客户端自报身份。
+`/api/evaluation/dashboard` 的 `evaluation_report` 只接受带完整 commit SHA、数据集版本和模式披露的报告；缺少这些字段的旧缓存返回 `status=unavailable`，不会显示为 0 分或有效结果。模式值固定为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval`、`production_monitoring`。
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|

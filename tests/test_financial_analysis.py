@@ -137,3 +137,38 @@ async def test_invalid_json_trace_keeps_provider_usage_and_cost(monkeypatch):
     assert trace["output_tokens"] == 7
     assert trace["cost_amount"] == pytest.approx(0.0042)
     assert trace["provider_usage"]["prompt_tokens"] == 101
+
+
+@pytest.mark.asyncio
+async def test_strict_evaluation_path_does_not_return_safe_fallback(monkeypatch):
+    registry = RecordingTraceRegistry()
+    prompt_version = SimpleNamespace(
+        prompt_id="financial-analysis",
+        version=1,
+        model="qwen-plus",
+        temperature=0.2,
+        template=(
+            "{language} {portfolio_risk_summary_json} {evidence_text} "
+            "{retry_instruction}"
+        ),
+        output_schema={"type": "object"},
+    )
+
+    async def fake_prompt_seed(_registry):
+        return prompt_version
+
+    monkeypatch.setattr(
+        "services.financial_analysis.ensure_financial_analysis_prompt",
+        fake_prompt_seed,
+    )
+    with pytest.raises(RuntimeError, match="fallback is disabled"):
+        await analyze_portfolio_with_llm(
+            {"risk_score": 5.0, "asset_metrics": {}, "concentration_flags": []},
+            provider=InvalidUsageProvider(),
+            registry=registry,
+            max_retries=0,
+            allow_fallback=False,
+        )
+
+    assert registry.fallback_trace_id == ""
+    assert registry.records[0]["status"] == "failed"

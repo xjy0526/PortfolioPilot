@@ -491,10 +491,10 @@ python -m evaluation.run_retrieval_eval
 python -m evaluation.run_full_eval --mode synthetic_smoke
 ```
 
-CI 只运行可复现的 `synthetic_smoke`。真实 Qwen 评测必须显式运行，且没有 `QWEN_API_KEY` 时直接失败，不会回退到 mock：
+CI 只运行可复现的 `synthetic_smoke`。真实模型评测必须显式运行，且没有所选 `AI_PROVIDER` 对应的 API Key 时直接失败，不会回退到 mock：
 
 ```bash
-python -m evaluation.run_full_eval --mode live_model
+python -m evaluation.run_full_eval --mode live_model_eval
 ```
 
 输出 `cache/full_evaluation_report.json`，覆盖：
@@ -505,11 +505,13 @@ python -m evaluation.run_full_eval --mode live_model
 - 20 条组合风险用例、公开检索 golden set、权限/过期/证据不足/冲突证据；
 - 中英文切片统计及标准 badcase 标签。
 
-评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和 `production_monitoring`。后两类必须接入人工标注或生产观测后才能执行，不能用 mock 冒充。版本化黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，全部为本项目自行构造的公开培训夹具，不包含真实持仓、授权研报或私有数据。
+评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和 `production_monitoring`。`synthetic_smoke` 使用自行构造的数据与确定性 mock response，只验证工程链路和规则，不代表真实模型准确率。`human_gold_eval` 没有显式人工标签时拒绝执行；`production_monitoring` 没有真实生产观测时拒绝执行，二者都不会合成结果。版本化黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，全部为本项目自行构造的公开培训夹具，不包含真实持仓、授权研报或私有数据。
+
+每份评测 JSON 都保存 `evaluation_mode`、UTC 生成时间、完整 Git commit SHA、模型 Provider/名称、数据集名称/版本，以及 mock、人工标签和生产数据使用标记。`hallucination_flag_rate` 必须与报告模式、样本量和有效响应数一起解释；例如 synthetic 报告中的 0 只表示该批规则夹具没有触发标记，不是“模型零幻觉”。仓库不在 README 中长期写死测试数或覆盖率，当前状态以 [CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml) 和带日期/SHA 的审计快照为准。
 
 Prompt Registry 当前的 `static_render_success_rate` 和 `static_expected_token_hit_rate` 仅是模板静态检查，不是模型效果 A/B。真实 Prompt A/B 必须使用相同模型、相同测试集、相同温度及其他采样参数。
 
-Dashboard 的 `Eval & Trace` 页面展示 Prompt 版本对比、badcase、延迟/成本和人工采纳率。只读接口包括：
+Dashboard 的 `Eval & Trace` 页面同时展示评测模式、mock 标记、数据集版本、样本量、报告 commit SHA，以及 Prompt Trace、badcase、延迟/成本和人工采纳率。缺少完整 provenance 的旧报告不会显示为有效评测。只读接口包括：
 
 ```text
 GET /api/evaluation/dashboard
@@ -527,6 +529,7 @@ mypy .
 python -m compileall -q app analytics backtest evaluation prompts rag routes services workflows
 node --check static/app.js
 pip check
+python scripts/check_evaluation_integrity.py
 ```
 
 完整评测用于模型与流程质量，不替代单元测试和 API 集成测试。

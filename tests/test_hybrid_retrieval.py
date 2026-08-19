@@ -158,3 +158,8 @@ def test_retrieval_evaluation_reports_quality_and_safety_metrics(tmp_path):
     assert report["metrics"]["citation_reference_validity"] == 1.0
     assert report["metrics"]["expired_document_hit_rate"] == 0.0
     assert report["metrics"]["unauthorized_document_hit_count"] == 0
+    assert report["evaluation_mode"] == "synthetic_smoke"
+    assert report["mock_response_used"] is False
+    assert report["synthetic_data_used"] is True
+    assert report["dataset_version"] == "v1"
+    assert len(report["git_commit_sha"]) == 40

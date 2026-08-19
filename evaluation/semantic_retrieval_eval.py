@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ import numpy as np
 
 from app.providers.embeddings import EmbeddingProvider, build_embedding_provider
 from config import settings
+from evaluation.reporting import build_evaluation_metadata, validate_evaluation_report
 from rag.hybrid_retriever import BM25Retriever, reciprocal_rank_fusion
 
 DATASET_PATH = Path(__file__).resolve().parent / "datasets" / "retrieval_gold_v1.jsonl"
@@ -60,7 +60,16 @@ def run_semantic_retrieval_comparison(
             }
         )
     report = {
-        "generated_at": datetime.now(UTC).isoformat(),
+        **build_evaluation_metadata(
+            evaluation_mode="synthetic_smoke",
+            model_provider=encoder.provider_name,
+            model_name=encoder.model_name,
+            dataset_name="bilingual_retrieval_gold",
+            dataset_version="v1",
+            mock_response_used=False,
+            synthetic_data_used=True,
+        ),
+        "data_classification": "self_authored_synthetic_public_fixture",
         "dataset": DATASET_PATH.name,
         "dataset_source": "self-authored synthetic public training fixtures",
         "case_count": len(cases),
@@ -85,6 +94,7 @@ def run_semantic_retrieval_comparison(
         ),
         "cases": case_results,
     }
+    validate_evaluation_report(report)
     if output_path is not None:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)

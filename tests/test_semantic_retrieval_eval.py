@@ -29,3 +29,8 @@ def test_hashing_comparison_is_explicitly_not_semantic(tmp_path: Path):
     assert report["embedding"]["semantic_model"] is False
     assert report["interpretation_allowed"] is False
     assert "non-semantic" in report["warning"]
+    assert report["evaluation_mode"] == "synthetic_smoke"
+    assert report["mock_response_used"] is False
+    assert report["synthetic_data_used"] is True
+    assert report["dataset_version"] == "v1"
+    assert len(report["git_commit_sha"]) == 40

@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from evaluation.reporting import build_evaluation_metadata, validate_evaluation_report
 from rag.models import PermissionContext
 from rag.repository import KnowledgeRepository
 from rag.retriever import HashingEmbedder
@@ -50,7 +51,16 @@ def run_retrieval_evaluation(
         ]
         ranking_cases = [item for item in case_results if item["relevant_document_count"] > 0]
         report = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            **build_evaluation_metadata(
+                evaluation_mode="synthetic_smoke",
+                model_provider="hashing",
+                model_name="legacy-hashing-embedder-v1",
+                dataset_name="offline_hybrid_retrieval_fixture",
+                dataset_version="v1",
+                mock_response_used=False,
+                synthetic_data_used=True,
+            ),
+            "data_classification": "self_authored_synthetic_public_fixture",
             "retriever": "hybrid_bm25_dense_rrf_hashing",
             "top_k": top_k,
             "test_case_count": len(case_results),
@@ -66,6 +76,7 @@ def run_retrieval_evaluation(
             },
             "cases": case_results,
         }
+        validate_evaluation_report(report)
         if output_path:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)

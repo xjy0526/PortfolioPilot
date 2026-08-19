@@ -10,6 +10,7 @@ import json
 
 from config import settings
 from evaluation.llm_eval import run_llm_evaluation_sync
+from evaluation.reporting import EVALUATION_MODES
 
 
 def main() -> None:
@@ -19,15 +20,14 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         default="synthetic_smoke",
-        choices=["synthetic_smoke", "live_model"],
+        choices=EVALUATION_MODES,
     )
     args = parser.parse_args()
 
-    mode = "live_model_eval" if args.mode == "live_model" else args.mode
     report = run_llm_evaluation_sync(
         output_path=args.output,
         language=args.lang,
-        mode=mode,
+        mode=args.mode,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

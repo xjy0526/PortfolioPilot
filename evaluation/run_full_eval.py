@@ -6,6 +6,7 @@ import json
 
 from config import settings
 from evaluation.full_eval import run_full_evaluation
+from evaluation.reporting import EVALUATION_MODES
 
 
 def main() -> None:
@@ -15,12 +16,14 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         default="synthetic_smoke",
-        choices=["synthetic_smoke", "live_model"],
-        help="CI-safe synthetic smoke or explicit live Qwen evaluation",
+        choices=EVALUATION_MODES,
+        help=(
+            "Evaluation mode. Human and production modes reject execution until their "
+            "required governed data sources are supplied."
+        ),
     )
     args = parser.parse_args()
-    mode = "live_model_eval" if args.mode == "live_model" else args.mode
-    report = run_full_evaluation(args.output, top_k=max(1, args.top_k), mode=mode)
+    report = run_full_evaluation(args.output, top_k=max(1, args.top_k), mode=args.mode)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

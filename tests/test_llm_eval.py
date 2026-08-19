@@ -51,8 +51,20 @@ def test_run_llm_evaluation_mock_writes_report(tmp_path):
     assert saved["metrics"]["review_priority_explainability_rate"] == 1.0
     assert saved["metrics"]["claim_support_rate"] == 1.0
     assert saved["metrics"]["hallucination_flag_rate"] == 0.0
+    assert saved["evaluation_mode"] == "synthetic_smoke"
+    assert saved["mock_response_used"] is True
+    assert saved["human_label_used"] is False
+    assert saved["production_data_used"] is False
+    assert len(saved["git_commit_sha"]) == 40
+    assert saved["dataset_version"] == "v1"
+    assert saved["metric_disclosures"]["hallucination_flag_rate"] == {
+        "evaluation_mode": "synthetic_smoke",
+        "sample_size": saved["test_case_count"],
+        "valid_response_case_count": saved["test_case_count"],
+        "is_real_model_quality_claim": False,
+    }
     assert report["mode"] == "synthetic_smoke"
-    assert report["data_classification"] == "synthetic"
+    assert report["data_classification"] == "synthetic_fixture_with_mock_responses"
 
 
 def test_aggregate_metrics_handles_hallucination_flag_rate():
@@ -103,5 +115,17 @@ def test_live_model_eval_never_silently_falls_back_to_mock(monkeypatch):
         "settings",
         SimpleNamespace(qwen_configured=False, QWEN_MODEL="qwen-test"),
     )
-    with pytest.raises(RuntimeError, match="requires an explicit QWEN_API_KEY"):
+    with pytest.raises(RuntimeError, match="requires an API key"):
         run_llm_evaluation_sync(mode="live_model_eval")
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        ("human_gold_eval", "requires an explicitly supplied human-labeled dataset"),
+        ("production_monitoring", "requires an explicit production observation source"),
+    ],
+)
+def test_governed_modes_refuse_without_required_data(mode, message):
+    with pytest.raises(RuntimeError, match=message):
+        run_llm_evaluation_sync(mode=mode)

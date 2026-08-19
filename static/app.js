@@ -1115,26 +1115,49 @@ async function loadEvaluationDashboard() {
         const response = await fetch('/api/evaluation/dashboard?limit=100');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        const trends = data.metric_trends || [];
-        const validRate = trends.length
-            ? trends.filter(item => item.schema_valid).length / trends.length
-            : 0;
+        const evalReport = data.evaluation_report || {};
+        const reportAvailable = evalReport.status === 'available';
         const badcases = data.badcase_distribution || {};
         const comparisons = data.prompt_comparisons || [];
         const traces = data.traces || [];
+        const schemaTraces = traces.filter(item => typeof item.output_schema_valid === 'boolean');
+        const validRate = schemaTraces.length
+            ? schemaTraces.filter(item => item.output_schema_valid).length / schemaTraces.length
+            : null;
+        const workflowRuns = Number(data.workflow?.run_count || 0);
+        const hallucinationRate = reportAvailable && typeof evalReport.hallucination_flag_rate === 'number'
+            ? formatPercentDecimal(evalReport.hallucination_flag_rate)
+            : '—';
+        const reportMode = reportAvailable ? evalReport.evaluation_mode : (isZh() ? '暂无报告' : 'No report');
+        const reportSource = !reportAvailable
+            ? '—'
+            : evalReport.mock_response_used
+                ? (isZh() ? 'Mock 响应' : 'Mock responses')
+                : evalReport.human_label_used
+                    ? (isZh() ? '人工标签' : 'Human labels')
+                    : evalReport.production_data_used
+                        ? (isZh() ? '生产观测' : 'Production observations')
+                        : (isZh() ? '模型 API 响应 / 自构造数据' : 'Model API responses / synthetic data');
         container.innerHTML = `
+            <div class="research-chip-list">
+                <span class="research-chip ${evalReport.mock_response_used ? 'warn' : ''}">${isZh() ? '模式' : 'Mode'}: ${_escapeHtml(reportMode)}</span>
+                <span class="research-chip">${isZh() ? '来源' : 'Source'}: ${_escapeHtml(reportSource)}</span>
+                <span class="research-chip">${isZh() ? '数据集' : 'Dataset'}: ${reportAvailable ? `${_escapeHtml(evalReport.dataset_name)} ${_escapeHtml(evalReport.dataset_version)}` : '—'}</span>
+                <span class="research-chip">${isZh() ? '样本' : 'Cases'}: ${reportAvailable ? Number(evalReport.case_count || 0) : '—'}</span>
+                <span class="research-chip">Commit: ${reportAvailable ? _escapeHtml(String(evalReport.git_commit_sha || '').slice(0, 8)) : '—'}</span>
+            </div>
             <div class="research-kpi-grid eval-kpi-grid">
-                <div class="research-kpi"><span>${isZh() ? 'Schema 合规率' : 'Schema Valid'}</span><strong>${formatPercentDecimal(validRate)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '样本幻觉标记率' : 'Flagged Hallucination Rate'}</span><strong>${hallucinationRate}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'Trace Schema 合规率' : 'Trace Schema Valid'}</span><strong>${validRate === null ? '—' : formatPercentDecimal(validRate)}</strong></div>
                 <div class="research-kpi"><span>${isZh() ? '平均延迟' : 'Avg Latency'}</span><strong>${Number(data.latency_cost?.average_latency_ms || 0).toFixed(0)} ms</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '累计成本' : 'Total Cost'}</span><strong>$${Number(data.latency_cost?.total_estimated_cost || 0).toFixed(4)}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '人工采纳率' : 'Human Adoption'}</span><strong>${formatPercentDecimal(data.human_adoption_rate || 0)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '累计成本' : 'Total Cost'}</span><strong>${data.latency_cost?.contains_estimated_cost ? '~' : ''}$${Number(data.latency_cost?.total_cost_amount || 0).toFixed(4)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '人工采纳率' : 'Human Adoption'}</span><strong>${workflowRuns ? formatPercentDecimal(data.human_adoption_rate || 0) : '—'}</strong></div>
                 <div class="research-kpi"><span>${isZh() ? 'Prompt 对比' : 'Prompt Comparisons'}</span><strong>${comparisons.length}</strong></div>
-                <div class="research-kpi"><span>Trace</span><strong>${traces.length}</strong></div>
             </div>
             <div class="analyse-row eval-grid">
                 <div class="chart-card">
                     <div class="chart-header"><h3>${isZh() ? 'Badcase 分布' : 'Badcase Distribution'}</h3></div>
-                    <div class="research-chip-list">${Object.entries(badcases).map(([key, value]) => `<span class="research-chip ${value ? 'warn' : ''}">${_escapeHtml(key)}: ${value}</span>`).join('') || '<span class="research-chip">No badcases</span>'}</div>
+                    <div class="research-chip-list">${Object.entries(badcases).map(([key, value]) => `<span class="research-chip ${value ? 'warn' : ''}">${_escapeHtml(key)}: ${value}</span>`).join('') || `<span class="research-chip">${isZh() ? '暂无可追溯评测报告' : 'No traceable evaluation report'}</span>`}</div>
                 </div>
                 <div class="chart-card">
                     <div class="chart-header"><h3>${isZh() ? 'Prompt 版本对比' : 'Prompt Version Comparison'}</h3></div>
@@ -1145,8 +1168,8 @@ async function loadEvaluationDashboard() {
             </div>
             <div class="chart-card">
                 <div class="chart-header"><h3>${isZh() ? '最近 Trace：延迟 / 成本' : 'Recent Traces: Latency / Cost'}</h3></div>
-                <div class="research-table-wrap"><table class="research-table"><thead><tr><th>Time</th><th>Scene</th><th>Prompt</th><th>Model</th><th>Latency</th><th>Cost</th><th>Status</th><th>Review</th></tr></thead><tbody>
-                ${traces.slice(0, 50).map(item => `<tr><td>${_escapeHtml(item.created_at || '')}</td><td>${_escapeHtml(item.business_scene || '')}</td><td>${_escapeHtml(item.prompt_id)} v${item.prompt_version}</td><td>${_escapeHtml(item.model)}</td><td>${Number(item.latency_ms || 0).toFixed(0)} ms</td><td>$${Number(item.estimated_cost || 0).toFixed(6)}</td><td>${_escapeHtml(item.status)}</td><td>${_escapeHtml(item.review_decision || '—')}</td></tr>`).join('') || `<tr><td colspan="8">${isZh() ? '暂无 Trace' : 'No traces yet'}</td></tr>`}
+                <div class="research-table-wrap"><table class="research-table"><thead><tr><th>Time</th><th>Scene</th><th>Provider</th><th>Model</th><th>Latency</th><th>Cost</th><th>Status</th><th>Review</th></tr></thead><tbody>
+                ${traces.slice(0, 50).map(item => `<tr><td>${_escapeHtml(item.created_at || '')}</td><td>${_escapeHtml(item.business_scene || '')}</td><td>${_escapeHtml(item.provider || '')}</td><td>${_escapeHtml(item.model || '')}</td><td>${Number(item.duration_ms || 0).toFixed(0)} ms</td><td>${item.cost_source !== 'provider' ? '~' : ''}${_escapeHtml(item.cost_currency || '')} ${Number(item.cost_amount || 0).toFixed(6)}</td><td>${_escapeHtml(item.status || '')}</td><td>${_escapeHtml(item.review_decision || '—')}</td></tr>`).join('') || `<tr><td colspan="8">${isZh() ? '暂无 Trace' : 'No traces yet'}</td></tr>`}
                 </tbody></table></div>
             </div>`;
         if (window.lucide) lucide.createIcons();

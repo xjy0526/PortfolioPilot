@@ -35,7 +35,9 @@ yfinance 是非授权的公开数据接口适配，不提供生产 SLA。它可�
 | 结构化 LLM 分析 | 没有匹配 `AI_PROVIDER` 的 API Key | 使用安全模板或 mock provider，`ai_available=false`，`source=mock/fallback` |
 | LLM 输出校验 | JSON/Schema 校验重试后仍失败 | 返回安全模板，记录失败 Trace 和 fallback 状态 |
 | 回测行情 | 解析后没有可用真实价格 CSV | 生成固定种子 mock 行情，`mock_price_data_used=true`、`data_source=mock_price_data` |
-| 完整模型评测 | 显式使用 `--mode live_model` 且缺少 Qwen Key | 直接失败，不回退 mock，也不生成伪 live 报告 |
+| 完整模型评测 | 显式使用 `--mode live_model_eval` 且缺少所选 Provider 的 API Key | 直接失败，不回退 mock，也不生成伪 live 报告 |
+| 人工黄金集评测 | 使用 `--mode human_gold_eval` 但未提供人工标签 | 拒绝执行，不把自构造夹具标成 `human_gold_eval` |
+| 生产监控 | 使用 `--mode production_monitoring` 但无生产观测源 | 拒绝执行，不生成合成生产指标 |
 | RAG embedding（development/test） | sentence-transformers 不可用且 `RAG_ALLOW_HASHING_FALLBACK=true` | 使用明确标记的非语义 hashing provider；不得把结果宣传为语义检索效果 |
 | RAG embedding（production） | sentence-transformers 模型无法从镜像缓存加载 | 禁止 hashing fallback，`/health/ready` 返回 503，知识 Worker 明确失败 |
 | RAG 数据库 | PostgreSQL/pgvector 不可用 | 核心知识 API 和 Workflow 明确失败；不会静默切换到本地向量事实源 |

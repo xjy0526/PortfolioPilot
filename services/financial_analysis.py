@@ -61,6 +61,7 @@ async def analyze_portfolio_with_llm(
     business_scene: str = "portfolio_financial_analysis",
     trace_key: str = "",
     release_transaction_before_provider: bool = False,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
     evidence = evidence or []
     if registry is None:
@@ -240,6 +241,11 @@ async def analyze_portfolio_with_llm(
             if release_transaction_before_provider:
                 await registry.session.commit()
             logger.warning("Structured analysis attempt %s failed: %s", attempt + 1, exc)
+
+    if not allow_fallback:
+        raise RuntimeError(
+            "Structured model analysis failed and fallback is disabled for this evaluation"
+        ) from last_error
 
     result = safe_financial_analysis_template(portfolio_risk_summary, evidence, language=language)
     if last_trace_id:
