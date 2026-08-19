@@ -190,6 +190,28 @@ async def test_ingestion_persists_embeddings_and_hybrid_retrieval_enforces_acl(
                 document_ids.append(secret_job.document_id)
                 await service.repository.set_published(secret_job.document_id)
 
+                expired_job, _ = await service.queue_upload(
+                    content=b"# Expired AAPL Note\n\nSuperseded concentration evidence.",
+                    filename="aapl_expired.md",
+                    metadata={
+                        "document_id": f"expired-{suffix}",
+                        "title": "Expired AAPL Note",
+                        "source_type": "research_report",
+                        "tickers": ["AAPL"],
+                        "confidentiality": "public",
+                        "permission_groups": ["public"],
+                        "effective_to": (
+                            datetime.now(UTC).date() - timedelta(days=1)
+                        ).isoformat(),
+                    },
+                    principal=admin,
+                    idempotency_key=f"expired-{suffix}",
+                )
+                await service.process_job(expired_job)
+                assert expired_job.document_id is not None
+                document_ids.append(expired_job.document_id)
+                await service.repository.set_published(expired_job.document_id)
+
             document_vector_calls = len(embedder.calls)
             result = await PostgresKnowledgeService(
                 session, embedder=embedder, storage=storage
@@ -203,6 +225,9 @@ async def test_ingestion_persists_embeddings_and_hybrid_retrieval_enforces_acl(
             assert {item["document_key"] for item in result["citations"]} == {
                 f"public-{suffix}"
             }
+            assert f"expired-{suffix}" not in {
+                item["document_key"] for item in result["citations"]
+            }
             assert {item["version"] for item in result["citations"]} == {1}
             assert result["retrieval_backend"] == "postgresql_fts+pgvector_rrf"
             embedding_count = await session.scalar(
@@ -210,7 +235,7 @@ async def test_ingestion_persists_embeddings_and_hybrid_retrieval_enforces_acl(
                 .join(DocumentChunk, DocumentChunk.id == ChunkEmbedding.chunk_id)
                 .where(DocumentChunk.document_id.in_(document_ids))
             )
-            assert embedding_count == 3
+            assert embedding_count == 4
 
             await session.rollback()
             async with session.begin():

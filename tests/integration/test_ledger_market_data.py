@@ -211,6 +211,7 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
                 assert position.fx_rate_id is not None
                 assert first.valuation.valuation_status == "complete"
                 assert first.valuation.coverage_ratio == Decimal("1")
+                assert first.valuation.max_staleness_days == 2
 
                 legacy = await LegacyPortfolioAdapter(session).load(
                     portfolio_id=portfolio.id, as_of=AS_OF
@@ -223,6 +224,56 @@ async def test_historical_fx_future_isolation_and_reproducible_snapshot() -> Non
             await session.flush()
             await session.execute(delete(PriceBar).where(PriceBar.source == price_source))
             await session.execute(delete(FxRate).where(FxRate.source == fx_source))
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_distinct_files_with_duplicate_external_id_do_not_duplicate_transaction() -> None:
+    engine, factory = await _factory()
+    try:
+        async with factory() as session:
+            async with session.begin():
+                user, portfolio = await _identity(session, base_currency="USD")
+                header = (
+                    b"external_id,transaction_type,ticker,exchange,trade_date,settlement_date,"
+                    b"quantity,price,fees,taxes,currency,note"
+                )
+                first_content = b"\n".join(
+                    [
+                        header,
+                        b"broker-001,buy,AAPL,NASDAQ,2026-01-02,,1,100,0,0,USD,first export",
+                    ]
+                )
+                replay_content = b"\n".join(
+                    [
+                        header,
+                        b"broker-001,buy,AAPL,NASDAQ,2026-01-02,,1,100,0,0,USD,second export",
+                    ]
+                )
+                importer = TransactionCsvImporter(session)
+
+                first = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="broker-first.csv",
+                    content=first_content,
+                )
+                duplicate_record = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="broker-second.csv",
+                    content=replay_content,
+                )
+                rows = await TransactionLedgerService(session).list_transactions(portfolio.id)
+
+                assert first.inserted_rows == 1
+                assert duplicate_record.idempotent_replay is False
+                assert duplicate_record.accepted_rows == 1
+                assert duplicate_record.inserted_rows == 0
+                assert len(rows) == 1
+                assert rows[0].external_id == "broker-001"
+
+            await session.delete(user)
             await session.commit()
     finally:
         await engine.dispose()

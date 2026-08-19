@@ -335,7 +335,7 @@ python -m evaluation.run_full_eval \
 
 ## 9. P1 问题
 
-1. **关键路径覆盖不足。** Market sync、Tushare、worker、S3 和 portfolio API 覆盖率明显低于账本核心，且 CI 没有按核心包设置覆盖阈值。
+1. **部分支撑路径覆盖仍不均衡。** Phase 8 已增加 total/core/changed-lines 门槛，并把 Provider 与 Workflow 核心聚合提升到 80% 以上；但 Market sync、Worker CLI、S3 异常重试和 portfolio API 的单文件覆盖率仍明显低于账本核心。
 2. **生产运行时未在 PR CI 实测。** CI 只 `docker build`；本轮 readiness 使用 hashing。SentenceTransformer 离线加载、生产身份和 S3 配置只有部署后 smoke 才会验证。
 3. **评测主线与生产主线不一致。** synthetic retrieval 使用 SQLite/hashing；generation/retrieval JSONL 没有实际驱动对应 full eval；Workflow 没有真实 run。
 4. **legacy 双轨仍容易误操作。** `run_job.py` / `Dockerfile.job` 仍描述 Parqet、Telegram、Gemini 和 Berlin 时区；根目录 route/service/state 与 PostgreSQL主线并存，需要明确归档计划。
@@ -420,7 +420,43 @@ docs: add release readiness baseline audit
 
 在收到“最终分支收口”前，不执行合并、关闭 PR、删除远程分支或改写历史。
 
-## 15. 当前不应删除的文件或分支
+## 15. Phase 8：关键路径覆盖率复核
+
+### 17.1 Provenance
+
+| 字段 | 值 |
+|---|---|
+| 审计日期 | 2026-08-20（Asia/Shanghai） |
+| 基础 commit SHA | `6415132031b143d3b3999bedbc63da757037c4ce` |
+| 工作树 | 包含未提交 Phase 8 变更；不是该 SHA 的远程 CI 结果 |
+| evaluation mode | 未运行模型质量评测；本阶段仅执行测试与 coverage |
+| mock | 外部 API 全部离线；embedding 使用 deterministic hashing |
+| 真实模型 | 否 |
+| 人工标注 | 否 |
+
+### 17.2 本地实测结果
+
+- 非 PostgreSQL：667 passed，0 skipped，20 deselected，7.95 秒；
+- PostgreSQL integration：19 passed，0 skipped，668 deselected，5.00 秒；
+- PostgreSQL restart persistence E2E：1 passed，0 skipped，24.02 秒；
+- 合计实际执行：687 passed，0 skipped；不同 job 的 deselected 不计为 passed 或 skipped；
+- total coverage：65.05%（26,441 statements，9,241 missed）；
+- core coverage：85.03%（6,191 statements，927 missed）；
+- 九个 core group 均不低于 80%，最低为 `workflows` 80.26%；
+- 本轮新增质量脚本定向覆盖率：98%（209 statements，5 missed）。
+
+本地 Python 为 3.13.9，目标 Python 3.12 的最终权威结果必须来自提交后的 GitHub
+Actions。完整模块矩阵、风险说明和门槛依据见
+[`core_coverage_matrix_2026.md`](core_coverage_matrix_2026.md)。
+
+### 17.3 CI 变化
+
+CI 现在为非 PostgreSQL、PostgreSQL integration 和 restart E2E 分别保存 JUnit，明确
+输出 skipped 与 slowest tests。合并 coverage job 生成 XML、JSON 和 Markdown artifact，
+同时门禁 total、core、每个高风险 group 和 changed production lines；没有新增大范围
+`omit`，restart E2E 仍是独立必需 job。
+
+## 16. 当前不应删除的文件或分支
 
 ### 分支
 
@@ -441,7 +477,7 @@ docs: add release readiness baseline audit
 - `evaluation/datasets/*_gold_v1.jsonl`：版本化培训集，下一阶段应接入真实评测 runner，而不是删除。
 - 现有 legacy tests：在兼容 API 退役前仍是回归保护。
 
-## 16. 最终回答
+## 17. 最终回答
 
 - **是否继续以 `agent/postgres-rag-governance` 为唯一候选主线：是。** 它不落后于 main，包含 PR #1，并拥有最新 PostgreSQL/RAG/Workflow 变更和成功 CI。
 - **PR #1 是否已被 PR #2 实质覆盖：是。** Git 祖先关系和 left 0 / right 5 已验证。

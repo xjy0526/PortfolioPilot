@@ -22,6 +22,8 @@ jobs:
       COVERAGE_FILE: .coverage.unit
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,6 +60,15 @@ jobs:
         run: >-
           python -m pytest -o addopts="" -m "not postgres"
           --cov=. --cov-report=term-missing
+          --durations=20 --durations-min=0.05
+          --junitxml=non-postgres.xml
+
+      - name: Summarize non-PostgreSQL tests
+        if: ${{ always() && hashFiles('non-postgres.xml') != '' }}
+        run: >-
+          python scripts/summarize_test_results.py non-postgres.xml
+          --label non-postgres
+          --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unit coverage data
         uses: actions/upload-artifact@v4
@@ -97,6 +108,8 @@ jobs:
       COVERAGE_FILE: .coverage.postgres
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -127,6 +140,15 @@ jobs:
           python -m pytest -o addopts=""
           -m "postgres and not postgres_restart"
           --cov=. --cov-report=term-missing
+          --durations=20 --durations-min=0.05
+          --junitxml=postgres.xml
+
+      - name: Summarize PostgreSQL integration tests
+        if: ${{ always() && hashFiles('postgres.xml') != '' }}
+        run: >-
+          python scripts/summarize_test_results.py postgres.xml
+          --label postgres-integration
+          --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PostgreSQL coverage data
         uses: actions/upload-artifact@v4
@@ -165,7 +187,16 @@ jobs:
           -o addopts=""
           -m postgres_restart
           -q -s
+          --durations=10 --durations-min=0.05
+          --junitxml=postgres-restart.xml
           tests/e2e/test_postgres_restart_persistence.py
+
+      - name: Summarize PostgreSQL restart E2E
+        if: ${{ always() && hashFiles('postgres-restart.xml') != '' }}
+        run: >-
+          python scripts/summarize_test_results.py postgres-restart.xml
+          --label postgres-restart-e2e
+          --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Record E2E scope
         run: |
@@ -178,6 +209,8 @@ jobs:
     needs: [lint-type-unit, postgres-integration]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -200,11 +233,24 @@ jobs:
           python -m coverage report
           python -m coverage xml
 
+      - name: Report and enforce coverage quality
+        run: >-
+          python scripts/coverage_quality.py
+          --coverage-xml coverage.xml
+          --head "${{ github.event.pull_request.head.sha || github.sha }}"
+          --json-output coverage-quality.json
+          --markdown-output coverage-quality.md
+          --github-summary "$GITHUB_STEP_SUMMARY"
+          --enforce
+
       - name: Upload combined coverage report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-combined
-          path: coverage.xml
+          path: |
+            coverage.xml
+            coverage-quality.json
+            coverage-quality.md
           if-no-files-found: error
           retention-days: 14
 

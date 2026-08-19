@@ -17,6 +17,18 @@
 
 `docker-build` 显式依赖 `postgres-restart-e2e`。因此整体 CI 不能通过跳过 restart 测试获得绿灯。README 的 CI badge 和 GitHub PR checks 页面展示实时 workflow 状态，不在文档中长期硬编码测试数量或覆盖率。
 
+每个 pytest job 生成 JUnit XML，并在 GitHub Step Summary 中明确输出 passed、failed、
+errors、skipped 和最慢测试。`coverage-report` 同时输出：
+
+- 保留原始 `--cov=.` 口径的 total coverage；
+- 九个正式 core package 的 core coverage 与模块矩阵；
+- 相对版本化基线的 changed production lines coverage；
+- 质量门槛的 PASS/FAIL 与具体失败原因。
+
+门槛配置位于 `quality/coverage_policy.json`，报告工具为
+`scripts/coverage_quality.py`。基线值只能由可追溯 CI artifact 更新，不能为了让分支变绿
+而降低。详细矩阵见 [核心路径覆盖率矩阵](audits/core_coverage_matrix_2026.md)。
+
 ## 普通测试
 
 ```bash
@@ -33,6 +45,27 @@ alembic upgrade head
 TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
   python -m pytest -o addopts="" -m "postgres and not postgres_restart" -q
 ```
+
+生成与 CI 同口径的两层 coverage：
+
+```bash
+COVERAGE_FILE=.coverage.unit python -m pytest -o addopts="" \
+  -m "not postgres" --cov=. --cov-report=term \
+  --durations=20 --junitxml=non-postgres.xml
+
+COVERAGE_FILE=.coverage.postgres \
+TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
+  python -m pytest -o addopts="" -m "postgres and not postgres_restart" \
+  --cov=. --cov-report=term --durations=20 --junitxml=postgres.xml
+
+COVERAGE_FILE=.coverage.combined python -m coverage combine \
+  .coverage.unit .coverage.postgres
+COVERAGE_FILE=.coverage.combined python -m coverage xml -o coverage.xml
+python scripts/coverage_quality.py --coverage-xml coverage.xml --enforce
+```
+
+上述命令使用 deterministic hashing embedding；测试不得访问 Qwen、Tushare、
+yfinance 或其他真实外部 API。Restart E2E 独立运行，不并入普通 coverage 分母。
 
 ## Restart Persistence E2E
 

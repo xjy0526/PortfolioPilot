@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import UTC, datetime
 import pytest
 from types import SimpleNamespace
@@ -214,6 +215,69 @@ async def test_get_published_prompt_uses_exact_prompt_key():
     assert published is not None
     assert published.prompt_id == "financial-analysis"
     assert published.version == 3
+
+
+@pytest.mark.asyncio
+async def test_prompt_rollback_publishes_exact_prior_version_with_audit_action():
+    template = SimpleNamespace(
+        id=uuid.uuid4(),
+        prompt_key="financial-analysis",
+        current_version=3,
+        published_version=2,
+        status="published",
+        published_at=datetime.now(UTC),
+    )
+    target = SimpleNamespace(
+        id=uuid.uuid4(),
+        version=1,
+        status="deprecated",
+        published_at=None,
+    )
+
+    class Repository:
+        async def get_template(self, prompt_key):
+            assert prompt_key == "financial-analysis"
+            return template
+
+        async def get_version(self, prompt_id, version):
+            assert prompt_id == template.id
+            assert version == 1
+            return target
+
+    class Session:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, _statement):
+            return None
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def flush(self):
+            for value in self.added:
+                if getattr(value, "id", None) is None:
+                    value.id = uuid.uuid4()
+                if getattr(value, "created_at", None) is None:
+                    value.created_at = datetime.now(UTC)
+
+    session = Session()
+    registry = PromptRegistry(session)
+    registry.repository = Repository()
+
+    deployment = await registry.rollback(
+        "financial-analysis",
+        target_version=1,
+        deployed_by="reviewer@example.invalid",
+    )
+
+    assert deployment is not None
+    assert deployment.action == "rollback"
+    assert deployment.version == 1
+    assert deployment.previous_version == 2
+    assert template.published_version == 1
+    assert target.status == "published"
+    assert target.published_at is not None
 
 
 @pytest.mark.asyncio

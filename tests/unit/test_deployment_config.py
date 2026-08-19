@@ -64,3 +64,19 @@ def test_default_pytest_and_dedicated_e2e_have_distinct_execution_scopes():
     assert dockerfile.rfind("FROM dependencies AS production") > dockerfile.rfind(
         "FROM dependencies AS e2e"
     )
+
+
+def test_ci_reports_total_core_changed_and_test_runtime_quality():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    policy = (ROOT / "quality/coverage_policy.json").read_text(encoding="utf-8")
+
+    assert "scripts/coverage_quality.py" in workflow
+    assert "--coverage-xml coverage.xml" in workflow
+    assert '--head "${{ github.event.pull_request.head.sha || github.sha }}"' in workflow
+    assert "--enforce" in workflow
+    assert "coverage-quality.json" in workflow
+    assert workflow.count("scripts/summarize_test_results.py") == 3
+    assert workflow.count("--junitxml=") == 3
+    assert "--durations=20" in workflow
+    assert '"core_coverage_percent": 81.68' in policy
+    assert '"changed_lines_percent": 85.0' in policy
