@@ -5,6 +5,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import TypedDict
 
 
 _TICKER_STOPWORDS = {
@@ -16,6 +17,14 @@ _SOURCE_TYPE_TERMS: dict[str, tuple[str, ...]] = {
     "policy": ("policy", "procedure", "制度", "政策", "流程"),
     "faq": ("faq", "常见问题", "问答"),
 }
+
+
+class QueryMetadataFilters(TypedDict):
+    tickers: list[str]
+    fund_codes: list[str]
+    source_types: list[str]
+    publish_date_from: date | None
+    publish_date_to: date | None
 
 
 @dataclass(frozen=True)
@@ -56,7 +65,7 @@ class QueryIntent:
         cleaned = normalize_query(value)
         return cleaned or self.normalized_query
 
-    def metadata_filters(self) -> dict[str, object]:
+    def metadata_filters(self) -> QueryMetadataFilters:
         return {
             "tickers": self.tickers,
             "fund_codes": self.fund_codes,

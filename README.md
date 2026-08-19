@@ -657,6 +657,10 @@ python -m compileall -q app analytics backtest evaluation prompts rag routes ser
 node --check static/app.js
 pip check
 python scripts/check_evaluation_integrity.py
+
+# API 迁移前后应保持 route 与核心 OpenAPI contract 快照一致。
+python -m scripts.export_api_contract --check
+python -m pytest -q tests/unit/test_api_contracts.py
 ```
 
 普通 `pytest` 对 restart 场景显示 deselected，而不是 skipped；GitHub Actions 的 `PostgreSQL restart persistence E2E` job 必须单独成功，后续 production container job 才会执行。该 E2E 不只检查端口恢复，还验证交易、重建持仓、估值、文档、chunk、pgvector embedding、Prompt 版本、LLM Trace、Workflow、人工审核和发布报告在重启前后具有相同 ID/checksum，且幂等复跑不产生重复行。详细分层、前置条件和故障排查见 [docs/testing.md](docs/testing.md)。
@@ -717,7 +721,7 @@ Production 默认 `READ_ONLY_DEMO=true`，所有 HTTP mutation 返回 403。若�
 ```text
 analytics/             风险与组合指标
 app/db/                SQLAlchemy Async ORM、Session 和 Repository
-app/api/               DB-backed portfolio、import、market-data、health API
+app/api/               DB-backed portfolio、market-data、health、governed evaluation API
 app/domain/            账本重建的不可变领域结果
 app/providers/         Tushare/yfinance 市场数据适配器
 app/services/          账本、CSV 导入、持仓重建、估值和旧 API 适配
@@ -727,15 +731,16 @@ evaluation/            Retrieval / Generation / Workflow 评测
 portfolio_optimizer/   组合权重研究策略
 prompts/               Prompt 模型、Registry 与输出契约
 rag/                   文档、版本、解析、检索与权限过滤
-routes/                FastAPI 路由
+routes/                兼容/实验路由及待迁移的 governed router；evaluation 已为 shim
 migrations/            Alembic async migration 环境与版本
-scripts/               SQLite 兼容迁移等运维入口
+scripts/               SQLite 兼容迁移、API contract 导出等运维入口
 services/llm_client.py Qwen/OpenAI-Compatible 中立客户端
 services/llm/          结构化 Provider 与旧调用兼容层
 services/market_data/  PostgreSQL 风险价格适配与旧历史价格兼容服务
 static/                Dashboard 前端
 workflows/             受控研究报告状态机
-tests/                 单元与 API 集成测试
+tests/contracts/       全量 route 与核心 OpenAPI contract 快照
+tests/                 单元、API contract 与 PostgreSQL 集成测试
 ```
 
 ## License

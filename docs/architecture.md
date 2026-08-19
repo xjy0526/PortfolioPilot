@@ -27,7 +27,7 @@ PortfolioPilot 是“面向 A 股与美股的多市场投资组合风险分析�
 ## 目录与职责
 
 ```text
-app/api/                    DB-backed portfolio、import、market-data、health API
+app/api/                    DB-backed portfolio、market-data、health 与 governed evaluation API
 app/db/models/              SQLAlchemy Declarative Mapping
 app/db/repositories/        SQL 查询与原子 upsert 边界
 app/domain/                 不依赖 HTTP 的账本结果模型
@@ -43,6 +43,7 @@ rag/                        文档解析、Chunking、查询意图与离线兼�
 workflows/                  PostgreSQL-backed 受控研究工作流
 migrations/                 PostgreSQL schema 唯一变更入口
 scripts/                    初始化与兼容迁移工具
+tests/contracts/            全量 route 与核心 OpenAPI contract 快照
 ```
 
 ## 数据主链路
@@ -152,6 +153,22 @@ Render Web、Cron 和 Background Worker 的文件系统彼此独立，Cron 不�
 `python -m app.core.preflight` 与 `/health/ready` 共用同一检查逻辑：PostgreSQL、Alembic head、pgvector、Embedding、对象存储、production auth 和读写模式约束任一失败都会返回非就绪；`/health/live` 只表示进程存活。
 
 ## API 与兼容层
+
+`main.py` 直接从 `app.api` 注册 health、portfolio、market-data 和 evaluation router。
+`routes/evaluation.py` 只保留到 v3 compatibility boundary 的 import shim，不复制 endpoint 逻辑，
+也不会在正常请求中输出 deprecation 日志。其余根 `routes` 仍按
+[legacy-migration-map.md](legacy-migration-map.md) 渐进迁移。
+
+删除或移动 route 前必须先运行：
+
+```bash
+python -m scripts.export_api_contract --check
+python -m pytest -q tests/unit/test_api_contracts.py
+```
+
+`fastapi_routes_v1.json` 保存全部 OpenAPI operation；`core_api_contract_v1.json` 保存核心请求、
+响应和递归引用 schema。快照变化必须由明确 API 变更说明支持，不能为通过测试而直接重生成。
+只有评审确认 contract 有意变化后，才运行不带 `--check` 的导出命令更新基线。
 
 新的 DB API：
 

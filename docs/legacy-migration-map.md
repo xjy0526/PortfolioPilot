@@ -5,6 +5,10 @@
 >
 > 本文是依赖审计与迁移计划，不代表已完成目录迁移，也不授权删除兼容接口。
 
+阶段 B 更新（2026-08-20）：删除已复核的 `engine/history.py` 与 `workflows/models.py`；
+`routes/evaluation.py` 已迁移为 `app/api/evaluation.py` 的纯导入兼容层。删除前生成的 FastAPI
+routes 和核心 OpenAPI contract 快照仍完全匹配。
+
 ## 1. 结论摘要
 
 PortfolioPilot 当前存在三条同时运行的路径：
@@ -23,6 +27,7 @@ PortfolioPilot 当前存在三条同时运行的路径：
   compatibility、迁移对比、synthetic evaluation 和对应测试。
 - `workflows/research_report.py` 是正式 Workflow 主实现，但风险步骤仍依赖根 DTO 和
   `routes.research` 的私有 helper。这是 P1 迁移债务，不是本阶段删除对象。
+- `main.py` 已直接注册 `app.api.evaluation`；旧 `routes.evaluation` 不再包含 endpoint 业务逻辑。
 - 当前浏览器首先调用 `/api/portfolio`，而不是 `/api/portfolios`。立即删除旧 portfolio
   router 会令概览、CSV 持仓和多个分析页面失效。
 
@@ -110,7 +115,8 @@ flowchart LR
 | `routes/knowledge.py` | `app/api/knowledge.py` | CORE | `main.py`、API client | 7 | 否 | RAG governance tests | 极高 | 移动模块并保留 router import shim | 不删除 |
 | `routes/prompts.py` | `app/api/prompts.py` | CORE | `main.py`、API client | 6 | 否 | prompt registry tests | 高 | 移入 `app/api`，保留 URL 和 shim | 不删除 |
 | `routes/workflows.py` | `app/api/workflows.py` | CORE | `main.py`、API client | 6 | 否 | research workflow tests | 极高 | 移入 `app/api`，认证身份规则不变 | 不删除 |
-| `routes/evaluation.py` | `app/api/evaluation.py` | CORE | `main.py`、evaluation dashboard | 2 | 是 | evaluation integrity tests | 高 | 移入 `app/api`，保留报告 schema | 不删除 |
+| `app/api/evaluation.py` | 原路径 | CORE | `main.py`、evaluation dashboard | 2 | 是 | contract/runtime/evaluation tests | 高 | 已完成迁移，保持报告 schema 与权限 | 不删除 |
+| `routes/evaluation.py` | `app/api/evaluation.py` | COMPATIBILITY | 外部旧 import | 0（仅 re-export 同一 router） | 间接 | shim regression test | 低 | 保留纯 import shim，不发请求期 warning | v3.0 |
 | `routes/portfolio.py` | `app/api/compat/portfolio.py` | COMPATIBILITY | `main.py`、首页、CSV 编辑 | 17 | 是 | CSV/demo/integration tests | 极高 | 读接口继续用 DB adapter；写接口迁到 transaction import 后弃用 | v3.0 |
 | `routes/analytics.py` | 拆为 `app/api/analytics.py` + `app/api/compat/analytics.py` | COMPATIBILITY | 首页多个图表 | 13 | 是 | integration/history/market tests | 极高 | 拆分 PostgreSQL price 部分和 SQLite/state fallback | v3.0（compat 部分） |
 | `routes/refresh.py` | `app/api/compat/refresh.py` | COMPATIBILITY | 手动刷新按钮、旧 job | 8 | 是 | refresh 间接测试 | 高 | 改为触发独立 sync run；旧内存刷新标 deprecated | v3.0 |
@@ -229,14 +235,14 @@ flowchart LR
 | `engine/analytics.py`、`attribution.py`、`portfolio_history.py` | `app/compat/analytics/*` | COMPATIBILITY | analytics route、digest | 间接 | 是 | integration/fallback tests | 高 | 迁到 DB snapshots 后弃用旧输入 | v3.0 |
 | `engine/rebalancer.py` | 由 `portfolio_optimizer` 主线替代 | COMPATIBILITY | demo/refresh、legacy tests | 间接 | 间接 | rebalancer tests | 中 | 旧 API 转接确定性 allocation research | v3.0 |
 | `engine/sector_rotation.py` | `app/experimental/analytics/sector_rotation.py` | EXPERIMENTAL | Advisor route | 间接 | 是 | indirect | 低 | 默认关闭 | v3.0 |
-| `engine/history.py` | 无 | DEAD_CANDIDATE | AST/rg 未发现调用方 | 否 | 否 | 无直接测试 | 低到中 | 下一清理 PR 再做仓库外引用确认后删除 | v2.x |
+| `engine/history.py`（已删除） | 无 | DEAD_CANDIDATE | 删除前 AST/rg 未发现调用方 | 否 | 否 | contract 与全量回归保护 | 低 | 2026-08-20 已删除；Git 历史可恢复 | 已完成 |
 
 ## 11. Workflow、Evaluation、CLI 与部署入口
 
 | 当前路径 | 新路径 | 分类 | 被谁调用 | 路由 | 前端 | 测试 | 删除风险 | 推荐处理 | 最早可删除 |
 |---|---|---|---|---|---|---|---|---|---|
 | `workflows/research_report.py` | `app/services/research_workflow.py` | CORE | workflow route、worker、full eval | 间接 | 间接 | workflow/governance tests | 极高 | 先提取风险 domain service，再迁入 app | 不删除 |
-| `workflows/models.py` | PostgreSQL models + `app/domain/workflow.py` | DEAD_CANDIDATE | AST 未发现生产/测试 import | 否 | 否 | 无直接测试 | 中 | 确认无外部 import 后删除重复 Pydantic 模型 | v2.x |
+| `workflows/models.py`（已删除） | PostgreSQL governance models | DEAD_CANDIDATE | 删除前 AST/rg 未发现生产/测试 import | 否 | 否 | contract 与全量回归保护 | 低 | 2026-08-20 已删除；Git 历史可恢复 | 已完成 |
 | `evaluation/full_eval.py`、`llm_eval.py`、`retrieval_eval.py`、`semantic_retrieval_eval.py` | `app/evaluation/*` 或保留工具包 | CLI_ONLY | evaluation runners、tests | 间接 | dashboard 读结果 | 有 | 中 | 保持四种 mode 和 provenance；不进入请求热路径 | 不删除 |
 | `evaluation/run_*.py` | 原命令或 `app/evaluation/cli.py` | CLI_ONLY | `python -m evaluation...` | 否 | 否 | evaluation tests | 中 | 保持兼容命令 | v3.0（shim） |
 | `app/workers/cli.py`、`jobs.py`、`session.py` | 原路径 | CORE | worker wrappers | 否 | 否 | worker/pipeline tests | 极高 | 保持独立 session、lock、run status | 不删除 |
@@ -250,6 +256,7 @@ flowchart LR
 | `scripts/migrate_sqlite_to_postgres.py` | 原路径 | CLI_ONLY | migration | 否 | 否 | PostgreSQL integration | 高 | compatibility 完成前保留 | v3.0 后评估归档 |
 | `scripts/migrate_governance_sqlite_to_postgres.py`、`validate_governance_migration.py`、`compare_sqlite_postgres_retrieval.py` | 原路径 | CLI_ONLY | migration/verification | 否 | 否 | governance integration | 高 | 迁移窗口结束后归档，不立即删除 | v3.0 后 |
 | `scripts/postgres_restart_e2e.py` | 原路径 | CLI_ONLY | dedicated CI job | 否 | 否 | restart E2E | 高 | 保留真实 restart persistence 验证 | 不删除 |
+| `scripts/export_api_contract.py` | 原路径 | CLI_ONLY | contract snapshot 维护、测试 | 否 | 否 | API contract tests | 低 | 通过 OpenAPI 导出全路由与核心 schema | 不删除 |
 | `run_job.py` | 无；由 `app.workers.run_daily_pipeline` 替代 | DEAD_CANDIDATE | 仅 `Dockerfile.job` | 否 | 否 | 无 | 中 | 先确认外部 Render/Cloud Run job 不再引用 | 确认外部入口后 v2.x |
 | `Dockerfile` | 原路径 | CORE | CI、Render、Cloud Run | 否 | 间接 | docker-build job | 极高 | 保留正式 Web image | 不删除 |
 | `render.yaml` | 原路径 | CORE | Render Blueprint | 否 | 间接 | deployment config tests | 极高 | Web + Cron，共享 PostgreSQL/S3 | 不删除 |
@@ -289,6 +296,7 @@ flowchart LR
 | Restart persistence | `tests/e2e/test_postgres_restart_persistence.py` | 独立 `postgres_restart` marker 与 CI job |
 | Legacy dashboard/services | 根目录 `tests/test_*.py` | 活跃 compatibility，不可按“旧目录”删除 |
 | Architecture boundaries | `tests/unit/test_architecture_boundaries.py` | 本阶段新增 5 个 AST 边界测试 |
+| API/CLI compatibility | `tests/unit/test_api_contracts.py`、`tests/unit/test_evaluation_api.py` | 全路由、核心 schema、前端路径、CLI help 与 shim 回归 |
 
 `pytest` 默认排除 `postgres_restart`；带 `postgres` marker 的集成测试需要测试数据库；容器重启
 场景由独立 workflow 执行。普通测试绿灯不能替代 restart persistence 结果。
@@ -311,19 +319,18 @@ flowchart LR
 
 ### 可立即删除
 
-本阶段不实际删除业务文件。下一独立清理 PR 中，以下文件在仓库内已满足“无入口、无引用、无
-直接测试”，可在最后确认没有仓库外 import 后删除：
+当前没有新的业务文件同时满足全部删除条件。阶段 B 已完成以下删除：
 
-| 文件 | 证据 | 删除前动作 |
+| 文件 | 删除前证据 | 恢复方式 |
 |---|---|---|
-| `engine/history.py` | AST、rg 均无调用方；未注册路由；前端无引用 | 执行完整 import scan 和全量测试 |
-| `workflows/models.py` | 正式 Workflow 使用 PostgreSQL governance models；AST 无调用方 | 搜索外部文档/API 示例后删除 |
+| `engine/history.py` | 无生产/前端/部署/CLI/测试引用，文档未标核心 | 从 Git commit `a1f5887` 或更早历史恢复 |
+| `workflows/models.py` | 正式 Workflow 使用 PostgreSQL governance models，无任何 import | 从 Git commit `a1f5887` 或更早历史恢复 |
 
 ### 需增加兼容层后删除
 
 | 模块 | 所需兼容层/迁移动作 |
 |---|---|
-| `routes/research.py`、`knowledge.py`、`prompts.py`、`workflows.py`、`evaluation.py` | 迁到 `app/api`，旧模块只 re-export router，URL 不变 |
+| `routes/research.py`、`knowledge.py`、`prompts.py`、`workflows.py` | 迁到 `app/api`，旧模块只 re-export router，URL 不变 |
 | `services/financial_analysis.py`、`services/llm/providers.py` | 迁到 app，保留旧 import shim |
 | `rag/hybrid_retriever.py`、`models.py`、`parsers.py`、`query.py` | 迁到 `app/rag`，保留旧 import shim |
 | `rag/repository.py`、`service.py`、`retriever.py` | synthetic fixture 和 migration compare 改用明确 compat 包 |
@@ -336,7 +343,8 @@ flowchart LR
 
 - 全部 `app/db`、`app/services` 主线、`app/providers`、`app/workers`。
 - `LegacyPortfolioAdapter` 与 `/api/portfolio`，因为当前网页首屏仍依赖它们。
-- `routes/research|knowledge|prompts|workflows|evaluation`，它们虽位于根目录但属于正式主线。
+- `routes/research|knowledge|prompts|workflows`，它们虽位于根目录但属于正式主线。
+- `routes/evaluation.py` 兼容 shim，直到旧 import 经过一个 deprecation 周期。
 - `rag` 的四个共享原语，以及用于可复核迁移对比的 SQLite RAG compatibility 模块。
 - 当前 `backtest/strategy_backtester.py` 与所有持久化模型。
 - Experimental/Legacy Extensions；它们默认关闭，但删除属于独立产品决策，不属于架构清理。
@@ -346,8 +354,8 @@ flowchart LR
 
 1. 提取 `app/domain/portfolio_summary.py` 和确定性 risk service，解除 Workflow 对根
    `models.py` 与 `routes.research` 私有函数的依赖。
-2. 将正式 `routes/research|knowledge|prompts|workflows|evaluation` 移到 `app/api`，旧路径仅
-   re-export router；对 OpenAPI operation 和响应做回归比较。
+2. 按已完成的 evaluation 模式，将正式 `routes/research|knowledge|prompts|workflows` 逐个移到
+   `app/api`，旧路径仅 re-export router；每次都要求 route/core contract snapshot 完全匹配。
 3. 将共享 RAG 原语迁入 `app/rag`，把 SQLite 实现显式移动到 compatibility 包；迁移脚本和
    synthetic evaluation 只能显式选择该 backend。
 4. 让现有网页读取 `/api/portfolios/{id}/positions` 和 valuation，或由统一 facade 返回旧

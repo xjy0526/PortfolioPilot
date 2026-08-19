@@ -88,7 +88,7 @@ def run_retrieval_evaluation(
 
 def _build_fixture(service: KnowledgeBaseService) -> list[RetrievalEvalCase]:
     today = date.today()
-    documents = [
+    documents: list[tuple[str, str, str, dict[str, Any]]] = [
         (
             "eval-nvda", "nvda_report.md",
             "# Semiconductor Research\n\n## Concentration Risk\n\nNVDA semiconductor concentration and supply chain risk.",

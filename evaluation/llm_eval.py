@@ -352,7 +352,7 @@ def _case_from_spec(
     expected_tags: list[str],
     holdings: dict[str, tuple[float, str, str, str, float, float]],
 ) -> PortfolioRiskTestCase:
-    asset_metrics = {}
+    asset_metrics: dict[str, dict[str, Any]] = {}
     sector_concentration: dict[str, dict[str, Any]] = {}
     asset_type_exposure: dict[str, dict[str, Any]] = {}
     concentration_flags = []

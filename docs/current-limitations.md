@@ -61,6 +61,11 @@ Polymarket、Telegram、Parqet 和 Shadow Agent 分别由 `ENABLE_POLYMARKET`、
 - Render Web、Cron/Worker 的本地文件系统不共享，Cron 也不能使用 Web Persistent Disk。production write mode 必须使用外部 S3-compatible bucket；仓库不提供托管 bucket、跨区域复制或自动恢复编排。
 - development 可使用 `LOCAL_PRINCIPAL_*` 作为显式本地身份；其他环境未认证请求只具 `anonymous/public` 权限。
 - 原生前端与部分根目录旧接口仍依赖全局状态；核心组合路径已迁移，但完整模块归档尚未完成。
+- 已删除无入口的 `engine/history.py` 和重复 `workflows/models.py`；governed evaluation route 已迁入
+  `app/api`，旧 import 由无业务逻辑的 shim 兼容。其他 legacy 模块仍须逐个完成调用与 contract
+  核验，不能按目录批量删除。
+- API snapshot 可以发现 path、method、请求/响应 schema 和前端 URL 漂移，但不能替代数据库语义、
+  权限、失败模式或外部 Provider 的运行时集成测试。CLI `--help` 只证明入口可加载和参数解析可用。
 - Tushare 与 yfinance 当前按 Provider 逐证券串行获取，尚未实现生产级限流、断点续传、交易所级增量游标和授权行情 SLA。
 - Corporate action 已有 Provider 查询契约，但尚未独立落库和自动生成账本事件；当前复权主要通过 `adjusted_close` 与 `adjustment_factor` 保存 lineage。
 - 当前本地虚拟环境可能不是 Python 3.12；CI 和 Docker 使用 Python 3.12 作为验收环境。

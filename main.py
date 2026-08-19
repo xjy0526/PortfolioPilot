@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.health import router as health_router
+from app.api.evaluation import router as evaluation_router
 from app.api.market_data import router as market_data_router
 from app.api.portfolios import router as db_portfolio_router
 from app.db.session import dispose_async_engine, get_db_session
@@ -23,7 +24,6 @@ from routes.analysis import router as analysis_router
 from routes.analytics import router as analytics_router
 from routes.app_settings import router as app_settings_router
 from routes.demo import router as demo_router
-from routes.evaluation import router as evaluation_router
 from routes.knowledge import router as knowledge_router
 from routes.parqet_oauth import router as parqet_oauth_router
 from routes.portfolio import router as portfolio_router
