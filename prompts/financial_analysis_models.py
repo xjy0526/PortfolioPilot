@@ -170,8 +170,9 @@ def _validate_financial_numbers(output: FinancialAnalysisOutput, summary: dict[s
     expected_risk = summary.get("risk_score")
     if expected_risk is not None and abs(output.risk_score - float(expected_risk)) > 1e-6:
         raise ValueError("risk_score does not map to the structured portfolio input")
+    source_numbers = tuple(_walk_numbers(summary))
     allowed = {0.0, 1.0, 10.0, 100.0}
-    for number in _walk_numbers(summary):
+    for number in source_numbers:
         allowed.add(round(number, 6))
         allowed.add(round(number * 100.0, 6))
     texts = [output.portfolio_summary, output.disclaimer, *output.main_risks]
@@ -188,10 +189,25 @@ def _validate_financial_numbers(output: FinancialAnalysisOutput, summary: dict[s
         numeric_text = text
         for ticker in ticker_labels:
             numeric_text = numeric_text.replace(ticker, "")
-        for raw in re.findall(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?", numeric_text):
+        for match in re.finditer(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?", numeric_text):
+            raw = match.group(0)
             value = round(float(raw), 6)
-            if not any(abs(value - candidate) <= 1e-4 for candidate in allowed):
-                raise ValueError(f"Financial number {raw} cannot be mapped to structured input")
+            if any(abs(value - candidate) <= 1e-4 for candidate in allowed):
+                continue
+            suffix = numeric_text[match.end():].lstrip()
+            if suffix.startswith("%") and _matches_display_percentage(raw, source_numbers):
+                continue
+            raise ValueError(f"Financial number {raw} cannot be mapped to structured input")
+
+
+def _matches_display_percentage(raw: str, source_numbers: tuple[float, ...]) -> bool:
+    """Match a rounded percentage label to its structured decimal ratio."""
+    decimal_places = len(raw.partition(".")[2])
+    displayed = float(raw)
+    return any(
+        round(number * 100.0, decimal_places) == displayed
+        for number in source_numbers
+    )
 
 
 def _walk_numbers(value: Any):

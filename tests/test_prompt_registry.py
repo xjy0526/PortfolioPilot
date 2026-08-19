@@ -113,6 +113,22 @@ def test_structured_contract_rejects_fictitious_ticker_reference_and_number():
         validate_financial_analysis_output(payload, portfolio_risk_summary=_structured_input())
 
 
+def test_structured_contract_accepts_rounded_percentage_from_structured_ratio():
+    payload = _valid_financial_payload()
+    payload["main_risks"] = ["Cash concentration is 90.2%."]
+    payload["asset_level_comments"][0]["comment"] = "AAPL weight is 90.2%."
+    summary = {
+        "risk_score": 5.0,
+        "asset_metrics": {
+            "AAPL": {"weight": 0.9017002250290814, "risk_level": "medium"}
+        },
+    }
+
+    result = validate_financial_analysis_output(payload, portfolio_risk_summary=summary)
+
+    assert result.main_risks == ["Cash concentration is 90.2%."]
+
+
 def test_pydantic_output_schema_forbids_additional_properties():
     assert FINANCIAL_ANALYSIS_JSON_SCHEMA["additionalProperties"] is False
     for definition in FINANCIAL_ANALYSIS_JSON_SCHEMA.get("$defs", {}).values():
