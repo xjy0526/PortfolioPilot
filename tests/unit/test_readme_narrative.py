@@ -54,8 +54,10 @@ def test_new_demo_docs_have_no_broken_local_links() -> None:
         README,
         ROOT / "docs" / "demo-script.md",
         ROOT / "docs" / "demo-recording-guide.md",
+        ROOT / "docs" / "evaluation-v2.md",
         ROOT / "docs" / "assets" / "README.md",
         ROOT / "docs" / "assets" / "legacy-ui" / "README.md",
+        ROOT / "evaluation" / "datasets" / "v2" / "README.md",
     )
 
     for document in documents:

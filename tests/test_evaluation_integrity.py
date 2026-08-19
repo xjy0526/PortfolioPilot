@@ -52,6 +52,22 @@ def test_report_contract_requires_provenance_and_dataset_version():
         validate_evaluation_report(report | {"dataset_version": ""})
 
 
+def test_generated_metadata_discloses_dirty_worktree_state():
+    from evaluation.reporting import build_evaluation_metadata
+
+    metadata = build_evaluation_metadata(
+        evaluation_mode="synthetic_smoke",
+        model_provider="deterministic_fixture",
+        model_name="fixture-v1",
+        dataset_name="fixture",
+        dataset_version="v1",
+        mock_response_used=True,
+        synthetic_data_used=True,
+    )
+
+    assert metadata["git_worktree_dirty"] in {True, False, None}
+
+
 def test_report_contract_rejects_mode_disclosure_contradictions():
     with pytest.raises(ValueError, match="cannot use mock"):
         validate_evaluation_report(

@@ -38,7 +38,7 @@ app/storage/                Local/S3-compatible 对象存储协议
 app/workers/                独立 Session、互斥锁和可追踪任务入口
 analytics/                  确定性风险指标
 backtest/                   point-in-time 回测、权重漂移与可用性矩阵
-evaluation/                 分模式评测与版本化公开培训黄金集
+evaluation/                 V1 兼容评测与可人工复核的 V2 分模式评测集
 rag/                        文档解析、Chunking、查询意图与离线兼容工具
 workflows/                  PostgreSQL-backed 受控研究工作流
 migrations/                 PostgreSQL schema 唯一变更入口
@@ -203,4 +203,12 @@ SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._g
 
 `backtest_runs` 保存数据、代码、配置和组合快照 provenance；`backtest_rebalance_snapshots` 保存每次调仓前后权重、eligible universe、排除原因和成本；`backtest_strategy_results` 保存策略指标与 NAV。相同组合快照、价格数据、配置和代码版本生成相同缓存键。
 
-确定性优化器独占 `target_weight`。LLM 合同只输出 `research_observations` 与 `review_priorities`，旧 `rebalance_suggestions` 仅为 deprecated 兼容字段。评测明确区分 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 与 `production_monitoring`，CI 不调用真实模型。所有评测报告都携带 commit、模式、模型、数据集版本和 mock/人工/生产数据披露；缺少相应受控数据源的模式拒绝执行。
+确定性优化器独占 `target_weight`。LLM 合同只输出 `research_observations` 与
+`review_priorities`，旧 `rebalance_suggestions` 仅为 deprecated 兼容字段。
+
+V2 评测集使用 60 个唯一 case 覆盖检索、生成和工作流，并将公开来源元数据、模拟字段、数据截止
+时间、split 和 SHA256 写入 manifest。`synthetic_smoke`、`live_model_eval`、`human_gold_eval` 与
+`production_monitoring` 分目录保存，不能互相覆盖。CI 不调用真实模型；live 禁止 mock，human gold
+只读取 independently approved labels，production 只读取显式生产观测。Dashboard 展示样本数、
+cutoff、人工复核数、Wilson 区间和 badcase，不把不同层指标合并成单一准确率。V1 runner 与报告
+结构继续兼容，详细边界见 [evaluation-v2.md](evaluation-v2.md)。

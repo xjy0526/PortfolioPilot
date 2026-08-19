@@ -99,6 +99,22 @@ def resolve_git_commit_sha() -> str:
     return resolved.lower()
 
 
+def resolve_git_worktree_dirty() -> bool | None:
+    """Return whether tracked or untracked files differ from HEAD, or None if unknown."""
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=_REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bool(completed.stdout.strip())
+
+
 def build_evaluation_metadata(
     *,
     evaluation_mode: str,
@@ -117,6 +133,7 @@ def build_evaluation_metadata(
         "evaluation_mode": mode,
         "generated_at": datetime.now(UTC).isoformat(),
         "git_commit_sha": resolve_git_commit_sha(),
+        "git_worktree_dirty": resolve_git_worktree_dirty(),
         "mock_response_used": bool(mock_response_used),
         "synthetic_data_used": bool(synthetic_data_used),
         "model_provider": str(model_provider or "not_applicable"),
@@ -174,6 +191,7 @@ def report_metadata_view(report: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         return None
     return {key: report[key] for key in sorted(REQUIRED_REPORT_FIELDS)} | {
+        "git_worktree_dirty": report.get("git_worktree_dirty"),
         "synthetic_data_used": bool(report.get("synthetic_data_used")),
         "real_model_used": bool(report.get("real_model_used")),
     }

@@ -69,9 +69,9 @@ python3 -m venv venv
 source venv/bin/activate
 python -m pip install -r requirements.txt
 
-python -m evaluation.run_full_eval \
+python -m evaluation.run_v2_eval \
   --mode synthetic_smoke \
-  --output cache/full_evaluation_report.json
+  --output cache/evaluation/v2/synthetic_smoke/quickstart.json
 
 python -m backtest.run_backtest \
   --portfolio data/portfolios/example_multi_asset_portfolio.csv \
@@ -88,11 +88,14 @@ python -m backtest.run_backtest \
 检查报告中的披露字段：
 
 ```bash
-python -c "import json; p=json.load(open('cache/full_evaluation_report.json')); print({k:p[k] for k in ('evaluation_mode','git_commit_sha','mock_response_used','real_model_used','human_label_used','production_data_used')})"
+python -c "import json; p=json.load(open('cache/evaluation/v2/synthetic_smoke/quickstart.json')); print({k:p[k] for k in ('evaluation_mode','git_commit_sha','dataset_version','sample_count','mock_response_used','human_reviewed_count')})"
 python -c "import json; p=json.load(open('cache/backtest_report.json')); print({k:p[k] for k in ('data_source','run_mode','mock_price_data_used','execution_convention')})"
 ```
 
-预期：评测报告明确显示 `evaluation_mode=synthetic_smoke`、`mock_response_used=true`、`real_model_used=false`；回测使用本地 CSV，`mock_price_data_used=false` 只表示没有触发随机行情生成器，不表示该示例 CSV 是经授权的生产行情。
+预期：评测报告明确显示 `evaluation_mode=synthetic_smoke`、`dataset_version=2.0.0`、
+`sample_count=60`、`mock_response_used=true` 和 `human_reviewed_count=0`；这些字段只证明 V2
+fixture 的工程链路，不是模型效果。回测使用本地 CSV，`mock_price_data_used=false` 只表示没有触发
+随机行情生成器，不表示该示例 CSV 是经授权的生产行情。
 
 ### B. 完整本地开发
 
@@ -168,8 +171,8 @@ python -m app.workers.run_daily_pipeline --help
 | 模式 | 数据/模型边界 | CI 默认执行 |
 |---|---|:---:|
 | `synthetic_smoke` | 自行构造 fixture + deterministic mock，只验证工程链路和规则 | 是 |
-| `live_model_eval` | 真实配置模型；缺 Key 或调用失败即失败，不回退 mock | 否 |
-| `human_gold_eval` | 必须存在显式人工标签 | 否 |
+| `live_model_eval` | V1 真实模型调用或 V2 可追溯 live prediction bundle；不回退 mock | 否 |
+| `human_gold_eval` | V2 必须存在 independently approved labels | 否 |
 | `production_monitoring` | 必须存在真实生产观测数据 | 否 |
 
 ## Data & Evaluation Disclosure
@@ -199,6 +202,7 @@ python -m app.workers.run_daily_pipeline --help
 | [docs/testing.md](docs/testing.md) | 测试分层与 PostgreSQL restart E2E |
 | [docs/deployment.md](docs/deployment.md) | Web、Cron、对象存储、preflight 与恢复边界 |
 | [docs/current-limitations.md](docs/current-limitations.md) | 当前已知限制和 mock/fallback 条件 |
+| [docs/evaluation-v2.md](docs/evaluation-v2.md) | V2 数据 schema、模式隔离、人工标注与指标解释 |
 | [docs/case_studies/ai_hardware_portfolio_case.md](docs/case_studies/ai_hardware_portfolio_case.md) | AI 硬件组合研究案例 |
 | [docs/audits/release_readiness_2026.md](docs/audits/release_readiness_2026.md) | 带日期和 SHA 的发布准备审计 |
 
@@ -596,6 +600,41 @@ python -m backtest.run_backtest --persist \
 
 ## Evaluation 与 Trace 页面
 
+推荐的 V2 离线评测入口：
+
+```bash
+python -m scripts.build_evaluation_v2_dataset
+python -m evaluation.run_v2_eval --mode synthetic_smoke
+```
+
+V2 在 `evaluation/datasets/v2/` 保存 60 个唯一案例，并将同一批 case 投影到 Retrieval、
+Generation 和 Workflow 三层。数据集包含 manifest、公开来源元数据、模拟组合、train/dev/test split、
+文件 SHA256 和待审核人工标签。公开资料正文均为项目自行撰写的短摘要；组合全部明确标记为
+`synthetic_portfolio`。完整 schema 和审核步骤见
+[V2 数据集说明](evaluation/datasets/v2/README.md) 与 [V2 评测治理](docs/evaluation-v2.md)。
+
+V2 Retrieval 指标包括 Recall@K、Precision@K、MRR、nDCG@K、越权命中数和 stale hit rate；
+Generation 包括 JSON compliance、事实正确性、数值一致性、claim support、引用精确率/完整率、
+unsupported claim 与正确拒答；Workflow 分别记录工具选择、参数、执行、规则、审核路由、发布安全、
+延迟以及 Provider 实际成本/估算成本。报告同时保存样本数、数据截止时间、95% Wilson 区间与
+badcase 分布，不压缩成单一“准确率”。
+
+四种模式使用独立目录，禁止互相覆盖：
+
+```text
+cache/evaluation/v2/synthetic_smoke/
+cache/evaluation/v2/live_model_eval/
+cache/evaluation/v2/human_gold_eval/
+cache/evaluation/v2/production_monitoring/
+```
+
+当前 V2 的 60 条标签全部为 `pending`。自动生成的问题不会自行批准，所以
+`human_gold_eval` 会拒绝执行，直到独立人工审核者填写完整标签并同步 manifest checksum。
+`live_model_eval` 必须传入明确标记为非 mock 的真实模型预测 bundle；
+`production_monitoring` 必须传入真实生产观测文件，二者都不会静默降级。
+
+以下 V1 入口继续保留，用于兼容原有报告和回归测试。
+
 运行检索评测：
 
 ```bash
@@ -604,7 +643,7 @@ python -m evaluation.run_retrieval_eval
 
 输出 `cache/retrieval_evaluation_report.json`，包括 Recall@K、Precision@K、MRR、`citation_reference_validity`、过期命中率和未授权命中数。该引用指标只证明引用 Chunk 存在；`claim_support_rate` 另行评估 Claim 是否由引用证据支持。
 
-运行三层完整评测：
+运行 V1 三层完整评测：
 
 ```bash
 python -m evaluation.run_full_eval --mode synthetic_smoke
@@ -616,7 +655,7 @@ CI 只运行可复现的 `synthetic_smoke`。真实模型评测必须显式运�
 python -m evaluation.run_full_eval --mode live_model_eval
 ```
 
-输出 `cache/full_evaluation_report.json`，覆盖：
+V1 输出 `cache/full_evaluation_report.json`，覆盖：
 
 - Retrieval：召回、排序、权限泄漏和过期证据；
 - Generation：JSON、风险识别、数字一致性、Groundedness、引用与幻觉；
@@ -624,13 +663,17 @@ python -m evaluation.run_full_eval --mode live_model_eval
 - 20 条组合风险用例、公开检索 golden set、权限/过期/证据不足/冲突证据；
 - 中英文切片统计及标准 badcase 标签。
 
-评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和 `production_monitoring`。`synthetic_smoke` 使用自行构造的数据与确定性 mock response，只验证工程链路和规则，不代表真实模型准确率。`human_gold_eval` 没有显式人工标签时拒绝执行；`production_monitoring` 没有真实生产观测时拒绝执行，二者都不会合成结果。版本化黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，全部为本项目自行构造的公开培训夹具，不包含真实持仓、授权研报或私有数据。
+评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和
+`production_monitoring`。V1 黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，仍作为兼容夹具；
+新的人工复核流程只使用 V2。两套数据都不包含真实持仓、授权研报或私有数据。
 
 每份评测 JSON 都保存 `evaluation_mode`、UTC 生成时间、完整 Git commit SHA、模型 Provider/名称、数据集名称/版本，以及 mock、人工标签和生产数据使用标记。`hallucination_flag_rate` 必须与报告模式、样本量和有效响应数一起解释；例如 synthetic 报告中的 0 只表示该批规则夹具没有触发标记，不是“模型零幻觉”。仓库不在 README 中长期写死测试数或覆盖率，当前状态以 [CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml) 和带日期/SHA 的审计快照为准。
 
 Prompt Registry 当前的 `static_render_success_rate` 和 `static_expected_token_hit_rate` 仅是模板静态检查，不是模型效果 A/B。真实 Prompt A/B 必须使用相同模型、相同测试集、相同温度及其他采样参数。
 
-Dashboard 的 `Eval & Trace` 页面同时展示评测模式、mock 标记、数据集版本、样本量、报告 commit SHA，以及 Prompt Trace、badcase、延迟/成本和人工采纳率。缺少完整 provenance 的旧报告不会显示为有效评测。只读接口包括：
+Dashboard 的 `Eval & Trace` 页面同时展示评测模式、mock/live、数据集版本、样本量、数据截止日、
+人工复核数量、95% 置信区间和 badcase 分布，以及 Prompt Trace 与实际/估算成本。它优先读取最新
+V2 分模式报告，并兼容 V1；缺少完整 provenance 的旧报告不会显示为有效评测。只读接口包括：
 
 ```text
 GET /api/evaluation/dashboard

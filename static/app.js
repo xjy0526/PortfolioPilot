@@ -1125,6 +1125,17 @@ async function loadEvaluationDashboard() {
             ? schemaTraces.filter(item => item.output_schema_valid).length / schemaTraces.length
             : null;
         const workflowRuns = Number(data.workflow?.run_count || 0);
+        const metricSummary = evalReport.metric_summary || {};
+        const generationMetrics = metricSummary.generation || {};
+        const retrievalMetrics = metricSummary.retrieval || {};
+        const workflowMetrics = metricSummary.workflow || {};
+        const intervals = evalReport.confidence_intervals || {};
+        const headlineInterval = intervals['generation.factual_correctness']
+            || intervals['generation.json_compliance'];
+        const confidenceText = headlineInterval
+            ? `${formatPercentDecimal(headlineInterval.lower)}–${formatPercentDecimal(headlineInterval.upper)} (n=${Number(headlineInterval.sample_size || 0)})`
+            : '—';
+        const badcaseCount = Object.values(badcases).reduce((total, value) => total + Number(value || 0), 0);
         const hallucinationRate = reportAvailable && typeof evalReport.hallucination_flag_rate === 'number'
             ? formatPercentDecimal(evalReport.hallucination_flag_rate)
             : '—';
@@ -1133,27 +1144,37 @@ async function loadEvaluationDashboard() {
             ? '—'
             : evalReport.mock_response_used
                 ? (isZh() ? 'Mock 响应' : 'Mock responses')
-                : evalReport.human_label_used
-                    ? (isZh() ? '人工标签' : 'Human labels')
-                    : evalReport.production_data_used
-                        ? (isZh() ? '生产观测' : 'Production observations')
-                        : (isZh() ? '模型 API 响应 / 自构造数据' : 'Model API responses / synthetic data');
+                : evalReport.production_data_used
+                    ? (isZh() ? '生产观测' : 'Production observations')
+                    : evalReport.human_label_used
+                        ? (isZh() ? '人工标签 + Live 模型' : 'Human labels + live model')
+                        : evalReport.real_model_used
+                            ? (isZh() ? 'Live 模型响应' : 'Live model responses')
+                            : (isZh() ? '自构造数据' : 'Synthetic data');
         container.innerHTML = `
             <div class="research-chip-list">
                 <span class="research-chip ${evalReport.mock_response_used ? 'warn' : ''}">${isZh() ? '模式' : 'Mode'}: ${_escapeHtml(reportMode)}</span>
                 <span class="research-chip">${isZh() ? '来源' : 'Source'}: ${_escapeHtml(reportSource)}</span>
                 <span class="research-chip">${isZh() ? '数据集' : 'Dataset'}: ${reportAvailable ? `${_escapeHtml(evalReport.dataset_name)} ${_escapeHtml(evalReport.dataset_version)}` : '—'}</span>
                 <span class="research-chip">${isZh() ? '样本' : 'Cases'}: ${reportAvailable ? Number(evalReport.case_count || 0) : '—'}</span>
-                <span class="research-chip">Commit: ${reportAvailable ? _escapeHtml(String(evalReport.git_commit_sha || '').slice(0, 8)) : '—'}</span>
+                <span class="research-chip">${isZh() ? '数据截止' : 'Data cutoff'}: ${reportAvailable ? _escapeHtml(evalReport.data_cutoff || '—') : '—'}</span>
+                <span class="research-chip">${isZh() ? '人工复核' : 'Human reviewed'}: ${reportAvailable ? Number(evalReport.human_reviewed_count || 0) : '—'}</span>
+                <span class="research-chip ${evalReport.git_worktree_dirty ? 'warn' : ''}">Commit: ${reportAvailable ? `${_escapeHtml(String(evalReport.git_commit_sha || '').slice(0, 8))}${evalReport.git_worktree_dirty ? ' (dirty)' : ''}` : '—'}</span>
             </div>
             <div class="research-kpi-grid eval-kpi-grid">
-                <div class="research-kpi"><span>${isZh() ? '样本幻觉标记率' : 'Flagged Hallucination Rate'}</span><strong>${hallucinationRate}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? 'Trace Schema 合规率' : 'Trace Schema Valid'}</span><strong>${validRate === null ? '—' : formatPercentDecimal(validRate)}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '平均延迟' : 'Avg Latency'}</span><strong>${Number(data.latency_cost?.average_latency_ms || 0).toFixed(0)} ms</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '累计成本' : 'Total Cost'}</span><strong>${data.latency_cost?.contains_estimated_cost ? '~' : ''}$${Number(data.latency_cost?.total_cost_amount || 0).toFixed(4)}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '人工采纳率' : 'Human Adoption'}</span><strong>${workflowRuns ? formatPercentDecimal(data.human_adoption_rate || 0) : '—'}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? 'Prompt 对比' : 'Prompt Comparisons'}</span><strong>${comparisons.length}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'JSON 合规' : 'JSON Compliance'}</span><strong>${typeof generationMetrics.json_compliance === 'number' ? formatPercentDecimal(generationMetrics.json_compliance) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'Claim 支持率' : 'Claim Support'}</span><strong>${typeof generationMetrics.claim_support_rate === 'number' ? formatPercentDecimal(generationMetrics.claim_support_rate) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '越权命中' : 'Unauthorized Hits'}</span><strong>${typeof retrievalMetrics.unauthorized_hit_count === 'number' ? Number(retrievalMetrics.unauthorized_hit_count) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '发布安全' : 'Publication Safety'}</span><strong>${typeof workflowMetrics.publication_safety === 'number' ? formatPercentDecimal(workflowMetrics.publication_safety) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '95% 置信区间' : '95% Confidence Interval'}</span><strong>${confidenceText}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'Badcase 数' : 'Badcases'}</span><strong>${reportAvailable ? badcaseCount : '—'}</strong></div>
             </div>
+            ${typeof evalReport.hallucination_flag_rate === 'number' || validRate !== null || workflowRuns || comparisons.length ? `<div class="research-chip-list">
+                <span class="research-chip">${isZh() ? '旧版样本幻觉标记率' : 'Legacy flagged hallucination rate'}: ${hallucinationRate}</span>
+                <span class="research-chip">Trace Schema: ${validRate === null ? '—' : formatPercentDecimal(validRate)}</span>
+                <span class="research-chip">${isZh() ? '人工采纳率' : 'Human adoption'}: ${workflowRuns ? formatPercentDecimal(data.human_adoption_rate || 0) : '—'}</span>
+                <span class="research-chip">Prompt: ${comparisons.length}</span>
+            </div>` : ''}
             <div class="analyse-row eval-grid">
                 <div class="chart-card">
                     <div class="chart-header"><h3>${isZh() ? 'Badcase 分布' : 'Badcase Distribution'}</h3></div>

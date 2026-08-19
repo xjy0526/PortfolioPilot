@@ -18,6 +18,7 @@ from evaluation.reporting import (
     validate_evaluation_report,
 )
 from evaluation.retrieval_eval import run_retrieval_evaluation
+from evaluation.v2_runner import latest_v2_report_path
 from prompts.registry import PromptRegistry
 from rag.parsers import parse_document, structured_chunks
 from workflows.research_report import ALLOWLISTED_TOOLS
@@ -112,9 +113,10 @@ async def evaluation_dashboard(
 ) -> dict[str, Any]:
     traces = await PromptRegistry(session).list_traces(limit)
     workflow_metrics = await _workflow_metrics(session)
-    resolved_report_path = report_path or (
+    legacy_report_path = (
         Path(__file__).resolve().parent.parent / "cache" / "full_evaluation_report.json"
     )
+    resolved_report_path = report_path or latest_v2_report_path() or legacy_report_path
     full_report = (
         json.loads(resolved_report_path.read_text(encoding="utf-8"))
         if resolved_report_path.exists()
@@ -123,14 +125,29 @@ async def evaluation_dashboard(
     metadata = report_metadata_view(full_report)
     generation_layer = full_report.get("layers", {}).get("generation", {}) if metadata else {}
     generation_metrics = generation_layer.get("metrics", {})
+    layer_metrics = (
+        {
+            name: layer.get("metrics", {})
+            for name, layer in full_report.get("layers", {}).items()
+            if isinstance(layer, dict)
+        }
+        if metadata
+        else {}
+    )
     evaluation_report = (
         {
             "status": "available",
             **metadata,
-            "case_count": int(generation_layer.get("case_count", 0)),
+            "case_count": int(
+                full_report.get("sample_count", generation_layer.get("case_count", 0))
+            ),
             "valid_response_case_count": int(
                 generation_layer.get("valid_response_case_count", 0)
             ),
+            "data_cutoff": full_report.get("data_cutoff"),
+            "human_reviewed_count": int(full_report.get("human_reviewed_count", 0)),
+            "confidence_intervals": full_report.get("confidence_intervals", {}),
+            "metric_summary": layer_metrics,
             "hallucination_flag_rate": generation_metrics.get("hallucination_rate"),
             "metric_disclosures": generation_layer.get("metric_disclosures", {}),
         }

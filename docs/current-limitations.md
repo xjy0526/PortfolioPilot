@@ -35,8 +35,8 @@ yfinance 是非授权的公开数据接口适配，不提供生产 SLA。它可�
 | 结构化 LLM 分析 | 没有匹配 `AI_PROVIDER` 的 API Key | 使用安全模板或 mock provider，`ai_available=false`，`source=mock/fallback` |
 | LLM 输出校验 | JSON/Schema 校验重试后仍失败 | 返回安全模板，记录失败 Trace 和 fallback 状态 |
 | 回测行情 | 解析后没有可用真实价格 CSV | 生成固定种子 mock 行情，`mock_price_data_used=true`、`data_source=mock_price_data` |
-| 完整模型评测 | 显式使用 `--mode live_model_eval` 且缺少所选 Provider 的 API Key | 直接失败，不回退 mock，也不生成伪 live 报告 |
-| 人工黄金集评测 | 使用 `--mode human_gold_eval` 但未提供人工标签 | 拒绝执行，不把自构造夹具标成 `human_gold_eval` |
+| 完整模型评测 | V1 缺少 Provider Key，或 V2 缺少带模型参数、时间、SHA 的 live prediction bundle | 直接失败，不回退 mock，也不生成伪 live 报告 |
+| 人工黄金集评测 | V2 没有 independently approved label | 拒绝执行；当前 60 条自动生成标签全部为 `pending` |
 | 生产监控 | 使用 `--mode production_monitoring` 但无生产观测源 | 拒绝执行，不生成合成生产指标 |
 | RAG embedding（development/test） | sentence-transformers 不可用且 `RAG_ALLOW_HASHING_FALLBACK=true` | 使用明确标记的非语义 hashing provider；不得把结果宣传为语义检索效果 |
 | RAG embedding（production） | sentence-transformers 模型无法从镜像缓存加载 | 禁止 hashing fallback，`/health/ready` 返回 503，知识 Worker 明确失败 |
@@ -71,5 +71,7 @@ Polymarket、Telegram、Parqet 和 Shadow Agent 分别由 `ENABLE_POLYMARKET`、
 - 当前本地虚拟环境可能不是 Python 3.12；CI 和 Docker 使用 Python 3.12 作为验收环境。
 - Mypy 对 PostgreSQL/application core 采用渐进检查边界；旧 dashboard、fetcher、legacy route 和其测试仍有待逐步纳入全仓严格类型检查。
 - 旧 `legacy-file://` IngestionJob 无法恢复已经缺失的原始上传文件；最新 migration 不再保留伪路径，这类历史 job 的 `object_key` 为空，必须重新上传或显式归档。
-- 真实语义检索 Gold Test 目前是 40 条自行构造的中英文培训夹具；它验证回归边界，不代表线上语料或机构检索质量。
+- V1 语义检索 Gold Test 是 40 条自行构造的中英文兼容夹具；V2 有 60 个唯一的跨层案例、5 个
+  官方公开来源元数据记录和明确的人工复核流程，但当前 approved label 数为 0。两者都不能代表
+  线上语料、真实模型效果或机构检索质量。
 - 示例持仓、价格和研究文档均为公开或模拟内容，不代表真实持仓或投资观点。
