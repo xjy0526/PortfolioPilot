@@ -2,81 +2,222 @@
 
 [![Pull request CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml?query=event%3Apull_request)
 
-PortfolioPilot 是一个面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台。当前版本基于 FastAPI、PostgreSQL 数据库基础、SQLite 兼容读取和原生 Web 前端，并提供两种使用模式：
+PortfolioPilot 是一个面向基金投研场景的可追溯投资组合研究平台。系统将交易流水、市场数据、风险分析和研究知识库统一到 PostgreSQL，通过受治理的 RAG、Prompt Registry、LLM Trace 和人工审核工作流，生成带证据引用、可验证、可复核的组合研究结果。
 
-- `personal`：个人投资组合看板和研究辅助功能。
-- `fund_research`：面向受控投研流程，使用中性研究表达，并提供知识治理、Prompt 治理、模型 Trace 和人工审核工作流。
-
-核心链路聚焦 A 股、美股和 ETF。Polymarket、Telegram、Parqet 与 Shadow Agent 作为可选扩展保留且默认关闭。所有分析与报告仅用于研究和软件演示，不构成投资建议、交易指令或收益承诺。
-
-## 项目导览
-
-**核心定位：** PortfolioPilot 的重点不是“让 LLM 推荐股票”，而是把多市场持仓、确定性风险计算、证据检索、结构化生成、人工审核和评测组织成一条可追溯的研究链路。
-
-**快速体验：**
-
-1. 导入示例组合，查看收益、波动、回撤和行情覆盖率。
-2. 切换到 `fund_research`，运行一份受控研究报告。
-3. 从报告引用回看知识片段、Prompt 版本和模型 Trace。
-4. 展示人工审核与发布状态，再打开 Evaluation 页面说明如何定位 badcase。
-
-**设计主线：** 数据质量 -> 确定性风险计算 -> Hybrid RAG -> 结构化输出校验 -> Human-in-the-loop。项目可在无真实账户和付费模型时离线演示，但所有 mock/fallback 都必须显式标记。
+项目聚焦研究流程与工程可追溯性，不提供自动交易，不构成投资建议、交易指令或收益承诺。
 
 ## 核心能力
 
-| 领域 | 当前能力 |
+| 能力 | 当前实现 |
 |---|---|
-| 组合数据 | PostgreSQL 交易账本、标准流水/旧持仓 CSV 导入、任意 `as_of` 持仓重建 |
-| 市场数据 | Tushare A 股、yfinance 美股/ETF 研究行情、历史 FX、Provider symbol 映射 |
-| 风险分析 | PostgreSQL 复权行情、收益/波动/回撤/Sharpe、覆盖率、陈旧与缺失行情语义 |
-| 知识库 | `txt/md/csv/pdf` 接入、版本、checksum 去重、发布/失效、权限与有效期过滤 |
-| 检索 | Query intent、metadata/permission/temporal filter、BM25、dense、RRF、可插拔 reranker |
-| LLM | Provider 抽象、Prompt Registry、严格 Pydantic 输出、ticker/引用/数字一致性校验 |
-| Workflow | 固定节点、工具 allowlist、幂等运行、人工审核、规则校验、审计记录、受控发布 |
-| Evaluation | Retrieval、Generation、Workflow 三层评测，Trace、badcase 与前端指标页面 |
-| 回测 | t-1 估计/t 收盘成交/t+1 生效、逐日漂移、成本、可用性矩阵、Benchmark 与 PostgreSQL provenance；尚非生产级完整 walk-forward 系统 |
+| Portfolio Ledger & Valuation | PostgreSQL 交易账本是持仓事实源；支持 CSV 幂等导入、任意 `as_of` 重建、多币种现金、历史价格/FX lineage 与估值快照 |
+| Risk Analytics & Backtest | 确定性风险指标、行情覆盖/缺失语义、无前视成交口径、权重漂移、成本、Benchmark 与回测 provenance |
+| Governed Hybrid RAG | 文档版本、权限、有效期、对象存储、PostgreSQL 全文检索、pgvector、RRF 与引用对象 |
+| Prompt Registry & LLM Trace | 不可变 Prompt 版本、发布/回滚、结构化输出、数字与引用校验、Provider usage、成本和 fallback Trace |
+| Human-in-the-loop Research Workflow | 固定节点、工具 allowlist、幂等运行、超时/预算、规则校验、人工审核与受控报告发布 |
 
-## 快速开始
+## 系统界面与真实演示资源
 
-建议使用 Python 3.12。
+- 完整本地启动后访问 Dashboard：<http://localhost:8000>，Swagger：<http://localhost:8000/docs>。
+- 面试演示流程：[docs/demo-script.md](docs/demo-script.md)。
+- 真实录屏准备与脱敏检查：[docs/demo-recording-guide.md](docs/demo-recording-guide.md)。
+- 旧版真实截图归档：[docs/assets/legacy-ui/](docs/assets/legacy-ui/)。这些图片带旧品牌和旧功能布局，只用于迁移对照，不代表当前 PostgreSQL/RAG 主线界面。
 
-macOS / Linux：
+仓库目前没有提交与最新治理链路完全一致的截图或 GIF，因此 README 不引用伪造图片或不存在的资源。完成一次按录屏指南执行的真实演示后，再将产物加入 `docs/assets/current-demo/`。
+
+## 架构
+
+```mermaid
+flowchart LR
+    INPUT[CSV / API] --> LEDGER[Transaction Ledger]
+    LEDGER --> REBUILD[Position Rebuilder]
+    REBUILD --> SNAPSHOT[Market Data & Valuation Snapshot]
+    SNAPSHOT --> RISK[Risk Analytics]
+    RISK --> RAG[Governed Hybrid RAG]
+    RAG --> LLM[Structured LLM Output]
+    LLM --> RULES[Rule Validation]
+    RULES --> REVIEW[Human Review]
+    REVIEW --> REPORT[Published Research Report]
+
+    DB[(PostgreSQL + pgvector)] --- LEDGER
+    DB --- SNAPSHOT
+    DB --- RAG
+    DB --- LLM
+    DB --- REPORT
+    STORAGE[(S3-compatible Object Storage)] --> RAG
+    WORKER[Cron / Worker] --> SNAPSHOT
+    WORKER --> RAG
+    WORKER --> LLM
+    TRACE[Evaluation & Trace] -. observes .-> RAG
+    TRACE -. observes .-> LLM
+    TRACE -. observes .-> RULES
+    TRACE -. observes .-> REVIEW
+```
+
+设计边界：确定性引擎负责账本、估值、风险和目标权重；LLM 只解释结构化结果与已检索证据，不能直接修改目标权重。
+
+## 5 分钟 Quick Start
+
+项目目标运行时为 Python 3.12，CI 使用 Python 3.12 验证。以下应用命令已在当前仓库实际执行；macOS/Linux 使用示例中的激活命令，Windows 可改用 `venv\Scripts\activate`。
+
+### A. 最小只读研究演示
+
+该路径不连接外部账户、不调用真实模型、不写 PostgreSQL 业务表，只读取仓库内自行构造的 fixture，并在 `cache/` 生成本地报告。
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+
+python -m evaluation.run_full_eval \
+  --mode synthetic_smoke \
+  --output cache/full_evaluation_report.json
+
+python -m backtest.run_backtest \
+  --portfolio data/portfolios/example_multi_asset_portfolio.csv \
+  --prices data/prices/example_historical_prices.csv \
+  --output cache/backtest_report.json \
+  --train-window 5 \
+  --holding-window 3 \
+  --rebalance-frequency 3 \
+  --transaction-cost-bps 5 \
+  --slippage-bps 2 \
+  --turnover-limit 1.0
+```
+
+检查报告中的披露字段：
+
+```bash
+python -c "import json; p=json.load(open('cache/full_evaluation_report.json')); print({k:p[k] for k in ('evaluation_mode','git_commit_sha','mock_response_used','real_model_used','human_label_used','production_data_used')})"
+python -c "import json; p=json.load(open('cache/backtest_report.json')); print({k:p[k] for k in ('data_source','run_mode','mock_price_data_used','execution_convention')})"
+```
+
+预期：评测报告明确显示 `evaluation_mode=synthetic_smoke`、`mock_response_used=true`、`real_model_used=false`；回测使用本地 CSV，`mock_price_data_used=false` 只表示没有触发随机行情生成器，不表示该示例 CSV 是经授权的生产行情。
+
+### B. 完整本地开发
+
+复制配置后，在 `.env` 中使用下面的本地开发值。无 Qwen Key 时可以启动，但模型调用会明确标记不可用/fallback；hashing embedding 只用于验证工程链路，不是语义检索质量证明。
+
+```env
+ENVIRONMENT=development
+APP_MODE=fund_research
+READ_ONLY_DEMO=false
+OBJECT_STORAGE_BACKEND=local
+OBJECT_STORAGE_LOCAL_ROOT=data/object_storage
+EMBEDDING_PROVIDER=hashing
+RAG_ALLOW_HASHING_FALLBACK=true
+QWEN_API_KEY=
+```
+
+```bash
 cp .env.example .env
 docker compose up -d postgres
 alembic upgrade head
 python scripts/bootstrap_portfolio.py --base-currency CNY
-python3 main.py
-```
-
-Windows：
-
-```bat
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-docker compose up -d postgres
-alembic upgrade head
-python scripts/bootstrap_portfolio.py --base-currency CNY
+python -m app.core.preflight
 python main.py
 ```
 
-也可以使用仓库中的 [start.sh](start.sh) 或 [start.bat](start.bat)。启动后访问：
+启动后访问：
 
 - Dashboard：<http://localhost:8000>
 - Swagger API：<http://localhost:8000/docs>
-- 兼容健康检查：<http://localhost:8000/health>
 - 存活检查：<http://localhost:8000/health/live>
-- PostgreSQL 就绪检查：<http://localhost:8000/health/ready>
+- 依赖就绪检查：<http://localhost:8000/health/ready>
 
-未配置模型 API Key 时，结构化分析会明确返回 `ai_available=false` 的安全 fallback。市场同步不会生成 mock 行情；Provider 不可用时 `sync_run` 失败并保留错误摘要。仅独立回测 CLI 在没有价格 CSV 时允许生成显式标记的可复现 mock 行情。
+可选 Qwen 配置：
 
-## PostgreSQL 交易账本与估值
+```env
+AI_PROVIDER=qwen
+QWEN_API_KEY=your_qwen_api_key
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+```
+
+独立 Worker/Cron 入口可先用以下已验证命令检查参数，再按 [演示脚本](docs/demo-script.md) 运行实际任务：
+
+```bash
+python -m app.workers.run_market_sync --help
+python -m app.workers.run_position_rebuild --help
+python -m app.workers.run_knowledge_ingestion --help
+python -m app.workers.run_research_workflow --help
+python -m app.workers.run_daily_pipeline --help
+```
+
+## 核心业务流程
+
+1. 标准交易流水通过 `/api/portfolios/{id}/imports/transactions` 幂等写入账本；旧持仓 CSV 只能形成明确标记的 `opening_balance`。
+2. Position Rebuilder 按 `as_of` 重放交易，组合估值关联当时可得的 PriceBar 和历史 FX，不使用未来数据。
+3. 确定性风险引擎计算收益、波动、回撤、集中度和数据质量；回测保存成交口径、漂移权重、成本和输入哈希。
+4. 研究文档进入对象存储和 PostgreSQL，由 Worker 解析、切片、生成 embedding，经发布与权限检查后参与 Hybrid RAG。
+5. 已发布 Prompt 约束结构化模型输出；Trace 记录模型、Prompt、证据、usage、成本、代码版本与数据截止时间。
+6. 规则校验通过后进入人工审核；批准、退回或拒绝均形成审计记录，只有批准结果可发布。
+
+完整的 5-8 分钟演示顺序见 [docs/demo-script.md](docs/demo-script.md)。
+
+## Verified Quality
+
+- 实时状态：[GitHub Actions CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml) 与 README 顶部 badge。
+- CI 独立执行 `lint-type-unit`、`postgres-integration`、`postgres-restart-e2e`、`security-audit`、`coverage-report` 和 `docker-build`。
+- Restart E2E 会真实重启 Compose PostgreSQL，并验证交易、持仓、估值、文档/chunk/embedding、Prompt、LLM Trace、Workflow、人工审核和发布报告仍存在且幂等。
+- 历史质量快照：commit `d6582e76c95188b915ff8fd87eb2a440064c808e`、2026-08-19 UTC、[Actions run 32286512635](https://github.com/xjy0526/PortfolioPilot/actions/runs/32286512635)，合并 statement coverage 为 `62%`。该数字只对应此 SHA，不代表后续提交。
+- `pip-audit` 与 Gitleaks 属于 CI 必跑项；通过不等于完整渗透测试或机构合规认证。
+
+评测模式不能混用：
+
+| 模式 | 数据/模型边界 | CI 默认执行 |
+|---|---|:---:|
+| `synthetic_smoke` | 自行构造 fixture + deterministic mock，只验证工程链路和规则 | 是 |
+| `live_model_eval` | 真实配置模型；缺 Key 或调用失败即失败，不回退 mock | 否 |
+| `human_gold_eval` | 必须存在显式人工标签 | 否 |
+| `production_monitoring` | 必须存在真实生产观测数据 | 否 |
+
+## Data & Evaluation Disclosure
+
+- 仓库示例交易、组合、行情和研究材料均为自行构造或公开培训素材，不是真实个人持仓、内部研报或授权受限数据。
+- 原始价格保留证券原币，FX 独立存储，估值时转换为组合基准币种；每个快照保留数据截止时间与 lineage。
+- yfinance 只用于研究演示，没有生产 SLA；Tushare、Qwen 和其他 Provider 凭据必须由本地环境或 Secret Manager 注入。
+- Mock、fallback、估算 usage 和 synthetic 数据必须在 API/JSON 中显式标记，不能作为真实模型质量、真实行情或生产效果宣传。
+- `hallucination_rate=0` 等单一数字在 synthetic 模式下只描述规则夹具，不是真实模型“零幻觉”的证明。
+
+## Known Limitations
+
+- 回测具备 point-in-time 成交约束，但还不是生产级完整 walk-forward 平台。
+- yfinance 行情、Basic Auth 和本地对象存储只适合研究演示或单机开发。
+- 生产可写模式需要 PostgreSQL/pgvector、S3-compatible storage、正式认证、密钥管理、备份恢复和集中审计。
+- 最新 PostgreSQL 主线与旧 Dashboard demo 激活接口尚未完全统一；不要用 `/api/demo/activate` 代替 ledger/valuation 演示。
+- 完整边界见 [docs/current-limitations.md](docs/current-limitations.md)，发布审计见 [docs/audits/release_readiness_2026.md](docs/audits/release_readiness_2026.md)。
+
+## 文档导航
+
+| 文档 | 内容 |
+|---|---|
+| [docs/demo-script.md](docs/demo-script.md) | 5-8 分钟面试演示流程、预期输出与 fallback |
+| [docs/demo-recording-guide.md](docs/demo-recording-guide.md) | 真实截图/GIF 录制、脱敏与验收清单 |
+| [docs/architecture.md](docs/architecture.md) | 当前架构、边界和数据流 |
+| [docs/api.md](docs/api.md) | API 索引与兼容接口 |
+| [docs/testing.md](docs/testing.md) | 测试分层与 PostgreSQL restart E2E |
+| [docs/deployment.md](docs/deployment.md) | Web、Cron、对象存储、preflight 与恢复边界 |
+| [docs/current-limitations.md](docs/current-limitations.md) | 当前已知限制和 mock/fallback 条件 |
+| [docs/case_studies/ai_hardware_portfolio_case.md](docs/case_studies/ai_hardware_portfolio_case.md) | AI 硬件组合研究案例 |
+| [docs/audits/release_readiness_2026.md](docs/audits/release_readiness_2026.md) | 带日期和 SHA 的发布准备审计 |
+
+## Experimental / Legacy Extensions
+
+以下能力保留用于兼容或实验，但不属于核心叙事，默认关闭：Telegram、Shadow Agent、Tech Radar/Tech Picks、Trade Advisor、Parqet compatibility、Polymarket 和旧 SQLite Dashboard 数据流。
+
+```env
+ENABLE_POLYMARKET=false
+ENABLE_TELEGRAM=false
+ENABLE_PARQET=false
+ENABLE_SHADOW_AGENT=false
+```
+
+关闭这些扩展不影响 PostgreSQL 账本、风险分析、Hybrid RAG、Prompt/Trace、人工审核和回测。`APP_MODE=fund_research` 会进一步隐藏个人化和交易式表达入口。
+
+## 深入配置与模块说明
+
+### PostgreSQL 交易账本与估值
 
 核心组合链路使用 PostgreSQL 16、SQLAlchemy 2.x Async ORM、asyncpg 和 Alembic。启动数据库并应用 migration：
 
@@ -95,7 +236,7 @@ DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/p
 
 每个 FastAPI 请求和每个 Worker 任务使用独立 `AsyncSession`。Repository 负责数据访问，Session 的事务边界由请求或 Worker unit of work 管理。
 
-旧 SQLite 数据库继续提供兼容读取。应用 migration 后可以显式迁移支持的数据：
+旧 SQLite 数据库继续提供兼容读取。仅当本地确实存在旧库 `cache/portfoliopilot.db` 时，才在应用 migration 后显式迁移支持的数据：
 
 ```bash
 python scripts/migrate_sqlite_to_postgres.py \
@@ -165,40 +306,6 @@ POST /api/market-data/sync
 ```
 
 估值接口不会使用 `as_of` 之后的交易、行情或 FX。响应包含 snapshot ID、`input_hash`、`data_as_of`、价格/FX ID、warning 和 `history_completeness`。
-
-## 应用模式
-
-在 `.env` 中选择模式：
-
-```env
-APP_MODE=personal
-# APP_MODE=fund_research
-```
-
-| 功能 | `personal` | `fund_research` |
-|---|:---:|:---:|
-| 个人组合分析 | ✓ | ✓ |
-| Tech Picks | ✓ | 隐藏 |
-| Shadow Agent | 默认关闭，可选模拟扩展 | 禁用入口与定时运行 |
-| 自动交易类入口 | 保留原个人功能 | 隐藏 |
-| 中性研究表达 | 部分 | 强制 |
-| 受控研究报告 Workflow | ✓ | ✓，推荐流程 |
-| 当前模式标识 | ✓ | ✓ |
-
-`fund_research` 中的建议会表述为“研究关注”“维持观察”“降低风险暴露”“人工复核”等，不提供 Buy/Sell 式执行指令。
-
-## 可选扩展
-
-以下扩展默认关闭，需要在 `.env` 中显式启用：
-
-```env
-ENABLE_POLYMARKET=false
-ENABLE_TELEGRAM=false
-ENABLE_PARQET=false
-ENABLE_SHADOW_AGENT=false
-```
-
-关闭扩展不影响 CSV 导入、A 股/美股风险分析、RAG、结构化 LLM 分析和回测命令。
 
 ## AI Provider 配置
 
@@ -293,7 +400,7 @@ curl -X POST http://localhost:8000/api/ai/analyze-portfolio \
 ```bash
 curl -X POST http://localhost:8000/api/knowledge/documents \
   -H "Idempotency-Key: notice-2026-001" \
-  -F 'file=@data/research_docs/notice.md' \
+  -F 'file=@data/research_docs/public_fund_research_faq.md' \
   -F 'metadata={"title":"公告摘要","source_type":"public_notice","permission_groups":["public"]}'
 
 python -m app.workers.run_knowledge_ingestion --once
@@ -413,6 +520,8 @@ curl -X POST http://localhost:8000/api/reviews/<review_id>/approve \
 
 ### SQLite 研究治理迁移
 
+以下命令只适用于确实存在 `cache/portfoliopilot.db` 的 legacy 环境；全新安装应跳过。
+
 ```bash
 python scripts/migrate_governance_sqlite_to_postgres.py \
   --sqlite cache/portfoliopilot.db \
@@ -438,10 +547,10 @@ python scripts/compare_sqlite_postgres_retrieval.py \
 python -m backtest.run_backtest \
   --portfolio data/portfolios/example_multi_asset_portfolio.csv \
   --prices data/prices/example_historical_prices.csv \
-  --benchmark data/prices/benchmark.csv \
-  --train-window 60 \
-  --holding-window 20 \
-  --rebalance-frequency 20 \
+  --output cache/backtest_report.json \
+  --train-window 5 \
+  --holding-window 3 \
+  --rebalance-frequency 3 \
   --transaction-cost-bps 5 \
   --slippage-bps 2 \
   --turnover-limit 1.0
@@ -471,6 +580,12 @@ LLM 不参与目标权重计算。`/api/portfolio/rebalance` 返回确定性的 
 
 ```bash
 python -m backtest.run_backtest --persist \
+  --portfolio data/portfolios/example_multi_asset_portfolio.csv \
+  --prices data/prices/example_historical_prices.csv \
+  --output cache/backtest_report.json \
+  --train-window 5 \
+  --holding-window 3 \
+  --rebalance-frequency 3 \
   --portfolio-id <postgres-portfolio-uuid> \
   --portfolio-snapshot-id <valuation-snapshot-uuid>
 ```
