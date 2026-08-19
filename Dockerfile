@@ -1,5 +1,5 @@
 # PortfolioPilot - Production Container
-FROM python:3.12-slim
+FROM python:3.12-slim AS dependencies
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,6 +19,32 @@ RUN pip install --no-cache-dir \
         "torch==${TORCH_VERSION}+cpu" \
     && pip install --no-cache-dir -r requirements.txt
 
+# The Python base image and PyTorch CPU index can carry older packaging tools.
+# Keep every derived runtime free of known pip/setuptools advisories as well.
+RUN python -m pip install --no-cache-dir --upgrade \
+    "pip>=26.1.2,<27" \
+    "setuptools>=83,<85"
+
+# Lightweight deterministic target for Compose E2E. It contains the complete
+# application but deliberately does not download a model checkpoint.
+FROM dependencies AS e2e
+
+COPY . .
+
+RUN mkdir -p /app/cache /app/data/object_storage \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+ENV PORT=8080
+ENV ENVIRONMENT=test
+
+EXPOSE ${PORT}
+
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port \"${PORT}\" --workers 1"]
+
+FROM dependencies AS production
+
 # Bake the verified 384-dimensional multilingual model into the immutable
 # image so production startup does not depend on a model-registry download.
 ARG RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
@@ -26,12 +52,6 @@ ENV HF_HOME=/app/.cache/huggingface
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${RAG_EMBEDDING_MODEL}')"
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
-
-# The Python base image and PyTorch CPU index can carry older packaging tools.
-# Keep the final runtime free of known pip/setuptools advisories as well.
-RUN python -m pip install --no-cache-dir --upgrade \
-    "pip>=26.1.2,<27" \
-    "setuptools>=83,<85"
 
 # Copy application
 COPY . .

@@ -1,5 +1,7 @@
 # PortfolioPilot
 
+[![Pull request CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml?query=event%3Apull_request)
+
 PortfolioPilot 是一个面向 A 股与美股的多市场投资组合风险分析与证据驱动投研平台。当前版本基于 FastAPI、PostgreSQL 数据库基础、SQLite 兼容读取和原生 Web 前端，并提供两种使用模式：
 
 - `personal`：个人投资组合看板和研究辅助功能。
@@ -523,9 +525,17 @@ GET /api/evaluation/traces
 ## 测试与质量检查
 
 ```bash
+# 普通套件明确排除需要控制 Docker daemon 的 restart E2E。
 python -m pytest -q
+
+# PostgreSQL integration 使用已启动并迁移到 head 的测试数据库。
 TEST_DATABASE_URL=postgresql+asyncpg://portfoliopilot:portfoliopilot@localhost:5432/portfoliopilot \
-  python -m pytest -m postgres -q
+  python -m pytest -o addopts="" -m "postgres and not postgres_restart" -q
+
+# 独立 Compose E2E 会构建 app、创建隔离数据库、真实重启 PostgreSQL 并自动清理。
+python -m pytest --confcutdir=tests/e2e -o addopts="" \
+  -m postgres_restart -q -s tests/e2e/test_postgres_restart_persistence.py
+
 ruff check .
 mypy .
 python -m compileall -q app analytics backtest evaluation prompts rag routes services workflows
@@ -534,7 +544,9 @@ pip check
 python scripts/check_evaluation_integrity.py
 ```
 
-完整评测用于模型与流程质量，不替代单元测试和 API 集成测试。
+普通 `pytest` 对 restart 场景显示 deselected，而不是 skipped；GitHub Actions 的 `PostgreSQL restart persistence E2E` job 必须单独成功，后续 production container job 才会执行。该 E2E 不只检查端口恢复，还验证交易、重建持仓、估值、文档、chunk、pgvector embedding、Prompt 版本、LLM Trace、Workflow、人工审核和发布报告在重启前后具有相同 ID/checksum，且幂等复跑不产生重复行。详细分层、前置条件和故障排查见 [docs/testing.md](docs/testing.md)。
+
+完整评测用于模型与流程质量，不替代单元测试、PostgreSQL integration 和 restart persistence E2E。
 
 ## Render 部署
 

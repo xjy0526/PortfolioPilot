@@ -38,7 +38,8 @@ def test_ci_runs_required_quality_commands():
 
     assert "ruff check ." in ci
     assert "run: mypy" in ci
-    assert "python -m pytest --cov=." in ci
+    assert "python -m pytest" in ci
+    assert "--cov=." in ci
     assert "python -m coverage report" in ci
     assert "docker build" in ci
 

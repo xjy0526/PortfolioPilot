@@ -16,7 +16,7 @@ python_version = "3.12"
 exclude = [
     "^(tests|analytics|backtest|engine|evaluation|fetchers|portfolio_optimizer|prompts|rag|routes)/",
     "^services/(?!llm_client\\.py$|market_data/postgres_provider\\.py$)",
-    "^scripts/(?!bootstrap_portfolio\\.py$)",
+    "^scripts/(?!(bootstrap_portfolio|postgres_restart_e2e)\\.py$)",
     "^(cache_manager|config|database|logging_config|main|models|run_job|state)\\.py$",
 ]
 files = [
@@ -30,6 +30,7 @@ files = [
     "app/services",
     "app/workers",
     "scripts/bootstrap_portfolio.py",
+    "scripts/postgres_restart_e2e.py",
 ]
 ignore_missing_imports = true
 check_untyped_defs = true
@@ -44,7 +45,8 @@ module = ["config"]
 disable_error_code = ["prop-decorator"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not postgres_restart'"
 markers = [
     "postgres: requires a PostgreSQL test database",
-    "postgres_restart: restarts the Docker Compose PostgreSQL service",
+    "postgres_restart: dedicated Docker Compose E2E that restarts PostgreSQL",
 ]

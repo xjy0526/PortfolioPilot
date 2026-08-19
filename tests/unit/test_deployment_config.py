@@ -1,4 +1,5 @@
 """Static deployment contracts that do not require Render credentials."""
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,3 +30,37 @@ def test_render_blueprint_does_not_contain_object_storage_credentials():
                 "- key:", maxsplit=1
             )[0]
             assert "sync: false" in section
+
+
+def test_postgres_restart_e2e_is_a_required_independent_ci_layer():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    for job in (
+        "lint-type-unit:",
+        "postgres-integration:",
+        "postgres-restart-e2e:",
+        "security-audit:",
+        "docker-build:",
+    ):
+        assert f"  {job}" in workflow
+    assert "- postgres-restart-e2e" in workflow
+    assert "-m postgres_restart" in workflow
+    assert "tests/e2e/test_postgres_restart_persistence.py" in workflow
+    assert "RUN_POSTGRES_RESTART_TEST" not in workflow
+
+
+def test_default_pytest_and_dedicated_e2e_have_distinct_execution_scopes():
+    configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    compose = (ROOT / "docker-compose.e2e.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert configuration["tool"]["pytest"]["ini_options"]["addopts"] == (
+        "-m 'not postgres_restart'"
+    )
+    assert "restart_postgres_data:/var/lib/postgresql/data" in compose
+    assert "target: e2e" in compose
+    assert "EMBEDDING_PROVIDER: hashing" in compose
+    assert "FROM dependencies AS e2e" in dockerfile
+    assert dockerfile.rfind("FROM dependencies AS production") > dockerfile.rfind(
+        "FROM dependencies AS e2e"
+    )
