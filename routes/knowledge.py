@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
@@ -164,6 +166,32 @@ async def get_ingestion_job(
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
+
+
+@router.get("/api/knowledge/ingestion-jobs/{job_id}/source")
+async def download_ingestion_source(
+    job_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    job = await ResearchRepository(session).get_job(job_id)
+    if job is None:
+        return JSONResponse({"error": "Ingestion source not found"}, status_code=404)
+    try:
+        content = await PostgresKnowledgeService(session).read_source_object(
+            job,
+            principal=principal,
+        )
+    except PermissionError:
+        return JSONResponse({"error": "Source access denied"}, status_code=403)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Ingestion source not found"}, status_code=404)
+    filename = Path(job.filename).name
+    return Response(
+        content,
+        media_type=job.content_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 def _document_payload(document: Any, *, include_drafts: bool = True) -> dict[str, Any]:

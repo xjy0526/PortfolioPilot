@@ -121,20 +121,123 @@ async def run_daily_pipeline_job(
     as_of: datetime | None = None,
 ) -> dict[str, object]:
     cutoff = _as_utc(as_of or utc_now())
-    market_run = await run_market_sync_job(
-        end=cutoff.date(),
-        portfolio_id=portfolio_id,
+    run_key = _daily_pipeline_run_key(cutoff, portfolio_id)
+    lock_key = f"portfoliopilot:{run_key}"
+    async with AsyncSessionFactory() as lock_session:
+        await _require_session_advisory_lock(lock_session, lock_key)
+        try:
+            run_id, replay = await _claim_daily_pipeline_run(
+                run_key=run_key,
+                portfolio_id=portfolio_id,
+                cutoff=cutoff,
+            )
+            if replay:
+                return await _daily_pipeline_payload(run_id, idempotent_replay=True)
+            try:
+                market_run = await run_market_sync_job(
+                    end=cutoff.date(),
+                    portfolio_id=portfolio_id,
+                )
+                valuation_run = await run_position_rebuild_job(
+                    portfolio_id=portfolio_id,
+                    as_of=cutoff,
+                )
+                result = {
+                    "status": "completed",
+                    "daily_pipeline_run_id": str(run_id),
+                    "market_sync_run_id": str(market_run.id),
+                    "position_rebuild_run_id": str(valuation_run.id),
+                    "as_of": cutoff.isoformat(),
+                    "idempotent_replay": False,
+                }
+                await _complete_daily_pipeline_run(run_id, result, cutoff)
+                return result
+            except Exception as exc:
+                await _fail_daily_pipeline_run(run_id, exc)
+                raise
+        finally:
+            await _release_session_advisory_lock(lock_session, lock_key)
+
+
+async def _claim_daily_pipeline_run(
+    *,
+    run_key: str,
+    portfolio_id: uuid.UUID | None,
+    cutoff: datetime,
+) -> tuple[uuid.UUID, bool]:
+    async with AsyncSessionFactory.begin() as session:
+        run = await session.scalar(
+            select(SyncRun).where(SyncRun.run_key == run_key).with_for_update()
+        )
+        if run is not None and run.status == "completed":
+            return run.id, True
+        if run is None:
+            run = SyncRun(
+                portfolio_id=portfolio_id,
+                provider="daily_pipeline",
+                run_key=run_key,
+                status="started",
+                started_at=utc_now(),
+                data_as_of=cutoff,
+                code_version=settings.resolved_code_version,
+                retry_count=0,
+                config_snapshot={"as_of": cutoff.isoformat()},
+                result_snapshot={},
+                error_message="",
+            )
+            session.add(run)
+            await session.flush()
+            return run.id, False
+        run.status = "started"
+        run.started_at = utc_now()
+        run.completed_at = None
+        run.data_as_of = cutoff
+        run.code_version = settings.resolved_code_version
+        run.retry_count += 1
+        run.config_snapshot = {"as_of": cutoff.isoformat()}
+        run.result_snapshot = {}
+        run.error_message = ""
+        return run.id, False
+
+
+async def _complete_daily_pipeline_run(
+    run_id: uuid.UUID,
+    result: dict[str, object],
+    cutoff: datetime,
+) -> None:
+    async with AsyncSessionFactory.begin() as session:
+        run = await _require_run(session, run_id)
+        run.status = "completed"
+        run.completed_at = utc_now()
+        run.data_as_of = cutoff
+        run.result_snapshot = result
+        run.error_message = ""
+
+
+async def _daily_pipeline_payload(
+    run_id: uuid.UUID,
+    *,
+    idempotent_replay: bool,
+) -> dict[str, object]:
+    async with AsyncSessionFactory() as session:
+        run = await _require_run(session, run_id)
+        payload = dict(run.result_snapshot or {})
+    payload.update(
+        {
+            "status": "completed",
+            "daily_pipeline_run_id": str(run_id),
+            "idempotent_replay": idempotent_replay,
+        }
     )
-    valuation_run = await run_position_rebuild_job(
-        portfolio_id=portfolio_id,
-        as_of=cutoff,
-    )
-    return {
-        "status": "completed",
-        "market_sync_run_id": str(market_run.id),
-        "position_rebuild_run_id": str(valuation_run.id),
-        "as_of": cutoff.isoformat(),
-    }
+    return payload
+
+
+async def _fail_daily_pipeline_run(run_id: uuid.UUID, exc: Exception) -> None:
+    async with AsyncSessionFactory.begin() as session:
+        run = await _require_run(session, run_id)
+        run.status = "failed"
+        run.completed_at = utc_now()
+        run.error_message = _error_summary(exc)
 
 
 async def _create_run(
@@ -146,7 +249,7 @@ async def _create_run(
             provider=provider,
             status="started",
             started_at=utc_now(),
-            code_version=settings.CODE_VERSION,
+            code_version=settings.resolved_code_version,
             retry_count=0,
             config_snapshot=config,
             result_snapshot={},
@@ -191,6 +294,22 @@ async def _require_advisory_lock(session, key: str) -> None:
         raise RuntimeError(f"worker lock is already held: {key}")
 
 
+async def _require_session_advisory_lock(session, key: str) -> None:
+    acquired = await session.scalar(
+        text("SELECT pg_try_advisory_lock(hashtext(:lock_key))"),
+        {"lock_key": key},
+    )
+    if not acquired:
+        raise RuntimeError(f"daily pipeline is already running: {key}")
+
+
+async def _release_session_advisory_lock(session, key: str) -> None:
+    await session.scalar(
+        text("SELECT pg_advisory_unlock(hashtext(:lock_key))"),
+        {"lock_key": key},
+    )
+
+
 async def _portfolio_ids(session, portfolio_id: uuid.UUID | None) -> list[uuid.UUID]:
     statement = select(Portfolio.id).where(Portfolio.is_active.is_(True))
     if portfolio_id is not None:
@@ -202,6 +321,14 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _daily_pipeline_run_key(
+    cutoff: datetime,
+    portfolio_id: uuid.UUID | None,
+) -> str:
+    scope = str(portfolio_id) if portfolio_id is not None else "all"
+    return f"daily_pipeline:{scope}:{cutoff.date().isoformat()}"
 
 
 def _error_summary(exc: Exception) -> str:
@@ -217,6 +344,8 @@ def _error_summary(exc: Exception) -> str:
         settings.QWEN_API_KEY,
         settings.OPENAI_COMPATIBLE_API_KEY,
         settings.FMP_API_KEY,
+        settings.s3_access_key_id,
+        settings.s3_secret_access_key,
     ):
         if secret and secret not in {"your_qwen_api_key_here", "your_fmp_api_key_here"}:
             message = message.replace(secret, "***")

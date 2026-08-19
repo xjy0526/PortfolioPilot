@@ -153,6 +153,15 @@ def test_required_idempotency_constraints_are_present():
         constraint.name for constraint in Base.metadata.tables["workflow_runs"].constraints
     }
     assert "uq_workflow_runs_user_scene_key" in workflow_constraints
+    sync_constraints = {
+        constraint.name for constraint in Base.metadata.tables["sync_runs"].constraints
+    }
+    assert "uq_sync_runs_run_key" in sync_constraints
+    ingestion_constraints = {
+        constraint.name
+        for constraint in Base.metadata.tables["ingestion_jobs"].constraints
+    }
+    assert "uq_ingestion_jobs_object_key" in ingestion_constraints
     membership_constraints = {
         constraint.name
         for constraint in Base.metadata.tables["portfolio_memberships"].constraints
@@ -175,6 +184,18 @@ def test_document_version_keeps_source_and_stored_content_checksums():
     assert "checksum" in columns
     assert "stored_content_checksum" in columns
     assert "code_version" in Base.metadata.tables["ingestion_jobs"].c
+    ingestion_columns = Base.metadata.tables["ingestion_jobs"].c
+    for name in (
+        "object_key",
+        "object_version",
+        "object_owner",
+        "object_permission_groups",
+        "checksum",
+        "content_type",
+    ):
+        assert name in ingestion_columns
+    assert "storage_path" not in ingestion_columns
+    assert "storage_uri" not in ingestion_columns
 
 
 def test_governance_array_columns_use_postgresql_array_comparators():
@@ -182,6 +203,7 @@ def test_governance_array_columns_use_postgresql_array_comparators():
         ("document_chunks", "tickers"),
         ("document_chunks", "fund_codes"),
         ("document_chunks", "permission_groups"),
+        ("ingestion_jobs", "object_permission_groups"),
         ("prompt_versions", "variables"),
     }
     for table_name, column_name in array_columns:

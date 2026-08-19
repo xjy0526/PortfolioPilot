@@ -135,6 +135,13 @@ async def test_ingestion_persists_embeddings_and_hybrid_retrieval_enforces_acl(
                     principal=admin,
                     idempotency_key=f"public-{suffix}",
                 )
+                assert public_job.object_key
+                assert public_job.object_owner == admin.user_id
+                assert public_job.object_permission_groups == ["public"]
+                assert await service.read_source_object(
+                    public_job,
+                    principal=public,
+                ) == b"# AAPL Risk\n\nAAPL concentration and supply chain risk evidence."
                 await service.process_job(public_job)
                 assert public_job.document_id is not None
                 document_ids.append(public_job.document_id)

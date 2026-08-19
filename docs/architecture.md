@@ -71,7 +71,8 @@ flowchart LR
     PB --> RISK
     RISK --> LLM[证据约束的 Qwen 解释]
 
-    UPLOAD[Multipart UploadFile] --> IJ[(ingestion_jobs)]
+    UPLOAD[Multipart UploadFile] --> OS[(Local dev / shared S3 object)]
+    OS --> IJ[(ingestion_jobs object metadata)]
     IJ --> IW[Knowledge Ingestion Worker]
     IW --> RD[(documents + versions + chunks)]
     IW --> CE[(pgvector chunk_embeddings)]
@@ -137,6 +138,18 @@ python -m app.workers.run_storage_cleanup
 ```
 
 Web 进程不再运行 APScheduler，也不会在启动时自动请求行情或修改组合状态；定时调度应由 cron、CI scheduler、Cloud Scheduler 或独立任务平台调用 Worker。
+
+`run_daily_pipeline` 的调度模型是一次性批处理。Render 将其声明为 `type: cron`，而不是 Background Worker；进程依次完成行情同步与估值后正常退出。父级 `sync_run` 使用日期作用域 `run_key`，整条流水线持有 PostgreSQL session advisory lock，子任务继续保留自己的 transaction advisory lock。已完成的同日任务直接返回幂等 replay，失败记录可由下一次触发接管重试。
+
+## 对象存储与部署边界
+
+应用 lifespan 复用一个 `ObjectStorage` 实例，Web、Cron 和独立 Worker 均通过同一协议按 object key 访问内容。development/test 可以使用 `LocalObjectStorage`；production 可写模式只允许 `S3CompatibleObjectStorage`。数据库中的 `ingestion_jobs` 保存 object key、checksum、content type、provider version、owner 和 permission groups，不保存容器本地路径或伪造 URI。
+
+源文件上传先由服务端 Principal 校验角色和 permission groups，下载再次校验 owner、管理员角色或授权组。Worker 作为内部可信执行者按 key 读取。S3 bucket 可访问性属于 readiness 依赖；只读 production 不需要写型对象存储，状态明确为 `not_required`，不会静默创建一个 local fallback。
+
+Render Web、Cron 和 Background Worker 的文件系统彼此独立，Cron 不能挂载或读取 Web 的 Persistent Disk。因此 production 中需要跨进程访问的源对象必须进入共享 bucket。详细环境变量、服务类型和恢复顺序见 [deployment.md](deployment.md)。
+
+`python -m app.core.preflight` 与 `/health/ready` 共用同一检查逻辑：PostgreSQL、Alembic head、pgvector、Embedding、对象存储、production auth 和读写模式约束任一失败都会返回非就绪；`/health/live` 只表示进程存活。
 
 ## API 与兼容层
 

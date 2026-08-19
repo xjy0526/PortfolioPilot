@@ -5,7 +5,9 @@ import httpx
 import pytest
 
 import app.db.session as session_module
+from app.core.preflight import PreflightResult
 from app.db.repositories.health import HealthRepository
+import app.api.health as health_module
 from main import app
 
 
@@ -39,6 +41,30 @@ async def test_readiness_returns_503_when_database_query_fails(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"status": "not_ready", "database": "unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_readiness_returns_503_when_required_dependency_fails(monkeypatch):
+    async def failed_preflight(session):
+        del session
+        return PreflightResult(
+            ready=False,
+            payload={
+                "status": "not_ready",
+                "database": "available",
+                "object_storage": {"status": "unavailable", "backend": "s3"},
+            },
+        )
+
+    monkeypatch.setattr(health_module, "run_deployment_preflight", failed_preflight)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["object_storage"]["status"] == "unavailable"
 
 
 @pytest.mark.asyncio

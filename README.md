@@ -147,6 +147,8 @@ python -m app.workers.run_daily_pipeline --portfolio-id <portfolio_id>
 
 每次任务使用独立 Session、PostgreSQL advisory lock 和 `sync_run` 状态。Web API 不运行 APScheduler；生产调度应调用这些 Worker 入口。
 
+`run_daily_pipeline` 是运行完成即退出的一次性批处理，不是常驻 Worker。它为整条流水线创建父级 `sync_run`，使用 PostgreSQL session advisory lock，并按 `UTC 日期 + portfolio scope` 生成唯一 `run_key`；同日重复触发返回 `idempotent_replay=true`，不会再次执行子任务。
+
 核心 API：
 
 ```text
@@ -536,17 +538,41 @@ python scripts/check_evaluation_integrity.py
 
 ## Render 部署
 
-仓库包含 [Dockerfile](Dockerfile) 和 [render.yaml](render.yaml)。使用 Render Blueprint 时建议：
+仓库包含 [Dockerfile](Dockerfile) 和 [render.yaml](render.yaml)。Blueprint 定义两个不同的服务：
+
+- `portfolio-pilot`：FastAPI Web Service；
+- `portfolio-pilot-daily-pipeline`：一次性 Cron Job，周一至周五 `22:00 UTC` 执行 `python -m app.workers.run_daily_pipeline`，完成后退出。
+
+使用 Render Blueprint 时：
 
 1. 连接 GitHub 仓库并读取 `render.yaml`；
-2. 配置托管 PostgreSQL 的 `DATABASE_URL`，并设置 `QWEN_API_KEY`、`FMP_API_KEY`、`DASHBOARD_USER` 和 `DASHBOARD_PASSWORD`；
-3. 将 Persistent Disk 挂载到 `/app/cache`；
-4. 将 PostgreSQL 数据、行情和运行报告纳入备份与恢复流程；
-5. 生产环境使用受信任的权限主体生成知识库 permission groups。
+2. 为 Web 和 Cron 分别配置同一 PostgreSQL 的 `DATABASE_URL`；Cron 使用 A 股行情时还需配置 `TUSHARE_TOKEN`；
+3. Secret 只通过 Render Dashboard 或 Secret Manager 注入，`render.yaml` 仅保留 `sync: false`；
+4. 部署前执行 `alembic upgrade head` 和 `python -m app.core.preflight`；
+5. 将 PostgreSQL 与 S3 bucket 作为一组纳入备份、恢复和一致性验证。
+
+Render Web、Cron 和 Background Worker 是独立实例，本地目录和 Persistent Disk 不会在这些服务之间自动共享，Cron 也不能依赖 Web 的 `/app/cache`。`OBJECT_STORAGE_BACKEND=local` 仅用于 development/test 或只读演示；生产可写模式必须配置共享 S3-compatible storage：
+
+```env
+ENVIRONMENT=production
+READ_ONLY_DEMO=false
+OBJECT_STORAGE_BACKEND=s3
+S3_ENDPOINT_URL=https://s3.example.com
+S3_BUCKET=portfolio-pilot
+S3_REGION=ap-southeast-1
+S3_ACCESS_KEY_ID=from-secret-manager
+S3_SECRET_ACCESS_KEY=from-secret-manager
+S3_PREFIX=research-ingestion
+S3_FORCE_PATH_STYLE=false
+```
+
+AWS S3 可以省略 `S3_ENDPOINT_URL`；第三方 S3-compatible 服务应提供 HTTPS endpoint。旧 `OBJECT_STORAGE_*` 名称暂时兼容，新部署应使用 `S3_*`。
 
 只读公开演示可以匿名访问，但任何可写公网部署都必须配置认证。当前仓库提供的是可选 Basic Auth；正式机构环境仍应接入 OIDC/SAML、个人身份、RBAC/ABAC、职责分离、密钥管理、备份和集中审计。
 
 Production 默认 `READ_ONLY_DEMO=true`，所有 HTTP mutation 返回 403。若显式关闭只读模式，则启动前必须配置认证和 S3-compatible 对象存储；开发身份 Header 在 production 被拒绝。部署流水线仅在 `main` 的 CI 成功后使用 Git SHA 镜像，先执行 Alembic migration job，再执行 readiness 与只读 smoke test。
+
+完整服务拓扑、环境变量、preflight、对象权限及备份恢复边界见 [docs/deployment.md](docs/deployment.md)。
 
 ## 数据与安全边界
 

@@ -20,23 +20,23 @@ async def cleanup_storage(*, delete_unreferenced: bool = False) -> dict[str, int
     now = datetime.now(UTC)
     async with AsyncSessionFactory() as session:
         jobs = list((await session.scalars(select(IngestionJob))).all())
-    referenced = {job.storage_uri for job in jobs if job.storage_uri}
+    referenced = {job.object_key for job in jobs if job.object_key}
     expired = {
-        job.storage_uri
+        (job.object_key, job.object_version)
         for job in jobs
-        if job.storage_uri and job.retention_until and job.retention_until <= now
+        if job.object_key and job.retention_until and job.retention_until <= now
     }
     deleted_expired = 0
-    for uri in expired:
-        if await storage.exists(uri):
-            await storage.delete(uri)
+    for object_key, object_version in expired:
+        if await storage.object_exists(object_key, version=object_version):
+            await storage.delete_object(object_key, version=object_version)
             deleted_expired += 1
 
     deleted_orphans = 0
     if delete_unreferenced:
-        async for uri in storage.iter_uris(settings.OBJECT_STORAGE_PREFIX.strip("/")):
-            if uri not in referenced:
-                await storage.delete(uri)
+        async for object_key in storage.iter_keys(settings.object_storage_prefix):
+            if object_key not in referenced:
+                await storage.delete_object(object_key)
                 deleted_orphans += 1
     return {"expired_deleted": deleted_expired, "orphans_deleted": deleted_orphans}
 

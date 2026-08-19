@@ -147,6 +147,7 @@ pgvector rankings are fused with RRF after ACL and temporal filtering.
 | POST | `/api/knowledge/documents/{document_id}/publish` | Aktuelle Version veröffentlichen |
 | POST | `/api/knowledge/documents/{document_id}/deactivate` | Dokument deaktivieren und aus Retrieval entfernen |
 | GET | `/api/knowledge/ingestion-jobs/{job_id}` | Ingestion-Status oder Parserfehler lesen |
+| GET | `/api/knowledge/ingestion-jobs/{job_id}/source` | 按服务端 Principal 权限下载仍在保留期内的源对象 |
 
 ## Prompt Registry (`routes/prompts.py`)
 

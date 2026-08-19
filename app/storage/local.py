@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlparse
+
+from app.storage.base import StoredObject
 
 
 class LocalObjectStorage:
@@ -15,7 +19,16 @@ class LocalObjectStorage:
         (self.root / self.bucket).mkdir(parents=True, exist_ok=True)
 
     async def put(self, key: str, content: bytes, *, content_type: str) -> str:
-        del content_type
+        stored = await self.put_object(key, content, content_type=content_type)
+        return self._uri(stored.key)
+
+    async def put_object(
+        self,
+        key: str,
+        content: bytes,
+        *,
+        content_type: str,
+    ) -> StoredObject:
         path = self._path_for_key(key)
 
         def write() -> None:
@@ -25,18 +38,42 @@ class LocalObjectStorage:
             os.replace(temporary, path)
 
         await asyncio.to_thread(write)
-        return self._uri(key)
+        checksum = hashlib.sha256(content).hexdigest()
+        return StoredObject(
+            key=_safe_key(key),
+            checksum=checksum,
+            content_type=content_type,
+            version=checksum,
+        )
 
     async def get(self, uri: str) -> bytes:
-        return await asyncio.to_thread(self._path_for_uri(uri).read_bytes)
+        return await self.get_object(self._key_from_reference(uri))
+
+    async def get_object(self, key: str, *, version: str = "") -> bytes:
+        content = await asyncio.to_thread(self._path_for_key(key).read_bytes)
+        if version and hashlib.sha256(content).hexdigest() != version:
+            raise ValueError("Local object version does not match stored content")
+        return content
 
     async def delete(self, uri: str) -> None:
-        await asyncio.to_thread(self._path_for_uri(uri).unlink, missing_ok=True)
+        await self.delete_object(self._key_from_reference(uri))
+
+    async def delete_object(self, key: str, *, version: str = "") -> None:
+        del version
+        await asyncio.to_thread(self._path_for_key(key).unlink, missing_ok=True)
 
     async def exists(self, uri: str) -> bool:
-        return await asyncio.to_thread(self._path_for_uri(uri).is_file)
+        return await self.object_exists(self._key_from_reference(uri))
 
-    async def iter_uris(self, prefix: str = "") -> AsyncIterator[str]:
+    async def object_exists(self, key: str, *, version: str = "") -> bool:
+        path = self._path_for_key(key)
+        exists = await asyncio.to_thread(path.is_file)
+        if not exists or not version:
+            return exists
+        content = await asyncio.to_thread(path.read_bytes)
+        return hashlib.sha256(content).hexdigest() == version
+
+    async def iter_keys(self, prefix: str = "") -> AsyncIterator[str]:
         base = self._path_for_key(prefix) if prefix else self.root / self.bucket
         paths = await asyncio.to_thread(
             lambda: sorted(path for path in base.rglob("*") if path.is_file())
@@ -45,13 +82,30 @@ class LocalObjectStorage:
         )
         bucket_root = self.root / self.bucket
         for path in paths:
-            yield self._uri(path.relative_to(bucket_root).as_posix())
+            yield path.relative_to(bucket_root).as_posix()
 
-    def _path_for_uri(self, uri: str) -> Path:
-        parsed = urlparse(uri)
-        if parsed.scheme != "local" or parsed.netloc != self.bucket:
-            raise ValueError("Object URI does not belong to this local storage bucket")
-        return self._path_for_key(unquote(parsed.path.lstrip("/")))
+    async def iter_uris(self, prefix: str = "") -> AsyncIterator[str]:
+        async for key in self.iter_keys(prefix):
+            yield self._uri(key)
+
+    async def check_access(self) -> None:
+        bucket_root = self.root / self.bucket
+
+        def probe() -> None:
+            bucket_root.mkdir(parents=True, exist_ok=True)
+            probe_path = bucket_root / f".preflight-{uuid.uuid4().hex}"
+            probe_path.write_bytes(b"")
+            probe_path.unlink()
+
+        await asyncio.to_thread(probe)
+
+    def _key_from_reference(self, value: str) -> str:
+        if value.startswith("local://"):
+            parsed = urlparse(value)
+            if parsed.netloc != self.bucket:
+                raise ValueError("Object URI does not belong to this local storage bucket")
+            return _safe_key(unquote(parsed.path.lstrip("/")))
+        return _safe_key(value)
 
     def _path_for_key(self, key: str) -> Path:
         normalized = _safe_key(key)

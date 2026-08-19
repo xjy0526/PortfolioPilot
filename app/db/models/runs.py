@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,9 @@ from app.db.models.base import Base, UUIDTimestampMixin
 
 class SyncRun(UUIDTimestampMixin, Base):
     __tablename__ = "sync_runs"
+    __table_args__ = (
+        UniqueConstraint("run_key", name="uq_sync_runs_run_key"),
+    )
 
     portfolio_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("portfolios.id", ondelete="SET NULL"),
@@ -21,6 +24,7 @@ class SyncRun(UUIDTimestampMixin, Base):
         index=True,
     )
     provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    run_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+import main as main_module
 from app.api.market_data import router as market_data_router
 from app.core.principal import Principal, get_principal
 from app.providers.embeddings import EmbeddingConfigurationError, build_embedding_provider
@@ -46,6 +47,106 @@ def test_writable_production_requires_authentication_and_shared_storage():
     )
     with pytest.raises(RuntimeError, match="S3-compatible object storage"):
         local_storage.validate_runtime_configuration()
+
+
+def test_writable_production_requires_complete_s3_configuration():
+    incomplete = _production_settings(
+        READ_ONLY_DEMO=False,
+        DASHBOARD_USER="researcher",
+        DASHBOARD_PASSWORD="test-password",
+        S3_BUCKET="research",
+    )
+    with pytest.raises(RuntimeError, match="S3 configuration is incomplete") as raised:
+        incomplete.validate_runtime_configuration()
+
+    assert "S3_REGION" in str(raised.value)
+    assert "S3_ACCESS_KEY_ID" in str(raised.value)
+    assert "S3_SECRET_ACCESS_KEY" in str(raised.value)
+
+    missing_bucket = _production_settings(
+        READ_ONLY_DEMO=False,
+        DASHBOARD_USER="researcher",
+        DASHBOARD_PASSWORD="test-password",
+        S3_REGION="ap-southeast-1",
+        S3_ACCESS_KEY_ID="test-access-key",
+        S3_SECRET_ACCESS_KEY="test-secret-key",
+        OBJECT_STORAGE_BUCKET="",
+    )
+    with pytest.raises(RuntimeError, match="S3_BUCKET"):
+        missing_bucket.validate_runtime_configuration()
+
+
+def test_read_only_production_accepts_local_storage_without_s3_credentials():
+    configuration = _production_settings(
+        READ_ONLY_DEMO=True,
+        OBJECT_STORAGE_BACKEND="local",
+        S3_BUCKET="",
+        S3_REGION="",
+        S3_ACCESS_KEY_ID="",
+        S3_SECRET_ACCESS_KEY="",
+    )
+    configuration.validate_runtime_configuration()
+
+
+@pytest.mark.asyncio
+async def test_application_lifespan_rejects_writable_production_local_storage(
+    monkeypatch,
+):
+    configuration = _production_settings(
+        READ_ONLY_DEMO=False,
+        DASHBOARD_USER="researcher",
+        DASHBOARD_PASSWORD="test-password",
+        OBJECT_STORAGE_BACKEND="local",
+    )
+    monkeypatch.setattr(main_module, "settings", configuration)
+
+    with pytest.raises(RuntimeError, match="S3-compatible object storage"):
+        async with main_module.lifespan(main_module.app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_application_lifespan_rejects_incomplete_writable_s3(monkeypatch):
+    configuration = _production_settings(
+        READ_ONLY_DEMO=False,
+        DASHBOARD_USER="researcher",
+        DASHBOARD_PASSWORD="test-password",
+        S3_BUCKET="research",
+    )
+    monkeypatch.setattr(main_module, "settings", configuration)
+
+    with pytest.raises(RuntimeError, match="S3 configuration is incomplete"):
+        async with main_module.lifespan(main_module.app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_read_only_demo_lifespan_can_start_without_s3(monkeypatch):
+    import database as legacy_database
+
+    configuration = _production_settings(
+        READ_ONLY_DEMO=True,
+        OBJECT_STORAGE_BACKEND="local",
+        S3_BUCKET="",
+        S3_REGION="",
+        S3_ACCESS_KEY_ID="",
+        S3_SECRET_ACCESS_KEY="",
+    )
+
+    async def no_op_async():
+        return None
+
+    monkeypatch.setattr(main_module, "settings", configuration)
+    monkeypatch.setattr(main_module, "initialize_resources", no_op_async)
+    monkeypatch.setattr(main_module, "close_resources", no_op_async)
+    monkeypatch.setattr(main_module, "dispose_async_engine", no_op_async)
+    monkeypatch.setattr(main_module.CacheManager, "clear_volatile_caches", lambda: None)
+    monkeypatch.setattr(main_module.CacheManager, "cleanup_stale_files", lambda: None)
+    monkeypatch.setattr(legacy_database, "init_db", lambda: None)
+    monkeypatch.setattr(legacy_database, "migrate_json_to_sqlite", lambda: None)
+
+    async with main_module.lifespan(main_module.app):
+        pass
 
 
 def test_production_hashing_embedding_is_rejected_even_if_fallback_requested():

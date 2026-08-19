@@ -12,13 +12,14 @@ from config import BASE_DIR, Settings, settings
 def build_object_storage(configuration: Settings = settings) -> ObjectStorage:
     if configuration.OBJECT_STORAGE_BACKEND == "s3":
         return S3CompatibleObjectStorage(
-            bucket=configuration.OBJECT_STORAGE_BUCKET,
-            endpoint_url=configuration.OBJECT_STORAGE_ENDPOINT_URL,
-            region=configuration.OBJECT_STORAGE_REGION,
-            access_key_id=configuration.OBJECT_STORAGE_ACCESS_KEY_ID,
-            secret_access_key=configuration.OBJECT_STORAGE_SECRET_ACCESS_KEY,
+            bucket=configuration.object_storage_bucket,
+            endpoint_url=configuration.s3_endpoint_url,
+            region=configuration.s3_region,
+            access_key_id=configuration.s3_access_key_id,
+            secret_access_key=configuration.s3_secret_access_key,
+            force_path_style=configuration.S3_FORCE_PATH_STYLE,
         )
     root = Path(configuration.OBJECT_STORAGE_LOCAL_ROOT).expanduser()
     if not root.is_absolute():
         root = BASE_DIR / root
-    return LocalObjectStorage(root, bucket=configuration.OBJECT_STORAGE_BUCKET)
+    return LocalObjectStorage(root, bucket=configuration.object_storage_bucket)

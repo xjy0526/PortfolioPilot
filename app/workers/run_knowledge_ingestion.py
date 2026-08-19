@@ -96,9 +96,13 @@ async def _apply_success_retention(job_id: uuid.UUID) -> None:
     resources = await get_resources()
     async with AsyncSessionFactory() as session:
         job = await session.get(IngestionJob, job_id)
-        storage_uri = job.storage_uri if job is not None else ""
-    if storage_uri:
-        await resources.object_storage.delete(storage_uri)
+        object_key = job.object_key if job is not None else None
+        object_version = job.object_version if job is not None else ""
+    if object_key:
+        await resources.object_storage.delete_object(
+            object_key,
+            version=object_version,
+        )
 
 
 def _job_payload(job: IngestionJob) -> dict[str, object]:

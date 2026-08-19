@@ -167,6 +167,12 @@ class IngestionJob(UUIDTimestampMixin, Base):
             "idempotency_key",
             name="uq_ingestion_jobs_user_scene_key",
         ),
+        UniqueConstraint("object_key", name="uq_ingestion_jobs_object_key"),
+        Index(
+            "ix_ingestion_jobs_object_permission_groups",
+            "object_permission_groups",
+            postgresql_using="gin",
+        ),
     )
 
     document_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -181,8 +187,12 @@ class IngestionJob(UUIDTimestampMixin, Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    storage_uri: Mapped[str] = mapped_column(String(1200), nullable=False, default="")
+    object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    object_version: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    object_owner: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    object_permission_groups: Mapped[list[str]] = mapped_column(
+        ARRAY(String(120)), nullable=False, default=lambda: ["public"]
+    )
     checksum: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     content_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     content_type: Mapped[str] = mapped_column(

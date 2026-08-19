@@ -144,10 +144,13 @@ class PostgresKnowledgeService:
             return existing, True
 
         storage_name = f"{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
-        object_key = f"{settings.OBJECT_STORAGE_PREFIX.strip('/')}/{storage_name}"
+        prefix = settings.object_storage_prefix
+        object_key = f"{prefix}/{storage_name}" if prefix else storage_name
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         storage = await self._get_storage()
-        storage_uri = await storage.put(object_key, content, content_type=content_type)
+        stored = await storage.put_object(object_key, content, content_type=content_type)
+        if stored.checksum != checksum:
+            raise KnowledgeIngestionError("Object storage checksum does not match upload")
         job_id = uuid.uuid4()
         statement = (
             insert(IngestionJob)
@@ -157,13 +160,15 @@ class PostgresKnowledgeService:
                 business_scene=business_scene,
                 idempotency_key=key,
                 filename=Path(filename).name,
-                storage_path=None,
-                storage_uri=storage_uri,
+                object_key=stored.key,
+                object_version=stored.version,
+                object_owner=principal.user_id,
+                object_permission_groups=list(metadata["permission_groups"]),
                 checksum=checksum,
                 content_length=len(content),
                 content_type=content_type,
                 retention_until=None,
-                code_version=settings.CODE_VERSION,
+                code_version=settings.resolved_code_version,
                 status="pending",
                 metadata_json=metadata,
                 chunks_created=0,
@@ -182,7 +187,7 @@ class PostgresKnowledgeService:
         job = (await self.session.execute(statement)).scalar_one_or_none()
         if job is not None:
             return job, False
-        await storage.delete(storage_uri)
+        await storage.delete_object(stored.key, version=stored.version)
         replay = await self.repository.find_job(
             principal.user_id, key, business_scene=business_scene
         )
@@ -198,8 +203,15 @@ class PostgresKnowledgeService:
         """Parse and embed outside a database transaction."""
         if job.status not in {"pending", "processing", "failed"}:
             raise KnowledgeIngestionError(f"Job is not processable from status {job.status}")
+        if not job.object_key:
+            raise KnowledgeIngestionError(
+                "Ingestion source object is unavailable; re-upload the legacy document"
+            )
         storage = await self._get_storage()
-        content = await storage.get(job.storage_uri)
+        content = await storage.get_object(
+            job.object_key,
+            version=job.object_version,
+        )
         if hashlib.sha256(content).hexdigest() != job.checksum:
             raise KnowledgeIngestionError("Stored object checksum does not match ingestion job")
         metadata = dict(job.metadata_json or {})
@@ -392,6 +404,24 @@ class PostgresKnowledgeService:
         job.error_message = ""
         return await self.persist_prepared(job, prepared)
 
+    async def read_source_object(
+        self,
+        job: IngestionJob,
+        *,
+        principal: Principal,
+    ) -> bytes:
+        if not can_access_source_object(job, principal):
+            raise PermissionError("Principal cannot access this source object")
+        if not job.object_key:
+            raise FileNotFoundError("Source object is unavailable")
+        content = await (await self._get_storage()).get_object(
+            job.object_key,
+            version=job.object_version,
+        )
+        if hashlib.sha256(content).hexdigest() != job.checksum:
+            raise KnowledgeIngestionError("Stored source checksum mismatch")
+        return content
+
     async def retrieve_with_status(
         self,
         query: str,
@@ -511,3 +541,14 @@ def _empty_retrieval(normalized_query: str) -> dict[str, Any]:
 
 def _retention_until(days: int) -> datetime:
     return datetime.now(UTC) + timedelta(days=max(0, days))
+
+
+def can_access_source_object(job: IngestionJob, principal: Principal) -> bool:
+    if not principal.authenticated:
+        return False
+    if principal.is_platform_admin or principal.has_role("knowledge_admin"):
+        return True
+    if principal.user_id == job.object_owner:
+        return True
+    allowed = {str(item).strip().lower() for item in job.object_permission_groups}
+    return bool(allowed & principal.permission_groups)
