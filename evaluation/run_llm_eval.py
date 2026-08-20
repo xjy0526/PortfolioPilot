@@ -10,18 +10,25 @@ import json
 
 from config import settings
 from evaluation.llm_eval import run_llm_evaluation_sync
+from evaluation.reporting import EVALUATION_MODES
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run PortfolioPilot LLM evaluation")
     parser.add_argument("--output", default=str(settings.CACHE_DIR / "evaluation_report.json"))
     parser.add_argument("--lang", default="zh", choices=["zh", "en"])
-    parser.add_argument("--mock", action="store_true", help="Force mock LLM responses even when Qwen is configured")
-    parser.add_argument("--real", action="store_true", help="Use Qwen when QWEN_API_KEY is configured")
+    parser.add_argument(
+        "--mode",
+        default="synthetic_smoke",
+        choices=EVALUATION_MODES,
+    )
     args = parser.parse_args()
 
-    use_mock = True if args.mock else False if args.real else None
-    report = run_llm_evaluation_sync(output_path=args.output, use_mock=use_mock, language=args.lang)
+    report = run_llm_evaluation_sync(
+        output_path=args.output,
+        language=args.lang,
+        mode=args.mode,
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

@@ -1,0 +1,54 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = ["venv", ".venv", "cache"]
+
+[tool.ruff.lint]
+# PR-0 starts with correctness-focused rules. Later phases can expand this set
+# without mixing a repository-wide formatting rewrite into the migration.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.12"
+# ``mypy .`` is the canonical command. This explicit migration boundary keeps
+# the new PostgreSQL/application core strict while the legacy dashboard,
+# fetchers, and their tests are converted incrementally.
+exclude = [
+    "^(tests|analytics|backtest|engine|evaluation|fetchers|portfolio_optimizer|prompts|rag|routes)/",
+    "^services/(?!llm_client\\.py$|market_data/postgres_provider\\.py$)",
+    "^scripts/(?!(bootstrap_portfolio|coverage_quality|postgres_restart_e2e|summarize_test_results)\\.py$)",
+    "^(cache_manager|config|database|logging_config|main|models|run_job|state)\\.py$",
+]
+files = [
+    "services/llm_client.py",
+    "services/market_data/postgres_provider.py",
+    "time_utils.py",
+    "app/db",
+    "app/api",
+    "app/domain",
+    "app/providers",
+    "app/services",
+    "app/workers",
+    "scripts/bootstrap_portfolio.py",
+    "scripts/coverage_quality.py",
+    "scripts/postgres_restart_e2e.py",
+    "scripts/summarize_test_results.py",
+]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["config"]
+# Pydantic's computed_field decorator is not yet understood by mypy without
+# its plugin. Keep PR-0 focused on the new typed service boundary.
+disable_error_code = ["prop-decorator"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not postgres_restart'"
+markers = [
+    "postgres: requires a PostgreSQL test database",
+    "postgres_restart: dedicated Docker Compose E2E that restarts PostgreSQL",
+]

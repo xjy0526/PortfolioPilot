@@ -13,8 +13,19 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _shadow_mutation_disabled() -> JSONResponse | None:
+    if settings.shadow_agent_enabled:
+        return None
+    return JSONResponse(
+        {"error": "Shadow Agent extension is disabled"},
+        status_code=403,
+    )
 
 
 @router.get("/api/shadow-portfolio")
@@ -33,8 +44,11 @@ async def run_shadow_agent():
     """Loest einen Shadow-Agent-Zyklus manuell aus.
 
     Der Agent analysiert das Portfolio, trifft Entscheidungen und fuehrt
-    Trades aus. Dauert 30-90 Sekunden (Gemini API + yFinance).
+    Trades aus. Dauert 30-90 Sekunden (configured LLM API + yFinance).
     """
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from services.shadow_agent import run_shadow_agent_cycle
         result = await run_shadow_agent_cycle()
@@ -87,6 +101,9 @@ async def reset_shadow_portfolio():
     Konfiguration (Agenten-Regeln) bleibt erhalten.
     Nach dem Reset wird beim naechsten Zyklus neu initialisiert.
     """
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from database import shadow_reset
         await __import__("asyncio").to_thread(shadow_reset)
@@ -118,6 +135,9 @@ async def save_shadow_config(payload: dict):
     Erwartet ein JSON-Objekt mit den zu aendernden Werten.
     Unbekannte Keys werden ignoriert, fehlende Keys behalten ihren aktuellen Wert.
     """
+    disabled = _shadow_mutation_disabled()
+    if disabled:
+        return disabled
     try:
         from database import shadow_save_config, shadow_get_config
         shadow_save_config(payload)

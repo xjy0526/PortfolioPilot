@@ -1,0 +1,8 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+JNJ,30,155.00,160.00,2024-01-10,USD,Healthcare,Johnson & Johnson,equity,US,NYSE,US
+PG,28,145.00,168.00,2024-02-14,USD,Consumer Defensive,Procter & Gamble,equity,US,NYSE,US
+KO,70,58.00,63.00,2024-03-18,USD,Consumer Defensive,Coca-Cola Co.,equity,US,NYSE,US
+XLP,55,72.00,78.00,2024-04-12,USD,Consumer Defensive,Consumer Staples Select Sector SPDR,etf,US,NYSEARCA,US
+XLV,45,130.00,145.00,2024-05-08,USD,Healthcare,Health Care Select Sector SPDR,etf,US,NYSEARCA,US
+AGG,70,96.00,98.00,2024-06-01,USD,Bonds,iShares Core U.S. Aggregate Bond ETF,etf,US,NYSEARCA,US
+BIL,120,91.00,91.80,2024-06-20,USD,Cash Equivalent,SPDR Bloomberg 1-3 Month T-Bill ETF,etf,US,NYSEARCA,US

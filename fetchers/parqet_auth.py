@@ -21,6 +21,7 @@ from typing import Optional
 import httpx
 
 from config import settings
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -372,81 +373,12 @@ def load_token_file() -> Optional[dict]:
 
 
 def save_token_file(access_token: str, refresh_token: str):
-    """Persistiert Tokens in der Cache-Datei und auf Cloud Run als Env-Vars."""
-    # 1. Lokale Datei (funktioniert immer, auch lokal)
+    """Persist tokens locally for the optional Parqet extension."""
     TOKEN_FILE.write_text(
         json.dumps({
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": utc_now().isoformat(),
         }, indent=2),
         encoding="utf-8",
     )
-
-    # 2. Auf Cloud Run: Env-Vars aktualisieren (ueberlebt Container-Restarts)
-    if os.environ.get("ENVIRONMENT") == "production" and settings.GCP_PROJECT_ID:
-        _persist_tokens_to_cloud_run(access_token, refresh_token)
-
-
-def _persist_tokens_to_cloud_run(access_token: str, refresh_token: str):
-    """Speichert Tokens als Cloud Run Env-Vars ueber die Admin API.
-
-    Nutzt den Service Account des Containers fuer Auth.
-    Laeuft in einem Background-Thread um den Request nicht zu blockieren.
-    """
-    import threading
-
-    def _update():
-        try:
-            import google.auth
-            import google.auth.transport.requests
-            from google.auth import default as google_auth_default
-
-            credentials, project = google_auth_default()
-            auth_req = google.auth.transport.requests.Request()
-            credentials.refresh(auth_req)
-
-            # Cloud Run Admin API: aktuellen Service lesen, Env-Vars updaten
-            region = settings.GCP_LOCATION
-            service_name = "portfoliopilot"
-            url = (
-                f"https://run.googleapis.com/v2/projects/{project}/"
-                f"locations/{region}/services/{service_name}"
-            )
-
-            import urllib.request
-            import json as _json
-
-            # GET: aktuellen Service lesen
-            req = urllib.request.Request(url)
-            req.add_header("Authorization", f"Bearer {credentials.token}")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                service = _json.loads(resp.read())
-
-            # Env-Vars im Template updaten
-            containers = service["template"]["containers"]
-            for container in containers:
-                env_vars = container.get("env", [])
-                # Bestehende Parqet-Token-Vars entfernen
-                env_vars = [e for e in env_vars if e["name"] not in (
-                    "PARQET_ACCESS_TOKEN", "PARQET_REFRESH_TOKEN"
-                )]
-                # Neue Werte setzen
-                env_vars.append({"name": "PARQET_ACCESS_TOKEN", "value": access_token})
-                env_vars.append({"name": "PARQET_REFRESH_TOKEN", "value": refresh_token})
-                container["env"] = env_vars
-
-            # PATCH: Service updaten
-            patch_data = _json.dumps(service).encode()
-            patch_req = urllib.request.Request(url, data=patch_data, method="PATCH")
-            patch_req.add_header("Authorization", f"Bearer {credentials.token}")
-            patch_req.add_header("Content-Type", "application/json")
-            with urllib.request.urlopen(patch_req, timeout=30) as resp:
-                logger.info("Parqet Tokens als Cloud Run Env-Vars gespeichert")
-
-        except Exception as e:
-            logger.warning(f"Cloud Run Env-Var Update fehlgeschlagen: {e}")
-            # Nicht kritisch — Token ist lokal gespeichert und im Memory
-
-    threading.Thread(target=_update, daemon=True).start()
-

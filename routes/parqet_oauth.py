@@ -10,6 +10,7 @@ import os
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from config import settings
 from fetchers.parqet_auth import (
     generate_oauth_url,
     exchange_code_for_tokens,
@@ -36,6 +37,8 @@ async def parqet_authorize(request: Request):
     Oeffne diese URL im Browser → du wirst zu Parqet weitergeleitet.
     Nach dem Login kommt der Callback mit den Tokens.
     """
+    if not settings.ENABLE_PARQET:
+        return HTMLResponse("<h2>Parqet extension is disabled</h2>", status_code=404)
     redirect_uri = _get_redirect_uri(request)
     auth_url, _ = generate_oauth_url(redirect_uri)
     return RedirectResponse(url=auth_url)
@@ -47,6 +50,8 @@ async def parqet_callback(request: Request, code: str = "", state: str = "", err
 
     Empfaengt den Authorization Code und tauscht ihn gegen Tokens.
     """
+    if not settings.ENABLE_PARQET:
+        return HTMLResponse("<h2>Parqet extension is disabled</h2>", status_code=404)
     if error:
         return HTMLResponse(
             f"<h2>❌ Parqet Autorisierung fehlgeschlagen</h2><p>{error}</p>",
@@ -79,4 +84,3 @@ async def parqet_callback(request: Request, code: str = "", state: str = "", err
             "<p>Bitte erneut versuchen: <a href='/api/parqet/authorize'>/api/parqet/authorize</a></p>",
             status_code=500,
         )
-

@@ -8,6 +8,7 @@ Tests für:
 """
 import pytest
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -233,9 +234,11 @@ class TestEvaluateTrackRecords:
 class TestComputeVerifiedConsensus:
     def test_bullish_verified(self):
         """Verifizierte Firmen mit Buy-Ratings → Verified Consensus = Buy."""
+        recent_30d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        recent_60d = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
         ratings = [
-            AnalystRating(firm="Good Firm", to_grade="Buy", date="2025-12-01"),
-            AnalystRating(firm="Good Firm", to_grade="Buy", date="2025-11-01"),
+            AnalystRating(firm="Good Firm", to_grade="Buy", date=recent_30d),
+            AnalystRating(firm="Good Firm", to_grade="Buy", date=recent_60d),
         ]
         track_records = [
             AnalystTrackRecord(

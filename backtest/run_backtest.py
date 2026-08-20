@@ -6,8 +6,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
+import uuid
 
 from config import BASE_DIR, settings
 from backtest.strategy_backtester import BacktestConfig, resolve_prices_csv, run_strategy_backtest
@@ -20,6 +22,25 @@ def main() -> None:
     parser.add_argument("--output", default=str(settings.CACHE_DIR / "backtest_report.json"))
     parser.add_argument("--periods", type=int, default=252)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-window", type=int, default=60)
+    parser.add_argument("--holding-window", type=int, default=20)
+    parser.add_argument("--rebalance-frequency", type=int, default=20)
+    parser.add_argument("--transaction-cost-bps", type=float, default=5.0)
+    parser.add_argument("--slippage-bps", type=float, default=2.0)
+    parser.add_argument("--minimum-trade-amount", type=float, default=0.0)
+    parser.add_argument("--turnover-limit", type=float, default=1.0)
+    parser.add_argument("--benchmark", default="", help="Optional benchmark price CSV")
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist provenance and results to the configured PostgreSQL database",
+    )
+    parser.add_argument("--portfolio-id", default="", help="Optional PostgreSQL portfolio UUID")
+    parser.add_argument(
+        "--portfolio-snapshot-id",
+        default="",
+        help="Optional PostgreSQL valuation snapshot UUID used in the cache/provenance key",
+    )
     args = parser.parse_args()
     price_candidate = args.prices or settings.BACKTEST_PRICE_CSV or None
     prices_csv = resolve_prices_csv(price_candidate) if price_candidate else resolve_prices_csv()
@@ -31,8 +52,30 @@ def main() -> None:
             output_path=Path(args.output),
             periods=args.periods,
             seed=args.seed,
+            train_window=args.train_window,
+            holding_window=args.holding_window,
+            rebalance_frequency=args.rebalance_frequency,
+            transaction_cost_bps=args.transaction_cost_bps,
+            slippage_bps=args.slippage_bps,
+            minimum_trade_amount=args.minimum_trade_amount,
+            turnover_limit=args.turnover_limit,
+            benchmark_price_csv=Path(args.benchmark) if args.benchmark else None,
+            portfolio_snapshot_id=args.portfolio_snapshot_id or None,
         )
     )
+    if args.persist:
+        from app.db.session import worker_session
+        from app.services.backtest_persistence import BacktestPersistenceService
+
+        async def persist() -> dict[str, object]:
+            async with worker_session() as session:
+                run, replay = await BacktestPersistenceService(session).persist(
+                    report,
+                    portfolio_id=uuid.UUID(args.portfolio_id) if args.portfolio_id else None,
+                )
+                return {"backtest_run_id": str(run.id), "idempotent_replay": replay}
+
+        report["persistence"] = asyncio.run(persist())
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

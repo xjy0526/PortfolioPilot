@@ -48,9 +48,38 @@ def resolve_csv_path(file_path: str | Path | None = None) -> Path:
     return path
 
 
+def resolve_default_sample_csv_path() -> Path:
+    """Return the bundled first-run sample portfolio path."""
+    from config import BASE_DIR
+
+    return BASE_DIR / "data" / "portfolios" / "ai_hardware_portfolio.csv"
+
+
+def resolve_csv_read_path(file_path: str | Path | None = None) -> tuple[Path, bool]:
+    """Resolve the CSV used for reads.
+
+    The writable portfolio remains ``PARQET_PORTFOLIO_CSV``. On first run, when
+    no local portfolio exists and the app is in mock/demo mode, read the bundled
+    sample portfolio so the dashboard is not empty.
+    """
+    path = resolve_csv_path(file_path)
+    if path.is_file():
+        return path, False
+
+    if file_path is None:
+        from config import settings
+
+        sample_path = resolve_default_sample_csv_path()
+        if settings.demo_mode and sample_path.is_file():
+            return sample_path, True
+
+    return path, False
+
+
 def saved_csv_portfolio_exists(file_path: str | Path | None = None) -> bool:
     """Return True when a persisted CSV portfolio is available."""
-    return resolve_csv_path(file_path).is_file()
+    path, _ = resolve_csv_read_path(file_path)
+    return path.is_file()
 
 
 def save_csv_positions(positions: list[dict], file_path: str | Path | None = None) -> Path:
@@ -149,7 +178,8 @@ def parse_csv_json(positions: list[dict]) -> list[dict]:
 
 def load_saved_csv_positions(file_path: str | Path | None = None) -> list[dict]:
     """Load normalized positions from the persisted portfolio CSV."""
-    return parse_csv_file(str(resolve_csv_path(file_path)))
+    path, _ = resolve_csv_read_path(file_path)
+    return parse_csv_file(str(path))
 
 
 def upsert_csv_position(
@@ -164,7 +194,12 @@ def upsert_csv_position(
 
     new_position = normalized[0]
     path = resolve_csv_path(file_path)
-    positions = parse_csv_file(str(path)) if path.exists() else []
+    if path.exists():
+        positions = parse_csv_file(str(path))
+    elif file_path is None:
+        positions = load_saved_csv_positions()
+    else:
+        positions = []
     original_key = (original_ticker or new_position["ticker"]).upper()
     new_key = new_position["ticker"].upper()
     replaced = False
@@ -188,7 +223,12 @@ def delete_csv_position(
 ) -> tuple[list[dict], bool]:
     """Delete one position from the persisted CSV portfolio."""
     path = resolve_csv_path(file_path)
-    positions = parse_csv_file(str(path)) if path.exists() else []
+    if path.exists():
+        positions = parse_csv_file(str(path))
+    elif file_path is None:
+        positions = load_saved_csv_positions()
+    else:
+        positions = []
     ticker_key = (ticker or "").upper()
     updated_positions = [
         pos for pos in positions
@@ -281,7 +321,9 @@ def _parse_date(date_str: str) -> Optional[str]:
     return None
 
 
-def csv_positions_to_portfolio_format(positions: list[dict], prices: dict = None) -> list[dict]:
+def csv_positions_to_portfolio_format(
+    positions: list[dict], prices: dict | None = None
+) -> list[dict]:
     """
     Convert CSV positions to the internal portfolio format expected by the scoring engine.
 

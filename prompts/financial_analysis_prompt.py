@@ -1,88 +1,126 @@
-"""Structured financial analysis prompt for Qwen-compatible LLMs."""
+"""Financial-analysis Prompt Registry seed and renderer."""
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from sqlalchemy import text
 
-FINANCIAL_ANALYSIS_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "portfolio_summary": {"type": "string"},
-        "risk_score": {"type": "number"},
-        "main_risks": {"type": "array", "items": {"type": "string"}},
-        "asset_level_comments": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "ticker": {"type": "string"},
-                    "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
-                    "comment": {"type": "string"},
-                },
-                "required": ["ticker", "risk_level", "comment"],
-            },
-        },
-        "rebalance_suggestions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["buy", "hold", "reduce", "watch"]},
-                    "ticker": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "confidence": {"type": "number"},
-                },
-                "required": ["action", "ticker", "reason", "confidence"],
-            },
-        },
-        "evidence_used": {"type": "array", "items": {"type": "string"}},
-        "disclaimer": {"type": "string"},
-    },
-    "required": [
-        "portfolio_summary",
-        "risk_score",
-        "main_risks",
-        "asset_level_comments",
-        "rebalance_suggestions",
-        "evidence_used",
-        "disclaimer",
-    ],
-}
+from config import settings
+from prompts.financial_analysis_models import FINANCIAL_ANALYSIS_JSON_SCHEMA
+from prompts.registry import PromptRegistry
+from prompts.registry_models import PromptVersion
 
 
+FINANCIAL_ANALYSIS_PROMPT_ID = "financial-analysis"
+FINANCIAL_ANALYSIS_SCENE = "portfolio_financial_analysis"
 SYSTEM_INSTRUCTION = (
     "You are a careful buy-side portfolio risk research assistant. "
     "The system only provides research analysis and risk warnings. "
     "It does not provide personalized investment advice, trading instructions, "
-    "or guarantees of future returns. Return only valid JSON."
+    "or guarantees of future returns. Deterministic optimizers alone own target weights. "
+    "Never create or modify target_weight. Return only valid JSON."
 )
+
+DEFAULT_TEMPLATE = """Write the response in {language}.
+Analyze this mixed-asset portfolio for securities research and fund asset-management risk control.
+This is research and risk analysis only, not investment advice or a trade order.
+
+Portfolio risk summary JSON:
+{portfolio_risk_summary_json}
+
+Retrieved citation objects:
+{evidence_text}
+
+Return exactly one JSON object matching the registered output schema.
+Every ticker must come from the portfolio input. Every evidence_used item must contain an exact
+document_id and chunk_id from the retrieved citation objects. Do not introduce financial numbers
+that cannot be mapped to the structured portfolio input. Express interpretation only through
+research_observations and review_priorities. Do not calculate or propose allocation weights.
+The deprecated rebalance_suggestions field must be an empty array. {retry_instruction}"""
+
+INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "language": {"type": "string"},
+        "portfolio_risk_summary_json": {"type": "string"},
+        "evidence_text": {"type": "string"},
+        "retry_instruction": {"type": "string"},
+    },
+    "required": ["language", "portfolio_risk_summary_json", "evidence_text", "retry_instruction"],
+    "additionalProperties": False,
+}
+
+
+async def ensure_financial_analysis_prompt(registry: PromptRegistry) -> PromptVersion:
+    await registry.session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": "portfoliopilot:prompt-seed:financial-analysis"},
+    )
+    published = await registry.get_published(FINANCIAL_ANALYSIS_PROMPT_ID)
+    if published and _has_current_analysis_contract(published.output_schema):
+        return published
+    existing = await registry.get_prompt(FINANCIAL_ANALYSIS_PROMPT_ID)
+    if existing:
+        target = await registry.create_version(existing.prompt_id, {
+            "template": DEFAULT_TEMPLATE,
+            "variables": ["language", "portfolio_risk_summary_json", "evidence_text", "retry_instruction"],
+            "input_schema": INPUT_SCHEMA,
+            "output_schema": FINANCIAL_ANALYSIS_JSON_SCHEMA,
+            "model": settings.QWEN_MODEL,
+            "temperature": 0.2,
+            "owner": "Research Platform",
+            "change_log": "Move allocation ownership to deterministic optimizers",
+        })
+        assert target is not None
+        await registry.publish(existing.prompt_id, target.version, deployed_by="system-seed")
+        return await registry.get_version(existing.prompt_id, target.version) or target
+    _, version = await registry.create_prompt({
+        "prompt_id": FINANCIAL_ANALYSIS_PROMPT_ID,
+        "name": "Financial Portfolio Analysis",
+        "business_scene": FINANCIAL_ANALYSIS_SCENE,
+        "template": DEFAULT_TEMPLATE,
+        "variables": ["language", "portfolio_risk_summary_json", "evidence_text", "retry_instruction"],
+        "input_schema": INPUT_SCHEMA,
+        "output_schema": FINANCIAL_ANALYSIS_JSON_SCHEMA,
+        "model": settings.QWEN_MODEL,
+        "temperature": 0.2,
+        "owner": "Research Platform",
+        "change_log": "Registry baseline migrated from financial_analysis_prompt",
+    })
+    await registry.publish(version.prompt_id, version.version, deployed_by="system-seed")
+    return await registry.get_version(version.prompt_id, version.version) or version
+
+
+def _has_current_analysis_contract(schema: dict[str, Any]) -> bool:
+    properties = schema.get("properties", {})
+    return {"research_observations", "review_priorities"}.issubset(properties)
 
 
 def build_financial_analysis_prompt(
     portfolio_risk_summary: dict[str, Any],
     evidence: list[dict[str, Any]] | None = None,
     language: str = "zh",
+    *,
+    prompt_version: PromptVersion | None = None,
+    retry_instruction: str = "",
 ) -> str:
-    """Build the user prompt for structured portfolio analysis."""
-    lang = "Chinese" if language == "zh" else "English"
+    if prompt_version is None:
+        raise ValueError("prompt_version is required; load it from the async Prompt Registry")
     evidence = evidence or []
-    evidence_lines = []
-    for idx, item in enumerate(evidence, start=1):
-        source = item.get("source") or item.get("path") or "local_document"
-        text = str(item.get("text", ""))[:1200]
-        evidence_lines.append(f"[{idx}] {source}: {text}")
-
-    return (
-        f"Write the response in {lang}.\n"
-        "Analyze this mixed-asset portfolio for securities research and fund asset-management risk control.\n"
-        "Important: this is research and risk提示 only; it is not investment advice and must not be written as a trade order.\n\n"
-        "Portfolio risk summary JSON:\n"
-        f"{json.dumps(portfolio_risk_summary, ensure_ascii=False, default=str)}\n\n"
-        "External evidence from local RAG retrieval:\n"
-        f"{chr(10).join(evidence_lines) if evidence_lines else 'No external evidence was retrieved.'}\n\n"
-        "Return exactly one JSON object matching the provided schema. "
-        "Use risk_score on a 1-10 scale. Confidence should be between 0 and 1. "
-        "Use only these action values: buy, hold, reduce, watch. "
-        "Use only these risk levels: low, medium, high."
-    )
+    citations = [
+        {
+            "document_id": item.get("document_id") or item.get("source") or "",
+            "chunk_id": item.get("chunk_id") or item.get("id") or item.get("source") or "",
+            "title": item.get("title") or item.get("source") or "",
+            "quote": str(item.get("quote") or item.get("text") or "")[:1200],
+        }
+        for item in evidence
+    ]
+    values = {
+        "language": "Chinese" if language == "zh" else "English",
+        "portfolio_risk_summary_json": json.dumps(portfolio_risk_summary, ensure_ascii=False, default=str),
+        "evidence_text": json.dumps(citations, ensure_ascii=False),
+        "retry_instruction": retry_instruction,
+    }
+    return prompt_version.template.format_map(values)

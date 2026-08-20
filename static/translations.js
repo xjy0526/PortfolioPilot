@@ -18,18 +18,28 @@ const i18n = {
         toggleCurrency: '切换货币',
         actions: '操作',
         updateParqet: '更新 Parqet',
-        telegramReport: 'Telegram 报告',
         fullAnalysis: '完整分析',
         uploadCsv: 'CSV 导入',
         manageHoldings: '管理持仓',
+        emailContact: '邮箱联系',
+        apiSettings: 'API 设置',
+        cancel: '取消',
+        personalMode: '个人模式',
+        fundResearchMode: '机构投研',
+        fundResearchFocus: '研究关注',
+        fundMaintainWatch: '维持观察',
+        fundReduceRisk: '降低风险暴露',
+        fundManualReview: '人工复核',
 
         // Navigation
         overview: '概览',
         analysis: '分析',
         history: '历史',
-        rebalancing: '再平衡',
+        rebalancing: '调仓建议',
         techPicks: '科技精选',
         aiAdvisor: 'AI 顾问',
+        evalTrace: '评测与 Trace',
+        evalTraceSubtitle: 'Prompt、质量、延迟、成本和人工审核指标',
 
         // Stats
         positions: '持仓数',
@@ -78,7 +88,7 @@ const i18n = {
         sold: '已卖出',
 
         // Rebalancing Tab
-        rebalancingRecommendations: '⚖️ 再平衡建议',
+        rebalancingRecommendations: '⚖️ 组合调仓建议',
         calculating: '计算中...',
 
         // Tech Picks Tab
@@ -139,7 +149,7 @@ const i18n = {
         news: '新闻',
 
         // Mobile Nav
-        rebalance: '再平衡',
+        rebalance: '调仓',
         picks: '精选',
         ai: 'AI',
 
@@ -169,7 +179,7 @@ const i18n = {
         calcRunning: '计算中...（需要价格数据）',
         newsUnavailable: '暂无新闻',
         noHistoryData: '暂无历史数据，请先执行一次数据更新。',
-        sellRatingHint: '个卖出评级，是否查看再平衡建议？',
+        sellRatingHint: '个卖出评级，是否查看调仓建议？',
         position: '个持仓',
         positionPlural: '个持仓',
 
@@ -183,6 +193,24 @@ const i18n = {
         csvFormatHint: '格式: ticker, shares, buy_price, current_price, buy_date, currency, asset_type, market',
         holdingsManagerTitle: '管理持仓',
         holdingsManagerDesc: '新增、编辑或删除保存在 portfolio.csv 里的持仓',
+        apiSettingsTitle: 'API 设置',
+        apiSettingsDesc: '配置本地千问、FMP 和联系邮箱。密钥会保存到 .env，不会在页面回显。',
+        apiSettingsStatusReady: '当前模型: {model} · 千问: {qwen} · FMP: {fmp} · 联系邮箱: {email}',
+        apiSettingsConfigured: '已配置',
+        apiSettingsMissing: '未配置',
+        apiSettingsEmailMissing: '未填写',
+        apiQwenKey: '千问 API Key',
+        apiQwenBaseUrl: '千问 Base URL',
+        apiQwenModel: '千问模型',
+        apiQwenReasoningModel: '推理模型',
+        apiFmpKey: 'FMP API Key',
+        contactEmail: '联系邮箱',
+        apiSettingsNote: '密钥输入框留空表示保留当前值。修改密钥后建议重启服务。',
+        saveSettings: '保存设置',
+        settingsSaved: '设置已保存',
+        settingsSaveFailed: '设置保存失败',
+        settingsLoadFailed: '设置读取失败',
+        noContactEmail: '请先在 API 设置中填写联系邮箱。',
         holdingTicker: '代码',
         holdingBuyPrice: '买入价',
         holdingCurrentPrice: '当前价',
@@ -205,19 +233,19 @@ const i18n = {
         loading: '加载中...',
 
         // Shadow Portfolio Agent
-        shadowAgent: '影子代理',
-        shadowShort: '影子',
-        shadowTitle: '🤖 影子组合代理',
-        shadowSubtitle: '自动管理模拟投资组合的 AI 代理',
-        shadowStartAgent: '启动代理',
+        shadowAgent: 'AI 模拟组合',
+        shadowShort: '模拟组合',
+        shadowTitle: '🤖 AI 模拟组合',
+        shadowSubtitle: '让 AI 在模拟资金里试运行买入、卖出和持有决策',
+        shadowStartAgent: '运行模拟',
         shadowRunning: '⏳ 运行中...',
         shadowResetTitle: '重置组合',
         shadowKpiTotal: '总市值',
         shadowKpiPnl: '总盈亏',
         shadowKpiCash: '现金',
         shadowKpiPositions: '持仓数',
-        shadowChartTitle: '📈 影子组合 vs. 真实组合',
-        shadowTableTitle: '📋 影子持仓',
+        shadowChartTitle: '📈 模拟组合 vs. 真实组合',
+        shadowTableTitle: '📋 模拟持仓',
         shadowTableHeaderStock: '标的',
         shadowTableHeaderShares: '份额',
         shadowTableHeaderPrice: '价格',
@@ -225,11 +253,11 @@ const i18n = {
         shadowTableHeaderWeight: '权重',
         shadowTableHeaderPnl: 'P&L',
         shadowTableHeaderSector: '行业',
-        shadowEmptyPositions: '当前还没有持仓，启动代理后会自动初始化。',
+        shadowEmptyPositions: '当前还没有模拟持仓，运行模拟后会自动初始化。',
         shadowLastDecision: '最近一次 AI 决策',
         shadowTransactions: '🔄 交易记录',
         shadowLoading: '加载中...',
-        shadowConfigTitle: '⚙️ 代理配置',
+        shadowConfigTitle: '⚙️ 模拟组合设置',
         shadowConfigBadge: '默认',
         shadowConfigDesc: '重置后仍会保留配置',
         shadowStrategyMode: '🎯 策略模式',
@@ -258,12 +286,12 @@ const i18n = {
         shadowSaveConfig: '保存配置',
 
         // Shadow Agent JS Strings
-        shadowAgentRunningToast: '🤖 影子代理运行中...（约 30-90 秒）',
-        shadowAgentErrorToast: '❌ 代理错误: ',
-        shadowAgentSuccessToast: '✅ 影子代理:',
-        shadowAgentFailToast: '❌ 代理调用失败',
-        shadowResetConfirm: '确定重置影子组合吗？所有持仓和交易记录都会被删除。\n\n💡 代理规则配置会保留。',
-        shadowResetSuccess: '🗑️ 影子组合已重置',
+        shadowAgentRunningToast: '🤖 AI 模拟组合运行中...（约 30-90 秒）',
+        shadowAgentErrorToast: '❌ 模拟运行错误: ',
+        shadowAgentSuccessToast: '✅ AI 模拟组合:',
+        shadowAgentFailToast: '❌ 模拟运行失败',
+        shadowResetConfirm: '确定重置 AI 模拟组合吗？所有模拟持仓和交易记录都会被删除。\n\n💡 模拟规则配置会保留。',
+        shadowResetSuccess: '🗑️ AI 模拟组合已重置',
         shadowResetFail: '❌ 重置失败',
         shadowEmptyTransactions: '暂无交易记录。',
         shadowModeCons: '保守',
@@ -277,7 +305,7 @@ const i18n = {
         shadowResetConfigConfirm: '确定恢复默认配置吗？',
         shadowResetConfigSuccess: '🔄 配置已恢复',
         shadowResetConfigFail: '❌ 恢复失败',
-        shadowEmptyChart: '暂无表现数据，启动代理后开始记录。',
+        shadowEmptyChart: '暂无表现数据，运行模拟后开始记录。',
     },
     en: {
         // Header
@@ -287,10 +315,18 @@ const i18n = {
         toggleCurrency: 'Toggle currency',
         actions: 'Actions',
         updateParqet: 'Update Parqet',
-        telegramReport: 'Telegram Report',
         fullAnalysis: 'Full Analysis',
         uploadCsv: 'CSV Import',
         manageHoldings: 'Manage Holdings',
+        emailContact: 'Email Contact',
+        apiSettings: 'API Settings',
+        cancel: 'Cancel',
+        personalMode: 'Personal',
+        fundResearchMode: 'Fund Research',
+        fundResearchFocus: 'Research Focus',
+        fundMaintainWatch: 'Maintain Watch',
+        fundReduceRisk: 'Reduce Risk Exposure',
+        fundManualReview: 'Manual Review',
 
         // Navigation
         overview: 'Overview',
@@ -299,6 +335,8 @@ const i18n = {
         rebalancing: 'Rebalancing',
         techPicks: 'Tech Picks',
         aiAdvisor: 'AI Advisor',
+        evalTrace: 'Eval & Trace',
+        evalTraceSubtitle: 'Prompt quality, latency, cost and human-review metrics',
 
         // Stats
         positions: 'Positions',
@@ -451,6 +489,24 @@ const i18n = {
         csvFormatHint: 'Format: ticker, shares, buy_price, current_price, buy_date, currency, asset_type, market',
         holdingsManagerTitle: 'Manage Holdings',
         holdingsManagerDesc: 'Add, edit, or remove positions saved in portfolio.csv',
+        apiSettingsTitle: 'API Settings',
+        apiSettingsDesc: 'Configure local Qwen, FMP, and contact email settings. Secrets are saved to .env and are never echoed back.',
+        apiSettingsStatusReady: 'Model: {model} · Qwen: {qwen} · FMP: {fmp} · Contact: {email}',
+        apiSettingsConfigured: 'configured',
+        apiSettingsMissing: 'missing',
+        apiSettingsEmailMissing: 'not set',
+        apiQwenKey: 'Qwen API Key',
+        apiQwenBaseUrl: 'Qwen Base URL',
+        apiQwenModel: 'Qwen Model',
+        apiQwenReasoningModel: 'Reasoning Model',
+        apiFmpKey: 'FMP API Key',
+        contactEmail: 'Contact Email',
+        apiSettingsNote: 'Leave secret fields blank to keep current values. Restarting the server is recommended after changing keys.',
+        saveSettings: 'Save Settings',
+        settingsSaved: 'Settings saved',
+        settingsSaveFailed: 'Settings save failed',
+        settingsLoadFailed: 'Settings load failed',
+        noContactEmail: 'Add a contact email in API Settings first.',
         holdingTicker: 'Ticker',
         holdingBuyPrice: 'Buy Price',
         holdingCurrentPrice: 'Current Price',
@@ -604,5 +660,8 @@ function applyTranslations() {
     if (langBtn) langBtn.textContent = currentLang === 'zh' ? '中文' : 'EN';
     if (typeof updateDynamicCurrencyLabels === 'function') {
         updateDynamicCurrencyLabels();
+    }
+    if (typeof applyAppMode === 'function') {
+        applyAppMode(typeof appSettingsCache !== 'undefined' ? appSettingsCache : {});
     }
 }

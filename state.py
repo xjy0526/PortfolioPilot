@@ -7,9 +7,13 @@ Module inkompatible Kopien derselben Daten halten.
 import asyncio
 from zoneinfo import ZoneInfo
 
+from config import settings
 
-# Timezone für konsistente Zeitstempel (Cloud Run UTC vs. lokal CET)
-TZ_BERLIN = ZoneInfo("Europe/Berlin")
+
+# Presentation timezone. ``TZ_BERLIN`` remains as an import alias until legacy
+# modules migrate; persisted timestamps must use time_utils.utc_now().
+TZ_DISPLAY = ZoneInfo(settings.DISPLAY_TIMEZONE)
+TZ_BERLIN = TZ_DISPLAY
 
 # Zentrale yFinance-Ticker-Aliases
 # (Nur Ticker die in yFinance anders heißen als im Portfolio)
@@ -35,4 +39,3 @@ refresh_progress: dict = {
 
 # Lock um parallele Refreshes zu verhindern
 refresh_lock = asyncio.Lock()
-

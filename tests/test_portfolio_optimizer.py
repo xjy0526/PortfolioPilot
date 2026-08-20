@@ -50,6 +50,32 @@ def test_llm_risk_adjusted_weighting_reduces_high_risk_asset():
     assert rows["AAPL"]["target_weight"] < rows["AAPL"]["current_weight"]
     assert rows["AAPL"]["reason"]
     assert result["sector_warnings"]
+    assert result["target_weight_owner"] == "deterministic_optimizer"
+    assert result["deprecated"] is True
+
+
+def test_compat_optimizer_weights_do_not_change_with_llm_inputs():
+    kwargs = {
+        "current_weights": {"AAPL": 0.6, "MSFT": 0.4},
+        "asset_risk_metrics": {
+            "AAPL": {"annual_volatility": 0.45},
+            "MSFT": {"annual_volatility": 0.15},
+        },
+    }
+    low = llm_risk_adjusted_weighting(
+        **kwargs,
+        llm_risk_score=1,
+        asset_level_comments=[{"ticker": "AAPL", "risk_level": "low"}],
+    )
+    high = llm_risk_adjusted_weighting(
+        **kwargs,
+        llm_risk_score=10,
+        asset_level_comments=[{"ticker": "AAPL", "risk_level": "high"}],
+    )
+
+    low_weights = {item["ticker"]: item["target_weight"] for item in low["suggestions"]}
+    high_weights = {item["ticker"]: item["target_weight"] for item in high["suggestions"]}
+    assert low_weights == high_weights
 
 
 def test_minimum_variance_portfolio_prefers_lower_variance_asset():

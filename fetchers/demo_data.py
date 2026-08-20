@@ -10,6 +10,7 @@ from models import (
     FundamentalData,
     PortfolioPosition,
     TechRecommendation,
+    TechnicalIndicators,
     YFinanceData,
 )
 
@@ -127,9 +128,8 @@ def get_demo_fear_greed() -> FearGreedData:
     return FearGreedData(value=62, label="Greed", source="Demo")
 
 
-def get_demo_technical_indicators() -> dict[str, "TechnicalIndicators"]:
+def get_demo_technical_indicators() -> dict[str, TechnicalIndicators]:
     """Demo-Technische Indikatoren für alle Demo-Positionen."""
-    from models import TechnicalIndicators
     return {
         "AAPL": TechnicalIndicators(rsi_14=58.3, sma_50=172.40, sma_200=165.80, price_vs_sma50=3.7, sma_cross="golden", momentum_30d=4.2, momentum_90d=8.5, momentum_180d=12.1, signal="Bullish"),
         "MSFT": TechnicalIndicators(rsi_14=62.1, sma_50=405.20, sma_200=378.50, price_vs_sma50=2.5, sma_cross="golden", momentum_30d=3.8, momentum_90d=10.2, momentum_180d=15.3, signal="Bullish"),
@@ -268,13 +268,18 @@ def get_demo_risk() -> dict:
     """Synthetische Risikokennzahlen."""
     return {
         "portfolio_beta": 1.18,
+        "risk_score": 5,
+        "risk_level": "Moderat",
+        "volatility_annual": 18.5,
+        "var_95_daily": 1.82,
+        "var_95_monthly": 8.34,
+        "max_drawdown": 12.4,
         "var_95_pct": -1.82,
         "var_95_eur": -728.0,
         "max_drawdown_pct": -12.4,
         "sharpe_ratio": 1.45,
         "sortino_ratio": 2.12,
         "volatility_annualized": 18.5,
-        "risk_level": "Moderat",
         "is_demo": True,
     }
 

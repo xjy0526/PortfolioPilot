@@ -10,7 +10,8 @@ from datetime import datetime
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from state import portfolio_data, TZ_BERLIN
+from state import portfolio_data
+from time_utils import utc_now
 from models import PortfolioSummary, StockFullData, DataSourceStatus
 
 from fetchers.demo_data import (
@@ -115,7 +116,7 @@ async def activate_demo():
     try:
         summary = build_demo_portfolio()
         portfolio_data["summary"] = summary
-        portfolio_data["last_refresh"] = datetime.now(tz=TZ_BERLIN)
+        portfolio_data["last_refresh"] = utc_now()
 
         # Analyse-Report generieren (für Analyse-Tab)
         try:

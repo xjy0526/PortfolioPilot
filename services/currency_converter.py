@@ -74,10 +74,9 @@ class CurrencyConverter:
         except Exception:
             logger.warning(f"EUR/CNY nicht verfügbar, nutze Default {DEFAULT_EUR_CNY}")
 
-        logger.info(
-            "💱 Wechselkurse: "
-            f"USD={rates.eur_usd}, DKK={rates.eur_dkk}, "
-            f"GBP={rates.eur_gbp}, CNY={rates.eur_cny}"
+        logger.debug(
+            "Exchange rates loaded for dashboard display: "
+            f"USD={rates.eur_usd}, CNY={rates.eur_cny}"
         )
         return cls(rates)
 

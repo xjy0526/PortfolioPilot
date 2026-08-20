@@ -1,0 +1,8 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+NVDA,12,620.00,955.00,2025-01-10,USD,Technology,NVIDIA Corp.,equity,US,NASDAQ,US
+MSFT,14,330.00,425.00,2024-06-18,USD,Technology,Microsoft Corp.,equity,US,NASDAQ,US
+AAPL,18,165.00,190.00,2024-09-12,USD,Technology,Apple Inc.,equity,US,NASDAQ,US
+AMZN,20,145.00,188.00,2024-11-05,USD,Consumer Cyclical,Amazon.com Inc.,equity,US,NASDAQ,US
+GOOGL,16,135.00,172.00,2024-10-20,USD,Communication Services,Alphabet Inc.,equity,US,NASDAQ,US
+META,8,360.00,510.00,2025-02-03,USD,Communication Services,Meta Platforms Inc.,equity,US,NASDAQ,US
+TSLA,10,225.00,185.00,2025-03-15,USD,Consumer Cyclical,Tesla Inc.,equity,US,NASDAQ,US

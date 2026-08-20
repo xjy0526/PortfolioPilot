@@ -205,8 +205,8 @@ class TestTechRadarAI:
         mock_client.aio = mock_aio
 
         with patch("services.tech_radar_ai.settings") as mock_settings, \
-             patch("services.vertex_ai.get_client", return_value=mock_client), \
-             patch("services.vertex_ai.get_grounded_config", return_value={}):
+             patch("services.llm.compat.get_client", return_value=mock_client), \
+             patch("services.llm.compat.get_grounded_config", return_value={}):
             mock_settings.gemini_configured = True
             result = await enrich_with_ai_analysis(recommendations)
 
@@ -223,7 +223,7 @@ class TestTechRadarAI:
         ]
 
         with patch("services.tech_radar_ai.settings") as mock_settings, \
-             patch("services.vertex_ai.get_client", side_effect=Exception("API Error")):
+             patch("services.llm.compat.get_client", side_effect=Exception("API Error")):
             mock_settings.gemini_configured = True
             result = await enrich_with_ai_analysis(recommendations)
 

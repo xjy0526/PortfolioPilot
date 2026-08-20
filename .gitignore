@@ -1,5 +1,5 @@
 # ========================
-# FinanceBro .gitignore
+# PortfolioPilot .gitignore
 # ========================
 
 # === Secrets & Konfiguration ===
@@ -12,6 +12,7 @@ cache/
 Parqet/
 portfolio.csv
 rag_documents/
+data/ingestion/
 historical_prices*.csv
 
 # === Python ===
@@ -22,6 +23,9 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 *.egg-info/
 dist/
 build/

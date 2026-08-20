@@ -8,14 +8,14 @@ FMP/Technical werden erst beim 16:15 Full-Refresh geladen.
 Extrahiert aus services/refresh.py für bessere Modularität.
 """
 import logging
-from datetime import datetime
-
-from state import portfolio_data, refresh_lock, YFINANCE_ALIASES, TZ_BERLIN
-from models import PortfolioSummary, StockFullData
+from state import portfolio_data, refresh_lock, YFINANCE_ALIASES
+from models import PortfolioPosition, PortfolioSummary, StockFullData
 from fetchers.parqet import fetch_portfolio
 from fetchers.yfinance_data import quick_price_update
 from services.currency_converter import CurrencyConverter
 from database import save_snapshot
+from config import settings
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,10 @@ async def update_parqet() -> dict:
     if saved_csv_portfolio_exists():
         return await update_saved_csv_portfolio()
 
+    if not settings.ENABLE_PARQET:
+        logger.info("Parqet extension is disabled; no saved CSV portfolio was found")
+        return {"status": "disabled", "source": "parqet"}
+
     if refresh_lock.locked():
         logger.info("Update bereits aktiv - überspringe")
         return {"status": "already_running"}
@@ -79,8 +83,8 @@ async def update_parqet() -> dict:
             # 1. Fetch positions from Parqet API
             positions = await fetch_portfolio()
             if not positions:
-                logger.error("Keine Positionen von Parqet erhalten")
-                return {"status": "error", "message": "Keine Positionen"}
+                logger.error("No positions received from Parqet")
+                return {"status": "error", "message": "No positions found"}
 
             logger.info(f"📊 {len(positions)} Positionen von Parqet geladen")
 
@@ -146,7 +150,7 @@ async def update_parqet() -> dict:
             )
 
             portfolio_data["summary"] = summary
-            portfolio_data["last_refresh"] = datetime.now(tz=TZ_BERLIN)
+            portfolio_data["last_refresh"] = utc_now()
 
             cash_eur = next(
                 (s.position.current_price for s in stocks if s.position.ticker == "CASH"), 0.0
@@ -180,45 +184,49 @@ async def update_saved_csv_portfolio() -> dict:
     from fetchers.csv_reader import (
         csv_positions_to_portfolio_format,
         parse_csv_file,
-        resolve_csv_path,
+        resolve_csv_read_path,
     )
 
-    path = resolve_csv_path()
+    path, sample_fallback = resolve_csv_read_path()
     positions = parse_csv_file(str(path))
     if not positions:
         portfolio_data["summary"] = PortfolioSummary(display_currency="USD")
-        portfolio_data["last_refresh"] = datetime.now(tz=TZ_BERLIN)
+        portfolio_data["last_refresh"] = utc_now()
         portfolio_data["source"] = "csv"
         logger.info("📄 Lokale CSV enthält keine Positionen: %s", path)
         return {
             "status": "empty",
             "positions": 0,
-            "source": "csv",
+            "source": "sample_csv" if sample_fallback else "csv",
             "csv_path": str(path),
+            "sample_fallback": sample_fallback,
         }
 
-    tickers = [
-        p["ticker"]
-        for p in positions
-        if p.get("asset_type") != "prediction_market"
-    ]
     prices = {}
     daily_changes = {}
-    try:
-        prices, daily_changes = await quick_price_update(tickers) if tickers else ({}, {})
-    except Exception as e:
-        logger.warning("Could not fetch live prices for saved CSV portfolio: %s", e)
+    tickers_missing_prices = [
+        p["ticker"]
+        for p in positions
+        if p.get("asset_type") != "prediction_market" and p.get("current_price") is None
+    ]
+    if tickers_missing_prices:
+        try:
+            prices, daily_changes = await quick_price_update(tickers_missing_prices)
+        except Exception as e:
+            logger.warning("Could not fetch live prices for saved CSV portfolio: %s", e)
 
     portfolio_positions = csv_positions_to_portfolio_format(positions, prices)
     result = await build_portfolio_from_csv(portfolio_positions, daily_changes)
     result.update({
         "status": "done",
         "positions": result.get("num_positions", len(portfolio_positions)),
-        "source": "csv",
+        "source": "sample_csv" if sample_fallback else "csv",
         "csv_path": str(path),
+        "sample_fallback": sample_fallback,
     })
     logger.info(
-        "📄 Lokale CSV geladen: %s Positionen aus %s",
+        "📄 %s CSV geladen: %s Positionen aus %s",
+        "Sample" if sample_fallback else "Lokale",
         result["positions"],
         path,
     )
@@ -303,7 +311,7 @@ async def update_yfinance_prices() -> dict:
         summary.total_pnl_percent = t["total_pnl_pct"]
         summary.daily_total_change = t["daily_total_eur"]
         summary.daily_total_change_pct = t["daily_total_pct"]
-        summary.last_updated = datetime.now(tz=TZ_BERLIN)
+        summary.last_updated = utc_now()
 
         logger.info(
             f"📈 yFinance-Update: {updated}/{len(stock_tickers)} Kurse, "
@@ -496,7 +504,7 @@ async def build_portfolio_from_csv(
                 dividend=prev.dividend,
             ))
         else:
-            if position.asset_type == "prediction_market":
+            if position.asset_type == "prediction_market" and settings.ENABLE_POLYMARKET:
                 from engine.scorer import calculate_score
                 stocks.append(StockFullData(
                     position=position,
@@ -540,7 +548,7 @@ async def build_portfolio_from_csv(
 
     # In globalen State speichern → Dashboard zeigt CSV-Daten
     portfolio_data["summary"] = summary
-    portfolio_data["last_refresh"] = datetime.now(tz=TZ_BERLIN)
+    portfolio_data["last_refresh"] = utc_now()
     portfolio_data["source"] = "csv"
 
     logger.info(

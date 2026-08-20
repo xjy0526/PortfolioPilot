@@ -1,6 +1,12 @@
 """PortfolioPilot - Pytest Fixtures und Testdaten."""
+import os
 import sys
 from pathlib import Path
+
+# Tests must never download an embedding model or depend on external network.
+os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("EMBEDDING_PROVIDER", "hashing")
+os.environ.setdefault("RAG_ALLOW_HASHING_FALLBACK", "true")
 
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

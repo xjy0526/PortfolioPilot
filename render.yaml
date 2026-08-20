@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/render.json
 services:
   - type: web
     runtime: docker
@@ -7,7 +8,8 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     autoDeployTrigger: commit
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
+    preDeployCommand: alembic upgrade head && python -m app.core.preflight
     maxShutdownDelaySeconds: 120
     disk:
       name: portfolio-pilot-data
@@ -16,12 +18,36 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
+      - key: READ_ONLY_DEMO
+        value: true
+      - key: OBJECT_STORAGE_BACKEND
+        value: local
+      - key: ALLOW_RUNTIME_SECRET_CONFIGURATION
+        value: false
+      - key: ALLOW_DEV_IDENTITY_HEADERS
+        value: false
       - key: AI_PROVIDER
         value: qwen
+      - key: DISPLAY_TIMEZONE
+        value: Asia/Shanghai
+      - key: ENABLE_POLYMARKET
+        value: false
+      - key: ENABLE_TELEGRAM
+        value: false
+      - key: ENABLE_PARQET
+        value: false
+      - key: ENABLE_SHADOW_AGENT
+        value: false
       - key: QWEN_BASE_URL
         value: https://dashscope.aliyuncs.com/compatible-mode/v1
       - key: QWEN_MODEL
         value: qwen-plus
+      - key: EMBEDDING_PROVIDER
+        value: sentence_transformers
+      - key: RAG_EMBEDDING_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: RAG_ALLOW_HASHING_FALLBACK
+        value: false
       - key: PARQET_PORTFOLIO_CSV
         value: /app/cache/portfolio.csv
       - key: RAG_DOCUMENT_DIR
@@ -32,23 +58,53 @@ services:
         value: 12
       - key: QWEN_API_KEY
         sync: false
+      - key: DATABASE_URL
+        sync: false
       - key: FMP_API_KEY
         sync: false
       - key: DASHBOARD_USER
         sync: false
       - key: DASHBOARD_PASSWORD
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
+
+  # One-shot batch: 22:00 UTC Monday-Friday, after both A-share and US closes.
+  # Render Cron guarantees one active run per service; PostgreSQL also holds a
+  # cross-deployment advisory lock and a date-scoped idempotency key.
+  - type: cron
+    runtime: docker
+    name: portfolio-pilot-daily-pipeline
+    region: singapore
+    plan: starter
+    schedule: "0 22 * * 1-5"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python -m app.workers.run_daily_pipeline
+    autoDeployTrigger: commit
+    preDeployCommand: alembic upgrade head && python -m app.core.preflight
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: READ_ONLY_DEMO
+        value: true
+      - key: ALLOW_RUNTIME_SECRET_CONFIGURATION
+        value: false
+      - key: ALLOW_DEV_IDENTITY_HEADERS
+        value: false
+      - key: DISPLAY_TIMEZONE
+        value: Asia/Shanghai
+      - key: MARKET_DATA_PROVIDERS
+        value: tushare,yfinance
+      - key: MARKET_SYNC_LOOKBACK_DAYS
+        value: 365
+      - key: EMBEDDING_PROVIDER
+        value: sentence_transformers
+      - key: RAG_EMBEDDING_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: RAG_ALLOW_HASHING_FALLBACK
+        value: false
+      - key: OBJECT_STORAGE_BACKEND
+        value: local
+      - key: DATABASE_URL
         sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: TELEGRAM_WEBHOOK_SECRET
-        generateValue: true
-      - key: PARQET_CLIENT_ID
-        sync: false
-      - key: PARQET_CLIENT_SECRET
-        sync: false
-      - key: PARQET_REFRESH_TOKEN
-        sync: false
-      - key: PARQET_PORTFOLIO_ID
+      - key: TUSHARE_TOKEN
         sync: false

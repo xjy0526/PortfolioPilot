@@ -9,7 +9,8 @@ import asyncio
 import logging
 from datetime import datetime
 
-from state import portfolio_data, refresh_lock, refresh_progress, YFINANCE_ALIASES, TZ_BERLIN
+from state import portfolio_data, refresh_lock, refresh_progress, YFINANCE_ALIASES
+from time_utils import utc_now
 from config import settings
 from cache_manager import CacheManager
 from models import PortfolioSummary, StockFullData, DataSourceStatus
@@ -65,7 +66,7 @@ def _set_progress(step: str, percent: int):
 async def _do_refresh():
     """Interne Refresh-Logik (aufgerufen innerhalb des Locks)."""
     portfolio_data["refreshing"] = True
-    refresh_progress["started_at"] = datetime.now(tz=TZ_BERLIN).isoformat()
+    refresh_progress["started_at"] = utc_now().isoformat()
     _set_progress("Starte Refresh...", 0)
     logger.info("🔄 Starte Daten-Refresh...")
 
@@ -85,7 +86,7 @@ async def _do_refresh():
             logger.warning(f"Fear&Greed nicht verfügbar: {e}")
 
         # Wechselkurse zentral laden
-        _set_progress("Lade Wechselkurse...", 5)
+        _set_progress("Loading exchange rates...", 5)
         converter = await CurrencyConverter.create()
         eur_usd_rate = converter.rates.eur_usd
         eur_cny_rate = converter.rates.eur_cny
@@ -239,7 +240,7 @@ async def _do_refresh():
         last_refresh = portfolio_data.get("last_refresh")
         prices_are_fresh = False
         if last_refresh:
-            age_seconds = (datetime.now(tz=TZ_BERLIN) - last_refresh).total_seconds()
+            age_seconds = (utc_now() - last_refresh).total_seconds()
             prices_are_fresh = age_seconds < 120  # < 2 Minuten
 
         if prices_are_fresh:
@@ -300,7 +301,7 @@ async def _do_refresh():
         )
 
         portfolio_data["summary"] = summary
-        portfolio_data["last_refresh"] = datetime.now(tz=TZ_BERLIN)
+        portfolio_data["last_refresh"] = utc_now()
 
         # Analytics-Cache invalidieren (Korrelation, Risk, Benchmark zeigen sofort neue Daten)
         try:
@@ -387,7 +388,7 @@ async def _do_refresh():
         # Vertex AI Context Cache aktualisieren (spart Token-Kosten)
         if settings.gemini_configured:
             try:
-                from services.vertex_ai import cache_portfolio_context
+                from services.llm.compat import cache_portfolio_context
                 await asyncio.wait_for(
                     cache_portfolio_context(summary),
                     timeout=30.0
@@ -510,7 +511,7 @@ async def _quick_price_refresh():
         summary.total_pnl_percent = t["total_pnl_pct"]
         summary.daily_total_change = t["daily_total_eur"]
         summary.daily_total_change_pct = t["daily_total_pct"]
-        summary.last_updated = datetime.now(tz=TZ_BERLIN)
+        summary.last_updated = utc_now()
 
         yf_batch_count = updated - yf_ws_count
         logger.info(

@@ -2,12 +2,15 @@
 
 import os
 import tempfile
+from pathlib import Path
 import pytest
 from fetchers.csv_reader import (
     parse_csv_file,
     parse_csv_json,
     csv_positions_to_portfolio_format,
     delete_csv_position,
+    load_saved_csv_positions,
+    resolve_csv_read_path,
     save_csv_positions,
     saved_csv_portfolio_exists,
     upsert_csv_position,
@@ -78,6 +81,16 @@ class TestParseCsvJson:
         data = [{"ticker": "AAPL", "shares": "10", "buy_price": "150", "currency": "XYZ"}]
         result = parse_csv_json(data)
         assert result[0]["currency"] == "USD"
+
+    def test_sample_portfolios_parse_with_current_prices(self):
+        root = Path(__file__).resolve().parent.parent / "data" / "portfolios"
+        sample_files = sorted(root.glob("test_*.csv"))
+
+        assert len(sample_files) >= 5
+        for path in sample_files:
+            result = parse_csv_file(str(path))
+            assert result, f"{path.name} should contain valid positions"
+            assert all(item["current_price"] is not None for item in result), path.name
 
     def test_optional_fields(self):
         data = [{
@@ -231,6 +244,20 @@ class TestParseCsvFile:
         assert deleted is True
         assert [p["ticker"] for p in positions] == ["MSFT"]
         assert [p["ticker"] for p in parse_csv_file(str(path))] == ["MSFT"]
+
+    def test_demo_mode_reads_bundled_sample_when_local_csv_missing(self, tmp_path, monkeypatch):
+        from config import settings
+
+        monkeypatch.setattr(settings, "PARQET_PORTFOLIO_CSV", str(tmp_path / "missing.csv"))
+        monkeypatch.setattr(settings, "FMP_API_KEY", "")
+
+        path, sample_fallback = resolve_csv_read_path()
+        positions = load_saved_csv_positions()
+
+        assert sample_fallback is True
+        assert path.name == "ai_hardware_portfolio.csv"
+        assert len(positions) >= 5
+        assert any(pos["ticker"] == "NVDA" for pos in positions)
 
 
 class TestParseDate:

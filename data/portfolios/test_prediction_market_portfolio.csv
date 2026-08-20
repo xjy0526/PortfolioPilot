@@ -1,0 +1,7 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+SPY,12,420.00,510.00,2024-01-15,USD,ETF,S&P 500 ETF Trust,etf,US,NYSEARCA,US
+QQQ,8,360.00,450.00,2024-02-20,USD,ETF,Invesco QQQ Trust,etf,US,NASDAQ,US
+BIL,40,91.00,91.80,2024-04-01,USD,Cash Equivalent,SPDR Bloomberg 1-3 Month T-Bill ETF,etf,US,NYSEARCA,US
+POLY-BTC-150K-2026,900,0.31,0.36,2026-01-05,USD,Prediction Markets,BTC above 150k in 2026?,prediction_market,Polymarket,Polymarket,WEB3
+POLY-FED-CUTS-2026,650,0.42,0.38,2026-02-01,USD,Prediction Markets,Fed cuts rates twice in 2026?,prediction_market,Polymarket,Polymarket,WEB3
+POLY-AI-REGULATION-2026,500,0.28,0.34,2026-02-12,USD,Prediction Markets,Major AI regulation bill in 2026?,prediction_market,Polymarket,Polymarket,WEB3

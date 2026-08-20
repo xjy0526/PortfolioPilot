@@ -9,10 +9,10 @@ Freitags-Report nach Börsenschluss mit Wochenrückblick:
 Wird via Cloud Run Job (Freitag 22:30 CET, nach US-Börsenschluss) oder manuell getriggert.
 """
 import logging
-from datetime import datetime, timedelta
 
 from config import settings
 from services.display_currency import format_display_money
+from time_utils import display_now
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _build_digest_data(summary, history: list[dict]) -> dict:
 async def _generate_ai_summary(digest_data: dict) -> str:
     """Generiert eine KI-Zusammenfassung via Gemini 2.5 Flash."""
     try:
-        from services.vertex_ai import get_client
+        from services.llm.compat import get_client
 
         client = get_client()
 
@@ -160,7 +160,7 @@ def _format_digest(data: dict, ai_summary: str) -> str:
 
     lines = [
         "📊 *PortfolioPilot Wochen-Digest*",
-        f"_{datetime.now().strftime('%d.%m.%Y')}_\n",
+        f"_{display_now().strftime('%d.%m.%Y')}_\n",
         f"💰 Portfoliowert: {format_display_money(data['total_value'], data.get('summary'))}",
         f"💵 Einstandskosten: {format_display_money(data.get('total_cost', 0), data.get('summary'))}",
         f"📈 Gesamt-P&L: {format_display_money(data['total_pnl'], data.get('summary'), signed=True)} ({data['total_pnl_pct']:+.1f}%)",

@@ -1,98 +1,117 @@
-name: Deploy to Cloud Run
+name: Deploy PortfolioPilot
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 env:
-  PROJECT_ID: job-automation-jonas
-  REGION: europe-west1
-  SERVICE: financebro
-  IMAGE: europe-west1-docker.pkg.dev/job-automation-jonas/finanzbro/financebro
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'asia-east1' }}
+  SERVICE: portfolio-pilot
+  ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY || 'portfolio-pilot' }}
+  DATABASE_URL_SECRET: ${{ vars.GCP_DATABASE_URL_SECRET || 'portfoliopilot-database-url' }}
+  QWEN_API_KEY_SECRET: ${{ vars.GCP_QWEN_API_KEY_SECRET || 'portfoliopilot-qwen-api-key' }}
 
 jobs:
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run tests
-        run: python -m pytest tests/ -v --tb=short
-
   deploy:
     name: Deploy to Cloud Run
-    needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          vars.GCP_PROJECT_ID != '' &&
+          vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
+          vars.GCP_SERVICE_ACCOUNT != '' }}
     permissions:
       contents: read
       id-token: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: projects/384210760656/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-deploy@job-automation-jonas.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Build Docker image
-        run: docker build -t ${{ env.IMAGE }}:${{ github.sha }} -t ${{ env.IMAGE }}:latest .
-
-      - name: Push Docker image
+      - name: Resolve image URI
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          docker push ${{ env.IMAGE }}:${{ github.sha }}
-          docker push ${{ env.IMAGE }}:latest
+          echo "IMAGE_URI=${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE}" >> "$GITHUB_ENV"
+          echo "DEPLOY_SHA=${DEPLOY_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build and push image
+        run: |
+          docker build -t "${IMAGE_URI}:${DEPLOY_SHA}" .
+          docker push "${IMAGE_URI}:${DEPLOY_SHA}"
+
+      - name: Deploy migration job
+        run: |
+          gcloud run jobs deploy "${SERVICE}-migrate" \
+            --image="${IMAGE_URI}:${DEPLOY_SHA}" \
+            --region="${REGION}" \
+            --command=alembic \
+            --args=upgrade,head \
+            --set-env-vars="ENVIRONMENT=production,READ_ONLY_DEMO=true,RAG_ALLOW_HASHING_FALLBACK=false" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest" \
+            --max-retries=0 \
+            --task-timeout=600s \
+            --quiet
+
+      - name: Run migrations
+        run: |
+          gcloud run jobs execute "${SERVICE}-migrate" \
+            --region="${REGION}" \
+            --wait \
+            --quiet
 
       - name: Deploy to Cloud Run
         run: |
-          gcloud run deploy ${{ env.SERVICE }} \
-            --image=${{ env.IMAGE }}:${{ github.sha }} \
-            --region=${{ env.REGION }} \
+          gcloud run deploy "${SERVICE}" \
+            --image="${IMAGE_URI}:${DEPLOY_SHA}" \
+            --region="${REGION}" \
             --allow-unauthenticated \
-            --memory=1024Mi \
+            --memory=2Gi \
             --cpu=1 \
             --cpu-boost \
-            --no-cpu-throttling \
             --min-instances=0 \
-            --max-instances=1 \
+            --max-instances=3 \
             --timeout=300 \
-            --update-env-vars="ENVIRONMENT=production" \
-            --update-env-vars="GCP_PROJECT_ID=${{ env.PROJECT_ID }}" \
-            --update-env-vars="FMP_API_KEY=${{ secrets.FMP_API_KEY }}" \
-            --update-env-vars="TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            --update-env-vars="TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            --update-env-vars="TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}" \
-            --update-env-vars="GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
-            --update-env-vars="PARQET_PORTFOLIO_ID=${{ secrets.PARQET_PORTFOLIO_ID }}" \
-            --update-env-vars="DASHBOARD_USER=${{ secrets.DASHBOARD_USER }}" \
-            --update-env-vars="DASHBOARD_PASSWORD=${{ secrets.DASHBOARD_PASSWORD }}" \
-            --update-env-vars="PRICE_UPDATE_INTERVAL_MIN=30" \
+            --update-env-vars="ENVIRONMENT=production,READ_ONLY_DEMO=true,ALLOW_RUNTIME_SECRET_CONFIGURATION=false,ALLOW_DEV_IDENTITY_HEADERS=false" \
+            --update-env-vars="AI_PROVIDER=qwen,DISPLAY_TIMEZONE=Asia/Shanghai,EMBEDDING_PROVIDER=sentence_transformers,RAG_ALLOW_HASHING_FALLBACK=false" \
+            --update-env-vars="ENABLE_POLYMARKET=false,ENABLE_TELEGRAM=false,ENABLE_PARQET=false,ENABLE_SHADOW_AGENT=false" \
+            --set-secrets="DATABASE_URL=${DATABASE_URL_SECRET}:latest,QWEN_API_KEY=${QWEN_API_KEY_SECRET}:latest" \
             --quiet
 
-      - name: Show service URL
+      - name: Readiness and read-only smoke test
         run: |
-          URL=$(gcloud run services describe ${{ env.SERVICE }} --region=${{ env.REGION }} --format='value(status.url)')
-          echo "### 🚀 Deployed to Cloud Run" >> $GITHUB_STEP_SUMMARY
-          echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          URL=$(gcloud run services describe "${SERVICE}" --region="${REGION}" --format='value(status.url)')
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "${URL}/health/ready" > /tmp/readiness.json; then
+              break
+            fi
+            if [[ "${attempt}" == "30" ]]; then
+              cat /tmp/readiness.json || true
+              exit 1
+            fi
+            sleep 10
+          done
+          STATUS=$(curl --silent --output /tmp/read-only-smoke.json --write-out '%{http_code}' \
+            -X POST "${URL}/api/market-data/sync" \
+            -H 'Content-Type: application/json' \
+            -d '{}')
+          test "${STATUS}" = "403"
+          echo "### PortfolioPilot deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URL:** ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** ${IMAGE_URI}:${DEPLOY_SHA}" >> "$GITHUB_STEP_SUMMARY"

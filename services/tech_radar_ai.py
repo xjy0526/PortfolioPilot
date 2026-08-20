@@ -42,7 +42,7 @@ async def enrich_with_ai_analysis(
         return recommendations
 
     try:
-        from services.vertex_ai import get_client, get_grounded_config
+        from services.llm.compat import get_client, get_grounded_config
 
         client = get_client()
 

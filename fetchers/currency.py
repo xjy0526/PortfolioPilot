@@ -49,10 +49,9 @@ async def _fetch_all_rates_from_exchangerate_api() -> Optional[dict]:
         rates = data.get("rates", {})
         if rates:
             _cache.set(cache_key, rates)
-            logger.info(
-                "Wechselkurse geladen: "
-                f"USD={rates.get('USD')}, DKK={rates.get('DKK')}, "
-                f"GBP={rates.get('GBP')}, CNY={rates.get('CNY')}"
+            logger.debug(
+                "Exchange rates loaded: "
+                f"USD={rates.get('USD')}, CNY={rates.get('CNY')}"
             )
             return rates
     except Exception as e:

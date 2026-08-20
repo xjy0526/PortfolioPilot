@@ -24,13 +24,12 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from config import settings
 from services.display_currency import format_display_money
 
 logger = logging.getLogger(__name__)
-TZ_BERLIN = ZoneInfo("Europe/Berlin")
+from time_utils import utc_now
 
 # ── Agenten-Regeln ────────────────────────────────────────────
 MAX_POSITIONS = 20
@@ -213,7 +212,7 @@ async def _ensure_initialized(summary) -> bool:
         count += 1
 
     shadow_set_meta("initialized", "true")
-    shadow_set_meta("init_date", datetime.now(tz=TZ_BERLIN).isoformat())
+    shadow_set_meta("init_date", utc_now().isoformat())
     shadow_set_meta("start_capital_eur", str(round(cash + summary.total_value - _get_cash_position_value(summary), 2)))
 
     logger.info(f"✅ Shadow-Portfolio initialisiert: {count} Positionen + {format_display_money(cash, summary)} Cash")
@@ -512,7 +511,7 @@ async def _execute_agent_tool_call(tool_name: str, tool_args: dict, context: dic
 async def _call_gemini_agent(context: dict, candidates: list[dict]) -> dict:
     """Ruft Gemini 2.5 Pro auf um Trade-Entscheidungen zu treffen."""
     from state import portfolio_data
-    from services.vertex_ai import (
+    from services.llm.compat import (
         Content,
         FunctionDeclaration,
         Part,
@@ -589,8 +588,8 @@ async def _call_gemini_agent(context: dict, candidates: list[dict]) -> dict:
 
     user_prompt = (
         f"Fuehre den taeglichen Shadow-Portfolio-Zyklus durch.\n\n"
-        f"AKTUELLE POSITIONEN:\n{positions_text or '  (Keine Positionen)'}\n\n"
-        f"KANDIDATEN FUER TRADES:\n{candidates_text or '  (Keine Kandidaten)'}\n\n"
+        f"AKTUELLE POSITIONEN:\n{positions_text or '  (No positions)'}\n\n"
+        f"KANDIDATEN FUER TRADES:\n{candidates_text or '  (No candidates)'}\n\n"
         "Nutze die verfuegbaren Tools um mehr Daten abzurufen, dann entscheide:\n"
         "1. Welche Positionen sollen verkauft werden? (Schlechter Score, Uebergewichtung, SELL-Signale)\n"
         "2. Welche neuen Positionen sollen gekauft werden? (BUY Score >= 60)\n"

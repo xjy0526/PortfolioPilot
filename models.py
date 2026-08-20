@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
-TZ_BERLIN = ZoneInfo("Europe/Berlin")
+from time_utils import utc_now
 
-def _now_berlin() -> datetime:
-    return datetime.now(tz=TZ_BERLIN)
+
+def _now_utc() -> datetime:
+    return utc_now()
 
 
 class Rating(str, Enum):
@@ -290,7 +290,7 @@ class RebalancingAdvice(BaseModel):
     total_value: float = 0.0
     actions: list[RebalancingAction] = []
     summary: str = ""
-    timestamp: datetime = Field(default_factory=_now_berlin)
+    timestamp: datetime = Field(default_factory=_now_utc)
     # v2: Erweiterte Metadaten
     sector_warnings: list[str] = []    # z.B. "Technology 42% > 35% Limit"
     total_buy_amount: float = 0.0      # Gesamter Kaufbetrag EUR
@@ -341,7 +341,7 @@ class PortfolioSummary(BaseModel):
     rebalancing: Optional[RebalancingAdvice] = None
     tech_picks: list[TechRecommendation] = []
     fear_greed: Optional[FearGreedData] = None
-    last_updated: datetime = Field(default_factory=_now_berlin)
+    last_updated: datetime = Field(default_factory=_now_utc)
     is_demo: bool = False
     display_currency: str = "USD"
     eur_usd_rate: float = 1.0  # 1 EUR = X USD
@@ -381,7 +381,7 @@ class PositionAnalysis(BaseModel):
 
 class AnalysisReport(BaseModel):
     """Vollständiger Portfolio-Analyse-Report."""
-    timestamp: datetime = Field(default_factory=_now_berlin)
+    timestamp: datetime = Field(default_factory=_now_utc)
     analysis_level: str = "full"           # "full", "mid", "light"
     portfolio_score: float = 0.0           # Gewichteter Durchschnitt
     portfolio_rating: Rating = Rating.HOLD

@@ -54,7 +54,7 @@ async def generate_score_commentaries(
         return {}
 
     try:
-        from services.vertex_ai import get_client
+        from services.llm.compat import get_client
 
         client = get_client()
 

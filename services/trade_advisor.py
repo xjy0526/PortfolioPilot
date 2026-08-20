@@ -437,7 +437,7 @@ async def _call_gemini_with_tools(
     3. Wir führen die Tools aus und senden Ergebnisse zurück
     4. Gemini erstellt die finale Bewertung (Structured Output)
     """
-    from services.vertex_ai import (
+    from services.llm.compat import (
         Content,
         FunctionDeclaration,
         Part,
@@ -504,7 +504,7 @@ async def _call_gemini_with_tools(
         FunctionDeclaration(**td) for td in _build_tool_declarations()
     ]
 
-    # Config: eigene Tools (GoogleSearch kann nicht mit function_declarations kombiniert werden)
+    # Provider-neutral function tools. External search is handled separately.
     config = {
         "tools": [
             Tool(function_declarations=tool_declarations),
@@ -732,7 +732,7 @@ async def _call_gemini_chat(
 ) -> str:
     """Gemini-Call für freie Chat-Konversation mit Function Calling."""
     import asyncio
-    from services.vertex_ai import (
+    from services.llm.compat import (
         Content,
         FunctionDeclaration,
         Part,

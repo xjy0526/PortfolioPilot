@@ -13,9 +13,27 @@ const savedDisplayCurrency = localStorage.getItem('portfoliopilot-currency');
 let displayCurrency = savedDisplayCurrency === 'CNY' ? 'CNY' : 'USD'; // USD or CNY
 let priceEventSource = null;
 let wsConnected = false;
+let appSettingsCache = null;
+let currentAppMode = 'personal';
 
 function isZh() {
     return currentLang === 'zh';
+}
+
+function isFundResearchMode() {
+    return currentAppMode === 'fund_research';
+}
+
+function ratingLabel(rating) {
+    const normalized = String(rating || 'hold').toLowerCase();
+    if (!isFundResearchMode()) return normalized.toUpperCase();
+    const labels = {
+        buy: t('fundResearchFocus'),
+        hold: t('fundMaintainWatch'),
+        sell: t('fundReduceRisk'),
+        review: t('fundManualReview'),
+    };
+    return labels[normalized] || labels.review;
 }
 
 function getUiLocale() {
@@ -38,6 +56,14 @@ function formatLocalizedDateTime(value, options = {}) {
 }
 
 function localizeRebalAction(action) {
+    if (isFundResearchMode()) {
+        const researchLabels = {
+            Kaufen: t('fundResearchFocus'),
+            Verkaufen: t('fundReduceRisk'),
+            Halten: t('fundMaintainWatch'),
+        };
+        return researchLabels[action] || t('fundManualReview');
+    }
     const labels = {
         Kaufen: isZh() ? '买入' : 'Buy',
         Verkaufen: isZh() ? '卖出' : 'Sell',
@@ -65,7 +91,7 @@ function localizeServerMessage(message, fallbackZh = '操作失败', fallbackEn 
             en: 'Qwen API is not configured. Please set QWEN_API_KEY.',
         },
         {
-            test: /Keine Portfolio-Daten|No portfolio data/i,
+            test: /Keine Portfolio-Daten|No portfolio data|No positions/i,
             zh: '暂无组合数据，请先刷新或导入持仓。',
             en: 'No portfolio data yet. Please refresh or import holdings first.',
         },
@@ -148,8 +174,14 @@ function buildAssetMix(stocks) {
 }
 
 // ==================== Init ====================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     showSkeleton(true);
+    try {
+        applyAppMode(await loadAppSettings());
+    } catch (err) {
+        console.warn('App mode could not be loaded; using personal mode:', err);
+        applyAppMode({ app_mode: 'personal' });
+    }
     loadPortfolio();
     startPriceStream();
     initScrollHeader();
@@ -175,7 +207,13 @@ async function loadPortfolio() {
             .then(sectors => { if (sectors) renderSectorChart(sectors); })
             .catch(e => console.log('Sector data error:', e));
 
-        portfolioData = await res.json();
+        const nextPortfolioData = await res.json();
+        const nextSignature = getPortfolioDataSignature(nextPortfolioData);
+        if (nextSignature !== portfolioDataSignature) {
+            portfolioDataSignature = nextSignature;
+            resetAnalyseState();
+        }
+        portfolioData = nextPortfolioData;
         renderDashboard();
     } catch (err) {
         console.error('Portfolio load failed:', err);
@@ -494,7 +532,7 @@ function renderTable() {
                         <span class="score-bar-value" style="color:${scoreColor}">${scoreVal.toFixed(0)}</span>
                     </div>
                 </td>
-                <td><span class="rating-badge rating-${rating}">${rating.toUpperCase()}</span></td>
+                <td><span class="rating-badge rating-${rating}">${ratingLabel(rating)}</span></td>
             </tr>
         `;
     }).join('');
@@ -540,7 +578,7 @@ function renderTable() {
             return `
                 <div class="stock-card-mobile" onclick="openStockDetail('${pos.ticker}')">
                     <div class="stock-card-left">
-                        <span class="stock-card-ticker">${pos.ticker} <span class="rating-badge rating-${rating}" style="font-size:0.6rem;padding:0.15rem 0.4rem;">${rating.toUpperCase()}</span>${getAssetBadge(pos)}</span>
+                        <span class="stock-card-ticker">${pos.ticker} <span class="rating-badge rating-${rating}" style="font-size:0.6rem;padding:0.15rem 0.4rem;">${ratingLabel(rating)}</span>${getAssetBadge(pos)}</span>
                         <span class="stock-card-name">${pos.name || pos.ticker}</span>
                     </div>
                     <div class="stock-card-right">
@@ -714,11 +752,6 @@ async function openStockDetail(ticker) {
     const zh = isZh();
     const label = (zhText, enText) => zh ? zhText : enText;
     const ratingText = (score?.rating || 'hold').toLowerCase();
-    const ratingLabelMap = {
-        buy: label('买入', 'BUY'),
-        hold: label('持有', 'HOLD'),
-        sell: label('卖出', 'SELL'),
-    };
 
     // Header
     document.getElementById('modalTitle').innerHTML = `
@@ -729,7 +762,7 @@ async function openStockDetail(ticker) {
     const ratingClass = score?.rating || 'hold';
     document.getElementById('modalRating').innerHTML = `
         <span class="rating-badge rating-${ratingClass}" style="font-size:0.85rem;padding:0.4rem 1rem;">
-            ${ratingLabelMap[ratingText] || (score?.rating || 'HOLD').toUpperCase()} – ${label('评分', 'Score')}: ${(score?.total_score || 0).toFixed(1)}/100
+            ${ratingLabel(ratingText)} – ${label('评分', 'Score')}: ${(score?.total_score || 0).toFixed(1)}/100
         </span>
     `;
 
@@ -1062,6 +1095,9 @@ function switchTab(tab) {
     if (tab === 'shadow') {
         loadShadowTab();
     }
+    if (tab === 'evaluation') {
+        loadEvaluationDashboard();
+    }
 
     // Fix Chart.js hidden tab rendering bug
     requestAnimationFrame(() => {
@@ -1069,6 +1105,98 @@ function switchTab(tab) {
             perfChartInstances.forEach(c => c.resize());
         }
     });
+}
+
+async function loadEvaluationDashboard() {
+    const container = document.getElementById('evaluationDashboard');
+    if (!container) return;
+    container.innerHTML = `<div class="empty-state">${isZh() ? '正在加载评测与 Trace…' : 'Loading evaluation and traces…'}</div>`;
+    try {
+        const response = await fetch('/api/evaluation/dashboard?limit=100');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const evalReport = data.evaluation_report || {};
+        const reportAvailable = evalReport.status === 'available';
+        const badcases = data.badcase_distribution || {};
+        const comparisons = data.prompt_comparisons || [];
+        const traces = data.traces || [];
+        const schemaTraces = traces.filter(item => typeof item.output_schema_valid === 'boolean');
+        const validRate = schemaTraces.length
+            ? schemaTraces.filter(item => item.output_schema_valid).length / schemaTraces.length
+            : null;
+        const workflowRuns = Number(data.workflow?.run_count || 0);
+        const metricSummary = evalReport.metric_summary || {};
+        const generationMetrics = metricSummary.generation || {};
+        const retrievalMetrics = metricSummary.retrieval || {};
+        const workflowMetrics = metricSummary.workflow || {};
+        const intervals = evalReport.confidence_intervals || {};
+        const headlineInterval = intervals['generation.factual_correctness']
+            || intervals['generation.json_compliance'];
+        const confidenceText = headlineInterval
+            ? `${formatPercentDecimal(headlineInterval.lower)}–${formatPercentDecimal(headlineInterval.upper)} (n=${Number(headlineInterval.sample_size || 0)})`
+            : '—';
+        const badcaseCount = Object.values(badcases).reduce((total, value) => total + Number(value || 0), 0);
+        const hallucinationRate = reportAvailable && typeof evalReport.hallucination_flag_rate === 'number'
+            ? formatPercentDecimal(evalReport.hallucination_flag_rate)
+            : '—';
+        const reportMode = reportAvailable ? evalReport.evaluation_mode : (isZh() ? '暂无报告' : 'No report');
+        const reportSource = !reportAvailable
+            ? '—'
+            : evalReport.mock_response_used
+                ? (isZh() ? 'Mock 响应' : 'Mock responses')
+                : evalReport.production_data_used
+                    ? (isZh() ? '生产观测' : 'Production observations')
+                    : evalReport.human_label_used
+                        ? (isZh() ? '人工标签 + Live 模型' : 'Human labels + live model')
+                        : evalReport.real_model_used
+                            ? (isZh() ? 'Live 模型响应' : 'Live model responses')
+                            : (isZh() ? '自构造数据' : 'Synthetic data');
+        container.innerHTML = `
+            <div class="research-chip-list">
+                <span class="research-chip ${evalReport.mock_response_used ? 'warn' : ''}">${isZh() ? '模式' : 'Mode'}: ${_escapeHtml(reportMode)}</span>
+                <span class="research-chip">${isZh() ? '来源' : 'Source'}: ${_escapeHtml(reportSource)}</span>
+                <span class="research-chip">${isZh() ? '数据集' : 'Dataset'}: ${reportAvailable ? `${_escapeHtml(evalReport.dataset_name)} ${_escapeHtml(evalReport.dataset_version)}` : '—'}</span>
+                <span class="research-chip">${isZh() ? '样本' : 'Cases'}: ${reportAvailable ? Number(evalReport.case_count || 0) : '—'}</span>
+                <span class="research-chip">${isZh() ? '数据截止' : 'Data cutoff'}: ${reportAvailable ? _escapeHtml(evalReport.data_cutoff || '—') : '—'}</span>
+                <span class="research-chip">${isZh() ? '人工复核' : 'Human reviewed'}: ${reportAvailable ? Number(evalReport.human_reviewed_count || 0) : '—'}</span>
+                <span class="research-chip ${evalReport.git_worktree_dirty ? 'warn' : ''}">Commit: ${reportAvailable ? `${_escapeHtml(String(evalReport.git_commit_sha || '').slice(0, 8))}${evalReport.git_worktree_dirty ? ' (dirty)' : ''}` : '—'}</span>
+            </div>
+            <div class="research-kpi-grid eval-kpi-grid">
+                <div class="research-kpi"><span>${isZh() ? 'JSON 合规' : 'JSON Compliance'}</span><strong>${typeof generationMetrics.json_compliance === 'number' ? formatPercentDecimal(generationMetrics.json_compliance) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'Claim 支持率' : 'Claim Support'}</span><strong>${typeof generationMetrics.claim_support_rate === 'number' ? formatPercentDecimal(generationMetrics.claim_support_rate) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '越权命中' : 'Unauthorized Hits'}</span><strong>${typeof retrievalMetrics.unauthorized_hit_count === 'number' ? Number(retrievalMetrics.unauthorized_hit_count) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '发布安全' : 'Publication Safety'}</span><strong>${typeof workflowMetrics.publication_safety === 'number' ? formatPercentDecimal(workflowMetrics.publication_safety) : '—'}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '95% 置信区间' : '95% Confidence Interval'}</span><strong>${confidenceText}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? 'Badcase 数' : 'Badcases'}</span><strong>${reportAvailable ? badcaseCount : '—'}</strong></div>
+            </div>
+            ${typeof evalReport.hallucination_flag_rate === 'number' || validRate !== null || workflowRuns || comparisons.length ? `<div class="research-chip-list">
+                <span class="research-chip">${isZh() ? '旧版样本幻觉标记率' : 'Legacy flagged hallucination rate'}: ${hallucinationRate}</span>
+                <span class="research-chip">Trace Schema: ${validRate === null ? '—' : formatPercentDecimal(validRate)}</span>
+                <span class="research-chip">${isZh() ? '人工采纳率' : 'Human adoption'}: ${workflowRuns ? formatPercentDecimal(data.human_adoption_rate || 0) : '—'}</span>
+                <span class="research-chip">Prompt: ${comparisons.length}</span>
+            </div>` : ''}
+            <div class="analyse-row eval-grid">
+                <div class="chart-card">
+                    <div class="chart-header"><h3>${isZh() ? 'Badcase 分布' : 'Badcase Distribution'}</h3></div>
+                    <div class="research-chip-list">${Object.entries(badcases).map(([key, value]) => `<span class="research-chip ${value ? 'warn' : ''}">${_escapeHtml(key)}: ${value}</span>`).join('') || `<span class="research-chip">${isZh() ? '暂无可追溯评测报告' : 'No traceable evaluation report'}</span>`}</div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-header"><h3>${isZh() ? 'Prompt 版本对比' : 'Prompt Version Comparison'}</h3></div>
+                    <div class="research-table-wrap"><table class="research-table"><thead><tr><th>Prompt</th><th>A</th><th>B</th><th>Δ</th></tr></thead><tbody>
+                    ${comparisons.map(item => `<tr><td>${_escapeHtml(item.prompt_id)}</td><td>v${item.version_a}</td><td>v${item.version_b}</td><td><code>${_escapeHtml(JSON.stringify(item.metric_delta))}</code></td></tr>`).join('') || `<tr><td colspan="4">${isZh() ? '暂无对比记录' : 'No comparisons yet'}</td></tr>`}
+                    </tbody></table></div>
+                </div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-header"><h3>${isZh() ? '最近 Trace：延迟 / 成本' : 'Recent Traces: Latency / Cost'}</h3></div>
+                <div class="research-table-wrap"><table class="research-table"><thead><tr><th>Time</th><th>Scene</th><th>Provider</th><th>Model</th><th>Latency</th><th>Cost</th><th>Status</th><th>Review</th></tr></thead><tbody>
+                ${traces.slice(0, 50).map(item => `<tr><td>${_escapeHtml(item.created_at || '')}</td><td>${_escapeHtml(item.business_scene || '')}</td><td>${_escapeHtml(item.provider || '')}</td><td>${_escapeHtml(item.model || '')}</td><td>${Number(item.duration_ms || 0).toFixed(0)} ms</td><td>${item.cost_source !== 'provider' ? '~' : ''}${_escapeHtml(item.cost_currency || '')} ${Number(item.cost_amount || 0).toFixed(6)}</td><td>${_escapeHtml(item.status || '')}</td><td>${_escapeHtml(item.review_decision || '—')}</td></tr>`).join('') || `<tr><td colspan="8">${isZh() ? '暂无 Trace' : 'No traces yet'}</td></tr>`}
+                </tbody></table></div>
+            </div>`;
+        if (window.lucide) lucide.createIcons();
+    } catch (error) {
+        container.innerHTML = `<div class="empty-state">${isZh() ? '评测数据加载失败' : 'Failed to load evaluation data'}: ${_escapeHtml(error.message)}</div>`;
+    }
 }
 
 
@@ -1260,35 +1388,149 @@ async function updateParqet() {
     }
 }
 
-async function triggerReport() {
-    const btn = document.getElementById('btnTelegramReport');
-    const lastUpdate = document.getElementById('lastUpdate');
+async function loadAppSettings() {
+    const res = await fetch('/api/app-settings');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    appSettingsCache = data;
+    return data;
+}
 
-    btn.classList.add('refreshing');
-    btn.disabled = true;
+function applyAppMode(data = appSettingsCache || {}) {
+    currentAppMode = data.app_mode === 'fund_research' ? 'fund_research' : 'personal';
+    const fundMode = isFundResearchMode();
+    document.body.classList.toggle('fund-research-mode', fundMode);
+
+    const flags = data.feature_flags || {};
+    document.querySelectorAll('[data-personal-only]').forEach(el => {
+        const feature = el.dataset.personalOnly;
+        const enabled = Object.prototype.hasOwnProperty.call(flags, feature)
+            ? Boolean(flags[feature])
+            : !fundMode;
+        el.style.display = enabled ? '' : 'none';
+        el.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    });
+
+    document.querySelectorAll('.app-mode-badge').forEach(badge => {
+        badge.textContent = fundMode ? t('fundResearchMode') : t('personalMode');
+    });
+
+    const labelKeys = fundMode
+        ? { buyRating: 'fundResearchFocus', holdRating: 'fundMaintainWatch', sellRating: 'fundReduceRisk', buy: 'fundResearchFocus', hold: 'fundMaintainWatch', sell: 'fundReduceRisk' }
+        : { buyRating: 'buyRating', holdRating: 'holdRating', sellRating: 'sellRating', buy: 'buy', hold: 'hold', sell: 'sell' };
+    Object.entries(labelKeys).forEach(([selectorKey, translationKey]) => {
+        document.querySelectorAll(`[data-i18n="${selectorKey}"]`).forEach(el => {
+            if (el.closest('[data-personal-only="trade_advisor"]') && fundMode) return;
+            el.textContent = t(translationKey);
+        });
+    });
+
+    if (fundMode && document.getElementById('advisorAnalyseMode')?.classList.contains('active')) {
+        switchAdvisorMode('holdings');
+    }
+}
+
+function formatApiSettingsStatus(data) {
+    const yes = t('apiSettingsConfigured');
+    const no = t('apiSettingsMissing');
+    const email = data.contact_email || t('apiSettingsEmailMissing');
+    return t('apiSettingsStatusReady')
+        .replace('{model}', data.qwen_model || 'qwen-plus')
+        .replace('{qwen}', data.qwen_configured ? yes : no)
+        .replace('{fmp}', data.fmp_configured ? yes : no)
+        .replace('{email}', email);
+}
+
+async function showApiSettings() {
+    const overlay = document.getElementById('apiSettingsOverlay');
+    const modal = document.getElementById('apiSettingsModal');
+    const statusEl = document.getElementById('apiSettingsStatus');
+    const menu = document.getElementById('actionMenu');
+    if (menu) menu.classList.remove('open', 'show');
+    if (overlay) overlay.style.display = 'block';
+    if (modal) modal.style.display = 'block';
+    if (statusEl) statusEl.textContent = t('loading');
 
     try {
-        const res = await fetch('/api/trigger-report', { method: 'POST' });
-        const result = await res.json();
-
-        if (result.status === 'started') {
-            lastUpdate.textContent = isZh() ? '📨 Telegram 报告已开始发送' : '📨 Telegram report started';
-            showToast(isZh() ? 'Telegram 报告正在发送' : 'Telegram report is being sent', 'success');
-        } else {
-            const message = localizeServerMessage(result.message, '报告发送失败', 'Report failed');
-            lastUpdate.textContent = `⚠️ ${message}`;
-            showToast(message, 'warning');
-        }
+        const data = await loadAppSettings();
+        document.getElementById('apiQwenKey').value = '';
+        document.getElementById('apiQwenBaseUrl').value = data.qwen_base_url || '';
+        document.getElementById('apiQwenModel').value = data.qwen_model || '';
+        document.getElementById('apiQwenReasoningModel').value = '';
+        document.getElementById('apiFmpKey').value = '';
+        document.getElementById('apiContactEmail').value = data.contact_email || '';
+        if (statusEl) statusEl.textContent = formatApiSettingsStatus(data);
     } catch (err) {
-        console.error('Telegram report failed:', err);
-        lastUpdate.textContent = isZh() ? '❌ 报告发送失败' : '❌ Report failed';
-        showToast(isZh() ? 'Telegram 报告发送失败' : 'Telegram report failed', 'error');
+        if (statusEl) statusEl.textContent = `${t('settingsLoadFailed')}: ${err.message}`;
+    }
+
+    if (window.lucide) lucide.createIcons();
+}
+
+function closeApiSettings() {
+    document.getElementById('apiSettingsOverlay').style.display = 'none';
+    document.getElementById('apiSettingsModal').style.display = 'none';
+}
+
+async function saveApiSettings(event) {
+    event.preventDefault();
+    const btn = document.getElementById('apiSettingsSaveBtn');
+    const statusEl = document.getElementById('apiSettingsStatus');
+    const payload = {};
+    const fields = [
+        ['qwen_api_key', 'apiQwenKey'],
+        ['qwen_base_url', 'apiQwenBaseUrl'],
+        ['qwen_model', 'apiQwenModel'],
+        ['qwen_reasoning_model', 'apiQwenReasoningModel'],
+        ['fmp_api_key', 'apiFmpKey'],
+        ['contact_email', 'apiContactEmail'],
+    ];
+
+    fields.forEach(([key, id]) => {
+        const value = document.getElementById(id)?.value.trim();
+        if (value) payload[key] = value;
+    });
+
+    btn.disabled = true;
+    btn.textContent = isZh() ? '保存中...' : 'Saving...';
+    try {
+        const res = await fetch('/api/app-settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        appSettingsCache = data.settings || appSettingsCache;
+        if (statusEl && appSettingsCache) statusEl.textContent = formatApiSettingsStatus(appSettingsCache);
+        document.getElementById('apiQwenKey').value = '';
+        document.getElementById('apiQwenReasoningModel').value = '';
+        document.getElementById('apiFmpKey').value = '';
+        showToast(t('settingsSaved'), 'success');
+    } catch (err) {
+        showToast(`${t('settingsSaveFailed')}: ${err.message}`, 'error');
+        if (statusEl) statusEl.textContent = `${t('settingsSaveFailed')}: ${err.message}`;
     } finally {
-        // Button nach 3s wieder freigeben (Report läuft im Background)
-        setTimeout(() => {
-            btn.classList.remove('refreshing');
-            btn.disabled = false;
-        }, 3000);
+        btn.disabled = false;
+        btn.textContent = t('saveSettings');
+    }
+}
+
+async function openEmailContact() {
+    const menu = document.getElementById('actionMenu');
+    if (menu) menu.classList.remove('open', 'show');
+    try {
+        const data = appSettingsCache || await loadAppSettings();
+        const email = (data.contact_email || '').trim();
+        if (!email) {
+            showToast(t('noContactEmail'), 'warning');
+            showApiSettings();
+            return;
+        }
+        const subject = encodeURIComponent('PortfolioPilot');
+        window.location.href = `mailto:${email}?subject=${subject}`;
+    } catch (err) {
+        showToast(`${t('settingsLoadFailed')}: ${err.message}`, 'error');
     }
 }
 
@@ -1307,11 +1549,11 @@ async function refreshScores() {
 async function _doRefresh(btnId, endpoint) {
     const btn = document.getElementById(btnId);
     const btnParqet = document.getElementById('btnUpdateParqet');
-    const btnTelegram = document.getElementById('btnTelegramReport');
+    const btnApiSettings = document.getElementById('btnApiSettings');
     if (btn) btn.classList.add('refreshing');
     if (btn) btn.disabled = true;
     if (btnParqet) btnParqet.disabled = true;
-    if (btnTelegram) btnTelegram.disabled = true;
+    if (btnApiSettings) btnApiSettings.disabled = true;
 
     try {
         const res = await fetch(endpoint, { method: 'POST' });
@@ -1333,20 +1575,20 @@ async function _doRefresh(btnId, endpoint) {
                     await loadPortfolio();
                     if (btn) { btn.classList.remove('refreshing'); btn.disabled = false; }
                     if (btnParqet) btnParqet.disabled = false;
-                    if (btnTelegram) btnTelegram.disabled = false;
+                    if (btnApiSettings) btnApiSettings.disabled = false;
                 }
             } catch (e) {
                 clearInterval(poll);
                 if (btn) { btn.classList.remove('refreshing'); btn.disabled = false; }
                 if (btnParqet) btnParqet.disabled = false;
-                if (btnTelegram) btnTelegram.disabled = false;
+                if (btnApiSettings) btnApiSettings.disabled = false;
             }
         }, 2000);
     } catch (err) {
         console.error('Analysis failed:', err);
         if (btn) { btn.classList.remove('refreshing'); btn.disabled = false; }
         if (btnParqet) btnParqet.disabled = false;
-        if (btnTelegram) btnTelegram.disabled = false;
+        if (btnApiSettings) btnApiSettings.disabled = false;
     }
 }
 
@@ -1562,15 +1804,21 @@ function updateLiveIndicator() {
 
 // ==================== Analyse Tab ====================
 let analyseLoaded = false;
+let analyseLoadInFlight = false;
+let portfolioDataSignature = '';
 let benchmarkChartInstance = null;
 let portfolioRiskSummaryData = null;
 let structuredAiAnalysisData = null;
 
-async function renderAnalyseTab() {
-    if (analyseLoaded) return;
-    analyseLoaded = true;
+async function renderAnalyseTab(force = false) {
+    if (analyseLoadInFlight) return;
+    if (analyseLoaded && !force) return;
+    if (!portfolioData?.stocks?.length) {
+        analyseLoaded = false;
+        return;
+    }
+    analyseLoadInFlight = true;
 
-    // Sector chart in Analyse tab laden
     try {
         const sectorRes = await fetch('/api/sectors');
         if (sectorRes.ok) {
@@ -1579,15 +1827,44 @@ async function renderAnalyseTab() {
         }
     } catch (e) { console.log('Sector data unavailable'); }
 
-    // Parallel laden
-    renderRisk();
-    renderPortfolioRiskSummary();
-    renderRagEvidence();
-    renderBacktestReport();
-    loadBenchmark();
-    renderDividends();
-    renderCorrelation();
-    renderEarnings();
+    try {
+        await Promise.allSettled([
+            renderRisk(),
+            renderPortfolioRiskSummary(),
+            renderRagEvidence(),
+            renderBacktestReport(),
+            loadBenchmark(),
+            renderDividends(),
+            renderCorrelation(),
+            renderEarnings(),
+        ]);
+        analyseLoaded = true;
+    } finally {
+        analyseLoadInFlight = false;
+    }
+}
+
+function resetAnalyseState() {
+    analyseLoaded = false;
+    analyseLoadInFlight = false;
+    portfolioRiskSummaryData = null;
+    structuredAiAnalysisData = null;
+}
+
+function getPortfolioDataSignature(data = portfolioData) {
+    const stocks = data?.stocks || [];
+    return JSON.stringify({
+        total: Number(data?.total_value || 0).toFixed(2),
+        count: stocks.length,
+        holdings: stocks.map(stock => {
+            const pos = stock.position || {};
+            return [
+                pos.ticker || '',
+                Number(pos.shares || 0).toFixed(6),
+                Number(pos.current_price || 0).toFixed(6),
+            ].join(':');
+        }).sort(),
+    });
 }
 
 async function renderMarketIndices() {
@@ -1680,9 +1957,21 @@ async function renderRisk() {
         if (!res.ok) return;
         const data = await res.json();
         const container = document.getElementById('riskContainer');
+        if (!container) return;
 
-        const riskColor = data.risk_score <= 3 ? '#22c55e' : data.risk_score <= 6 ? '#eab308' : '#ef4444';
-        const gaugeWidth = data.risk_score * 10;
+        const riskScore = clampNumber(
+            firstFinite(data.risk_score, data.score, riskScoreFromLabel(data.risk_level), 5),
+            1,
+            10,
+        );
+        const riskLevel = data.risk_level || riskLevelFromScore(riskScore);
+        const beta = firstFinite(data.portfolio_beta, 1);
+        const volatility = firstFinite(data.volatility_annual, data.volatility_annualized, 0);
+        const varDaily = Math.abs(firstFinite(data.var_95_daily, data.var_95_pct, 0));
+        const varMonthly = Math.abs(firstFinite(data.var_95_monthly, varDaily * Math.sqrt(21), 0));
+        const maxDrawdown = Math.abs(firstFinite(data.max_drawdown, data.max_drawdown_pct, 0));
+        const riskColor = riskScore <= 3 ? '#22c55e' : riskScore <= 6 ? '#eab308' : '#ef4444';
+        const gaugeWidth = riskScore * 10;
 
         container.innerHTML = `
             <div class="risk-gauge">
@@ -1690,28 +1979,28 @@ async function renderRisk() {
                 <div class="risk-gauge-bar">
                     <div class="risk-gauge-fill" style="width:${gaugeWidth}%;background:${riskColor}"></div>
                 </div>
-                <div class="risk-gauge-value" style="color:${riskColor}">${data.risk_score}/10 — ${data.risk_level}</div>
+                <div class="risk-gauge-value" style="color:${riskColor}">${riskScore.toFixed(1)}/10 — ${_escapeHtml(riskLevel)}</div>
             </div>
             <div class="risk-metrics">
                 <div class="risk-metric">
                     <span class="risk-metric-label">${isZh() ? '组合 Beta' : 'Portfolio Beta'}</span>
-                    <span class="risk-metric-value">${data.portfolio_beta}</span>
+                    <span class="risk-metric-value">${beta.toFixed(2)}</span>
                 </div>
                 <div class="risk-metric">
                     <span class="risk-metric-label">${t('volatilityPa')}</span>
-                    <span class="risk-metric-value">${data.volatility_annual}%</span>
+                    <span class="risk-metric-value">${volatility.toFixed(1)}%</span>
                 </div>
                 <div class="risk-metric">
                     <span class="risk-metric-label">${t('varDaily')}</span>
-                    <span class="risk-metric-value" style="color:#ef4444">-${data.var_95_daily}%</span>
+                    <span class="risk-metric-value" style="color:#ef4444">-${varDaily.toFixed(1)}%</span>
                 </div>
                 <div class="risk-metric">
                     <span class="risk-metric-label">${isZh() ? 'VaR 95%（月）' : 'VaR 95% (monthly)'}</span>
-                    <span class="risk-metric-value" style="color:#ef4444">-${data.var_95_monthly}%</span>
+                    <span class="risk-metric-value" style="color:#ef4444">-${varMonthly.toFixed(1)}%</span>
                 </div>
                 <div class="risk-metric">
                     <span class="risk-metric-label">${isZh() ? '最大回撤' : 'Max Drawdown'}</span>
-                    <span class="risk-metric-value" style="color:#ef4444">-${data.max_drawdown}%</span>
+                    <span class="risk-metric-value" style="color:#ef4444">-${maxDrawdown.toFixed(1)}%</span>
                 </div>
             </div>
         `;
@@ -1738,7 +2027,7 @@ async function renderPortfolioRiskSummary() {
                 <div class="research-kpi"><span>${isZh() ? '年化收益' : 'Ann. Return'}</span><strong>${formatPercentDecimal(m.annual_return)}</strong></div>
                 <div class="research-kpi"><span>${isZh() ? '年化波动' : 'Ann. Vol'}</span><strong>${formatPercentDecimal(m.annual_volatility)}</strong></div>
                 <div class="research-kpi"><span>${isZh() ? '最大回撤' : 'Max DD'}</span><strong>${formatPercentDecimal(m.max_drawdown)}</strong></div>
-                <div class="research-kpi"><span>Sharpe</span><strong>${Number(m.sharpe_ratio || 0).toFixed(2)}</strong></div>
+                <div class="research-kpi"><span>Sharpe</span><strong>${formatNullableNumber(m.sharpe_ratio, 2)}</strong></div>
                 <div class="research-kpi"><span>${isZh() ? '价格历史' : 'History'}</span><strong>${data.data_quality?.price_history_points || 0}</strong></div>
             </div>
             <div class="research-chip-list">
@@ -1914,8 +2203,44 @@ function buildRiskEvidenceQuery() {
 }
 
 function formatPercentDecimal(value) {
-    const num = Number(value || 0) * 100;
+    if (value == null || value === '') return 'N/A';
+    const num = Number(value) * 100;
+    if (!Number.isFinite(num)) return 'N/A';
     return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`;
+}
+
+function formatNullableNumber(value, digits = 2) {
+    if (value == null || value === '') return 'N/A';
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toFixed(digits) : 'N/A';
+}
+
+function firstFinite(...values) {
+    for (const value of values) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) return numeric;
+    }
+    return 0;
+}
+
+function clampNumber(value, min, max) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return min;
+    return Math.min(max, Math.max(min, numeric));
+}
+
+function riskScoreFromLabel(level) {
+    const text = String(level || '').toLowerCase();
+    if (/hoch|high|高/.test(text)) return 8;
+    if (/mittel|moderat|medium|中/.test(text)) return 5;
+    if (/niedrig|low|低/.test(text)) return 2;
+    return 5;
+}
+
+function riskLevelFromScore(score) {
+    if (score <= 3) return isZh() ? '低' : 'Low';
+    if (score <= 6) return isZh() ? '中等' : 'Medium';
+    return isZh() ? '高' : 'High';
 }
 
 async function loadBenchmark() {
@@ -2196,20 +2521,25 @@ async function loadPerformanceChart(days, btn) {
 
     try {
         const res = await fetch(`/api/portfolio/history?days=${days}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+            renderPerformanceChartEmpty();
+            return;
+        }
         const data = await res.json();
 
-        // Control card visibility across all instances
         const hasData = (data && data.length >= 2);
-        document.querySelectorAll('.performanceChartCard').forEach(card => {
-            card.style.display = hasData ? '' : 'none';
-        });
-
-        if (!hasData) return;
-
-        // Cleanup previous instances
         perfChartInstances.forEach(instance => instance.destroy());
         perfChartInstances = [];
+        document.querySelectorAll('.performanceChartCard').forEach(card => {
+            card.style.display = '';
+        });
+
+        if (!hasData) {
+            renderPerformanceChartEmpty();
+            return;
+        }
+
+        ensurePerformanceChartCanvases();
 
         const labels = data.map(d => {
             const dt = new Date(d.date);
@@ -2269,7 +2599,31 @@ async function loadPerformanceChart(days, btn) {
 
     } catch (e) {
         console.log('Performance chart unavailable:', e);
+        renderPerformanceChartEmpty();
     }
+}
+
+function ensurePerformanceChartCanvases() {
+    document.querySelectorAll('.performanceChartCard .chart-container').forEach(container => {
+        if (!container.querySelector('canvas.performance-chart-canvas')) {
+            container.innerHTML = '<canvas class="performance-chart-canvas"></canvas>';
+        }
+    });
+}
+
+function renderPerformanceChartEmpty() {
+    perfChartInstances.forEach(instance => instance.destroy());
+    perfChartInstances = [];
+    const message = isZh()
+        ? '暂无足够历史数据。刷新或导入更多快照后会显示走势图。'
+        : 'Not enough history yet. Refresh or import more snapshots to show the chart.';
+    document.querySelectorAll('.performanceChartCard').forEach(card => {
+        card.style.display = '';
+        const container = card.querySelector('.chart-container');
+        if (container) {
+            container.innerHTML = `<div class="empty-state">${message}</div>`;
+        }
+    });
 }
 
 
@@ -2460,10 +2814,10 @@ function renderAdvisorResult(data) {
 
     const rec = data.recommendation || 'hold';
     const recMap = {
-        buy: { label: isZh() ? '买入' : 'BUY', cls: 'rec-buy', icon: '🟢' },
-        hold: { label: isZh() ? '持有' : 'HOLD', cls: 'rec-hold', icon: '🟡' },
-        reduce: { label: isZh() ? '减仓' : 'REDUCE', cls: 'rec-reduce', icon: '🟠' },
-        avoid: { label: isZh() ? '回避' : 'AVOID', cls: 'rec-avoid', icon: '🔴' },
+        buy: { label: isFundResearchMode() ? t('fundResearchFocus') : (isZh() ? '买入' : 'BUY'), cls: 'rec-buy', icon: '🟢' },
+        hold: { label: isFundResearchMode() ? t('fundMaintainWatch') : (isZh() ? '持有' : 'HOLD'), cls: 'rec-hold', icon: '🟡' },
+        reduce: { label: isFundResearchMode() ? t('fundReduceRisk') : (isZh() ? '减仓' : 'REDUCE'), cls: 'rec-reduce', icon: '🟠' },
+        avoid: { label: isFundResearchMode() ? t('fundManualReview') : (isZh() ? '回避' : 'AVOID'), cls: 'rec-avoid', icon: '🔴' },
     };
     const r = recMap[rec] || recMap.hold;
     const conf = data.confidence || 0;
@@ -2473,8 +2827,9 @@ function renderAdvisorResult(data) {
 
     let scoreHtml = '';
     if (scoreInfo.total_score != null) {
-        const sRating = (scoreInfo.rating || 'hold').toUpperCase();
-        const sColor = sRating === 'BUY' ? 'var(--green)' : sRating === 'SELL' ? 'var(--red)' : 'var(--yellow)';
+        const rawRating = (scoreInfo.rating || 'hold').toLowerCase();
+        const sRating = ratingLabel(rawRating);
+        const sColor = rawRating === 'buy' ? 'var(--green)' : rawRating === 'sell' ? 'var(--red)' : 'var(--yellow)';
         scoreHtml = `
             <div class="advisor-score-card">
                 <div class="advisor-score-value" style="color:${sColor}">${scoreInfo.total_score.toFixed(0)}<span>/100</span></div>
@@ -3559,12 +3914,12 @@ function renderAIInsight() {
     // Rating distribution insight
     if (sellCount > 0) {
         insights.push(isZh()
-            ? `${sellCount} 个持仓为卖出评级，是否查看再平衡建议？`
-            : `${sellCount} ${sellCount > 1 ? t('positionPlural') : t('position')} ${t('sellRatingHint')}`);
+            ? (isFundResearchMode() ? `${sellCount} 个持仓需要降低风险暴露或人工复核。` : `${sellCount} 个持仓为卖出评级，是否查看调仓建议？`)
+            : (isFundResearchMode() ? `${sellCount} ${sellCount > 1 ? t('positionPlural') : t('position')} require reduced risk exposure or manual review.` : `${sellCount} ${sellCount > 1 ? t('positionPlural') : t('position')} ${t('sellRatingHint')}`));
     } else if (buyCount >= stocks.length * 0.7) {
         insights.push(isZh()
-            ? `${stocks.length} 个持仓中有 ${buyCount} 个为买入评级，组合配置较为积极。`
-            : `${buyCount} of ${stocks.length} positions have a Buy rating – well positioned.`);
+            ? (isFundResearchMode() ? `${stocks.length} 个持仓中有 ${buyCount} 个列入研究关注。` : `${stocks.length} 个持仓中有 ${buyCount} 个为买入评级，组合配置较为积极。`)
+            : (isFundResearchMode() ? `${buyCount} of ${stocks.length} positions are marked for research focus.` : `${buyCount} of ${stocks.length} positions have a Buy rating – well positioned.`));
     }
 
     // Daily movers
@@ -3709,12 +4064,24 @@ async function importCsvPortfolio() {
             body: JSON.stringify({ positions: csvParsedData })
         });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const result = await res.json();
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(t('csvSuccess'), 'success');
+        const persisted = Number(result.persisted_rows || 0);
+        const duplicates = Number(result.duplicate_rows || 0);
+        const rejected = Number(result.rejected_rows || 0);
+        const snapshotStatus = result.valuation_snapshot?.valuation_status || 'unknown';
+        const summary = isZh()
+            ? `已写入 ${persisted} 条，重复 ${duplicates} 条，拒绝 ${rejected} 条；估值 ${snapshotStatus}`
+            : `Persisted ${persisted}, duplicates ${duplicates}, rejected ${rejected}; valuation ${snapshotStatus}`;
+        showToast(`${t('csvSuccess')}: ${summary}`, rejected ? 'warning' : 'success');
         closeCsvUpload();
-        loadPortfolio();
+        await loadPortfolio();
     } catch (err) {
         showToast(t('csvError') + ': ' + err.message, 'error');
     } finally {
@@ -3750,8 +4117,8 @@ async function loadManagedHoldings() {
 
     try {
         const res = await fetch('/api/portfolio/csv-positions');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
         managedHoldings = data.positions || [];
         renderManagedHoldings();
     } catch (err) {
@@ -3765,7 +4132,7 @@ function renderManagedHoldings() {
     if (!body) return;
 
     if (!managedHoldings.length) {
-        body.innerHTML = `<tr><td colspan="7">${isZh() ? '还没有本地持仓，先新增一条。' : 'No local holdings yet. Add one above.'}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="7">${isZh() ? '当前持仓快照为空，先新增一条。' : 'The current holdings snapshot is empty. Add one above.'}</td></tr>`;
         return;
     }
 
@@ -3851,9 +4218,14 @@ async function saveManagedPosition(event) {
             body: JSON.stringify({ position: payload }),
         });
         const result = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(isZh() ? '持仓已保存' : 'Holding saved', 'success');
+        showToast(formatManagedSnapshotResult(result, isZh() ? '持仓已保存' : 'Holding saved'), 'success');
         resetHoldingForm();
         await loadManagedHoldings();
         loadPortfolio();
@@ -3875,15 +4247,31 @@ async function deleteManagedHolding(encodedTicker) {
             method: 'DELETE',
         });
         const result = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(isZh() ? '持仓已删除' : 'Holding deleted', 'success');
+        showToast(formatManagedSnapshotResult(result, isZh() ? '持仓已删除' : 'Holding deleted'), 'success');
         resetHoldingForm();
         await loadManagedHoldings();
         loadPortfolio();
     } catch (err) {
         showToast(`${isZh() ? '删除失败' : 'Delete failed'}: ${err.message}`, 'error');
     }
+}
+
+function formatManagedSnapshotResult(result, label) {
+    const persisted = Number(result.persisted_rows || 0);
+    const duplicates = Number(result.duplicate_rows || 0);
+    const rejected = Number(result.rejected_rows || 0);
+    const generation = result.snapshot_generation?.generation_number ?? '–';
+    const valuation = result.valuation_snapshot?.valuation_status || result.valuation_snapshot?.status || 'unknown';
+    return isZh()
+        ? `${label}：写入 ${persisted}，重复 ${duplicates}，拒绝 ${rejected}；快照代次 ${generation}，估值 ${valuation}`
+        : `${label}: persisted ${persisted}, duplicates ${duplicates}, rejected ${rejected}; generation ${generation}, valuation ${valuation}`;
 }
 
 // ==================== Shadow Portfolio Agent ====================
@@ -4074,7 +4462,7 @@ async function loadShadowPerformanceChart(days, btn) {
         const datasets = [];
         if (hasShadowData) {
             datasets.push({
-                label: isZh() ? '🤖 影子代理' : '🤖 Shadow Agent',
+                label: isZh() ? '🤖 AI 模拟组合' : '🤖 Shadow Agent',
                 data: shadowPoints,
                 borderColor: '#a855f7',
                 backgroundColor: 'rgba(168, 85, 247, 0.08)',

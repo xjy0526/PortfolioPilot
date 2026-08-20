@@ -1,0 +1,11 @@
+{"id":"gen-a-share-announcement","input_topic":"A股公告","evidence_ids":["ann-600519-001"],"expected_risk_tags":["announcement_risk"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-us-earnings","input_topic":"美股财报摘要","evidence_ids":["earn-aapl-001"],"expected_risk_tags":["earnings_uncertainty"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-sector-policy","input_topic":"行业政策","evidence_ids":["policy-semi-001"],"expected_risk_tags":["policy_risk"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-concentration","input_topic":"组合集中度","evidence_ids":["risk-concentration-001"],"expected_risk_tags":["single_asset_concentration","sector_concentration"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-fx","input_topic":"汇率风险","evidence_ids":["fx-usdcny-001"],"expected_risk_tags":["fx_risk"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-expired","input_topic":"文档过期","evidence_ids":[],"expected_risk_tags":[],"expected_decision":"refuse_insufficient_evidence","source":"synthetic_public_training_fixture"}
+{"id":"gen-permission","input_topic":"权限不足","evidence_ids":[],"expected_risk_tags":[],"expected_decision":"refuse_unauthorized","source":"synthetic_public_training_fixture"}
+{"id":"gen-conflict","input_topic":"证据冲突","evidence_ids":["conflict-a","conflict-b"],"expected_risk_tags":["evidence_conflict"],"expected_decision":"human_review_conflict","source":"synthetic_public_training_fixture"}
+{"id":"gen-insufficient","input_topic":"证据不足","evidence_ids":[],"expected_risk_tags":[],"expected_decision":"refuse_insufficient_evidence","source":"synthetic_public_training_fixture"}
+{"id":"gen-numeric","input_topic":"数值一致性","evidence_ids":["numeric-001"],"expected_risk_tags":["numeric_consistency"],"expected_decision":"human_review","source":"synthetic_public_training_fixture"}
+{"id":"gen-refusal","input_topic":"正确拒答","evidence_ids":[],"expected_risk_tags":[],"expected_decision":"refuse_insufficient_evidence","source":"synthetic_public_training_fixture"}

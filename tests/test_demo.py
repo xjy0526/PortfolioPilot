@@ -9,7 +9,10 @@ from routes.demo import build_demo_portfolio
 from fetchers.demo_data import (
     get_demo_positions, get_demo_technical_indicators,
     get_demo_portfolio_history,
+    get_demo_risk,
 )
+from routes.portfolio import get_portfolio_history
+from state import portfolio_data
 
 
 class TestBuildDemoPortfolio:
@@ -99,3 +102,40 @@ class TestDemoData:
             assert "date" in entry
             assert "total_value" in entry
             assert "invested_capital" in entry
+
+    def test_demo_risk_has_frontend_compatible_fields(self):
+        risk = get_demo_risk()
+
+        assert risk["risk_score"] == 5
+        assert risk["volatility_annual"] == risk["volatility_annualized"]
+        assert risk["var_95_daily"] == abs(risk["var_95_pct"])
+        assert risk["max_drawdown"] == abs(risk["max_drawdown_pct"])
+
+    @pytest.mark.asyncio
+    async def test_portfolio_history_route_uses_demo_series(self):
+        old_summary = portfolio_data.get("summary")
+        portfolio_data["summary"] = build_demo_portfolio()
+        try:
+            history = await get_portfolio_history(days=30)
+        finally:
+            if old_summary is None:
+                portfolio_data.pop("summary", None)
+            else:
+                portfolio_data["summary"] = old_summary
+
+        assert len(history) == 30
+        assert history[-1]["total_value"] > 0
+
+    @pytest.mark.asyncio
+    async def test_portfolio_history_route_treats_zero_as_max_for_demo(self):
+        old_summary = portfolio_data.get("summary")
+        portfolio_data["summary"] = build_demo_portfolio()
+        try:
+            history = await get_portfolio_history(days=0)
+        finally:
+            if old_summary is None:
+                portfolio_data.pop("summary", None)
+            else:
+                portfolio_data["summary"] = old_summary
+
+        assert len(history) >= 180

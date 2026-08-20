@@ -1,9 +1,4 @@
-"""Evaluate structured LLM financial analysis quality.
-
-The evaluator uses synthetic portfolio-risk scenarios with known expected risk
-signals. It can call the real Qwen-compatible analysis path, but defaults to a
-deterministic mock response when no Qwen API key is configured.
-"""
+"""Evaluate structured LLM financial analysis quality with explicit modes."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import settings
+from evaluation.reporting import (
+    EVALUATION_MODES,
+    build_evaluation_metadata,
+    require_automated_runner_mode,
+    validate_evaluation_report,
+)
 from services.financial_analysis import (
     analyze_portfolio_with_llm,
     parse_llm_json_response,
@@ -39,31 +42,92 @@ class PortfolioRiskTestCase:
     evidence: list[dict[str, Any]]
     expected_risk_tags: list[str]
     expected_rebalance_tickers: list[str]
+    expected_evidence: list[str]
+    expected_decision: str
 
 
 async def run_llm_evaluation(
     output_path: str | Path | None = None,
     use_mock: bool | None = None,
     language: str = "zh",
+    mode: str = "synthetic_smoke",
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Run the evaluation suite and optionally write an evaluation report."""
+    if use_mock is not None:
+        mode = "synthetic_smoke" if use_mock else "live_model_eval"
+    canonical_mode = require_automated_runner_mode(mode)
+    if canonical_mode == "live_model_eval" and not _ai_provider_configured():
+        raise RuntimeError(
+            "live_model_eval requires an API key for the configured AI_PROVIDER; "
+            "mock fallback is disabled"
+        )
+    if canonical_mode == "live_model_eval" and session is None:
+        from app.db.session import AsyncSessionFactory
+
+        async with AsyncSessionFactory() as owned_session:
+            report = await run_llm_evaluation(
+                output_path=output_path,
+                language=language,
+                mode=canonical_mode,
+                session=owned_session,
+            )
+            await owned_session.commit()
+            return report
     cases = build_portfolio_risk_test_cases()
-    effective_mock = (not settings.qwen_configured) if use_mock is None else use_mock
+    effective_mock = canonical_mode == "synthetic_smoke"
     case_results = []
 
     for case in cases:
-        result = await evaluate_case(case, use_mock=effective_mock, language=language)
+        result = await evaluate_case(
+            case,
+            use_mock=effective_mock,
+            language=language,
+            session=session,
+        )
         case_results.append(result)
 
     metrics = aggregate_metrics(case_results)
+    provider_name, model_name = _evaluation_model_identity(effective_mock)
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": "mock" if effective_mock else "qwen",
-        "model": settings.QWEN_MODEL if not effective_mock else "mock-llm-financial-analysis",
+        **build_evaluation_metadata(
+            evaluation_mode=canonical_mode,
+            model_provider=provider_name,
+            model_name=model_name,
+            dataset_name="portfolio_risk_cases",
+            dataset_version="v1",
+            mock_response_used=effective_mock,
+            synthetic_data_used=True,
+        ),
+        # Compatibility aliases for existing report consumers.
+        "mode": canonical_mode,
+        "model": model_name,
+        "data_classification": (
+            "synthetic_fixture_with_mock_responses"
+            if effective_mock
+            else "synthetic_fixture_with_live_model_eval_responses"
+        ),
+        "evaluation_status": (
+            "completed" if all(not item["error"] for item in case_results)
+            else "completed_with_case_errors"
+        ),
         "test_case_count": len(cases),
+        "valid_response_case_count": sum(bool(item["json_valid"]) for item in case_results),
         "metrics": metrics,
+        "metric_sample_sizes": {name: len(case_results) for name in metrics},
+        "metric_disclosures": {
+            "hallucination_flag_rate": {
+                "evaluation_mode": canonical_mode,
+                "sample_size": len(case_results),
+                "valid_response_case_count": sum(
+                    bool(item["json_valid"]) for item in case_results
+                ),
+                "is_real_model_quality_claim": canonical_mode == "live_model_eval",
+            }
+        },
         "cases": case_results,
     }
+    validate_evaluation_report(report)
 
     if output_path:
         path = Path(output_path)
@@ -76,6 +140,7 @@ async def evaluate_case(
     case: PortfolioRiskTestCase,
     use_mock: bool = True,
     language: str = "zh",
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """Evaluate one test case and return metric flags."""
     raw_response = ""
@@ -88,10 +153,14 @@ async def evaluate_case(
             raw_response = mock_llm_response(case, language=language)
             parsed = parse_llm_json_response(raw_response)
         else:
+            if session is None:
+                raise RuntimeError("live_model_eval requires a PostgreSQL AsyncSession")
             parsed = await analyze_portfolio_with_llm(
                 case.portfolio_risk_summary,
                 evidence=case.evidence,
                 language=language,
+                session=session,
+                allow_fallback=False,
             )
             raw_response = json.dumps(parsed, ensure_ascii=False)
         json_valid = True
@@ -101,8 +170,16 @@ async def evaluate_case(
     response = parsed or {}
     risk_detected = bool(response) and _detect_expected_risks(response, case.expected_risk_tags)
     evidence_used = bool(response) and _uses_allowed_evidence(response, case.evidence)
-    rebalance_explainable = bool(response) and _has_explainable_rebalance(response, case.expected_rebalance_tickers)
+    review_explainable = bool(response) and _has_explainable_review_priority(
+        response, case.expected_rebalance_tickers
+    )
     hallucination_flag = bool(response) and _has_hallucination(response, case)
+    numeric_consistent = bool(response) and abs(
+        float(response.get("risk_score", 0.0)) - float(case.portfolio_risk_summary.get("risk_score", 0.0))
+    ) <= 1e-6
+    citation_precision, citation_completeness = _citation_metrics(response, case.evidence)
+    claim_support_rate = _claim_support_rate(response, case.evidence)
+    refusal_correct = _is_refusal_correct(response, case.expected_decision)
 
     return {
         "id": case.id,
@@ -112,14 +189,41 @@ async def evaluate_case(
         "json_valid": json_valid,
         "risk_detected": risk_detected,
         "evidence_used": evidence_used,
-        "rebalance_explainable": rebalance_explainable,
+        "review_priority_explainable": review_explainable,
         "hallucination_flag": hallucination_flag,
+        "numeric_consistent": numeric_consistent,
+        "grounded": evidence_used and not hallucination_flag,
+        "citation_precision": citation_precision,
+        "citation_completeness": citation_completeness,
+        "citation_reference_validity": citation_precision,
+        "claim_support_rate": claim_support_rate,
+        "refusal_correct": refusal_correct,
+        "expected_decision": case.expected_decision,
         "output_summary": str(response.get("portfolio_summary", ""))[:300] if response else "",
         "main_risks": response.get("main_risks", []) if response else [],
         "rebalance_suggestions": response.get("rebalance_suggestions", []) if response else [],
+        "research_observations": response.get("research_observations", []) if response else [],
+        "review_priorities": response.get("review_priorities", []) if response else [],
         "evidence_used_values": response.get("evidence_used", []) if response else [],
         "error": error,
     }
+
+
+def _ai_provider_configured() -> bool:
+    configured = getattr(settings, "ai_configured", None)
+    if configured is not None:
+        return bool(configured)
+    return bool(getattr(settings, "qwen_configured", False))
+
+
+def _evaluation_model_identity(use_mock: bool) -> tuple[str, str]:
+    if use_mock:
+        return "deterministic_mock", "portfolio-risk-mock-v1"
+    provider = str(getattr(settings, "AI_PROVIDER", "qwen") or "qwen").strip().lower()
+    configured_model = getattr(settings, "configured_ai_model", None)
+    if configured_model:
+        return provider, str(configured_model)
+    return provider, str(getattr(settings, "QWEN_MODEL", "unknown"))
 
 
 def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:
@@ -130,8 +234,15 @@ def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:
             "json_valid_rate": 0.0,
             "risk_detection_rate": 0.0,
             "evidence_usage_rate": 0.0,
-            "rebalance_explainability_rate": 0.0,
+            "review_priority_explainability_rate": 0.0,
             "hallucination_flag_rate": 0.0,
+            "numeric_consistency_rate": 0.0,
+            "groundedness_rate": 0.0,
+            "citation_precision": 0.0,
+            "citation_completeness": 0.0,
+            "refusal_correct_rate": 0.0,
+            "citation_reference_validity": 0.0,
+            "claim_support_rate": 0.0,
         }
 
     def rate(key: str) -> float:
@@ -141,8 +252,23 @@ def aggregate_metrics(case_results: list[dict[str, Any]]) -> dict[str, float]:
         "json_valid_rate": rate("json_valid"),
         "risk_detection_rate": rate("risk_detected"),
         "evidence_usage_rate": rate("evidence_used"),
-        "rebalance_explainability_rate": rate("rebalance_explainable"),
+        "review_priority_explainability_rate": rate("review_priority_explainable"),
+        "rebalance_explainability_rate": rate("review_priority_explainable"),
         "hallucination_flag_rate": rate("hallucination_flag"),
+        "numeric_consistency_rate": rate("numeric_consistent"),
+        "groundedness_rate": rate("grounded"),
+        "citation_precision": round(sum(float(item.get("citation_precision", 0.0)) for item in case_results) / total, 4),
+        "citation_completeness": round(sum(float(item.get("citation_completeness", 0.0)) for item in case_results) / total, 4),
+        "refusal_correct_rate": rate("refusal_correct"),
+        "citation_reference_validity": round(
+            sum(float(item.get("citation_reference_validity", 0.0)) for item in case_results)
+            / total,
+            4,
+        ),
+        "claim_support_rate": round(
+            sum(float(item.get("claim_support_rate", 0.0)) for item in case_results) / total,
+            4,
+        ),
     }
 
 
@@ -178,7 +304,8 @@ def mock_llm_response(case: PortfolioRiskTestCase, language: str = "zh") -> str:
     summary = case.portfolio_risk_summary
     asset_metrics = summary.get("asset_metrics", {})
     risk_phrases = [_risk_phrase(tag, language) for tag in case.expected_risk_tags]
-    suggestions = []
+    observations = []
+    priorities = []
     comments = []
 
     for ticker, metrics in asset_metrics.items():
@@ -190,11 +317,15 @@ def mock_llm_response(case: PortfolioRiskTestCase, language: str = "zh") -> str:
             "risk_level": level if level in {"low", "medium", "high"} else "medium",
             "comment": f"{ticker} 权重 {weight:.1%}，风险等级 {level}，需要关注{', '.join(risk_phrases)}。",
         })
-        suggestions.append({
-            "action": action,
+        observations.append({
             "ticker": ticker,
-            "reason": f"基于权重 {weight:.1%}、风险等级 {level} 和测试场景 {case.scenario}，建议保持可解释的风险控制动作。",
-            "confidence": 0.72 if level == "high" else 0.58,
+            "observation": f"基于权重 {weight:.1%}、风险等级 {level}，需要复核{', '.join(risk_phrases)}。",
+            "evidence_ids": [case.evidence[0]["chunk_id"]],
+        })
+        priorities.append({
+            "priority": "high" if action in {"watch", "reduce"} else "medium",
+            "ticker": ticker,
+            "reason": f"{ticker} 的权重、风险等级与证据需要人工复核。",
         })
 
     payload = {
@@ -202,8 +333,14 @@ def mock_llm_response(case: PortfolioRiskTestCase, language: str = "zh") -> str:
         "risk_score": float(summary.get("risk_score", 5.0) or 5.0),
         "main_risks": risk_phrases,
         "asset_level_comments": comments,
-        "rebalance_suggestions": suggestions,
-        "evidence_used": [item["source"] for item in case.evidence[:2]],
+        "research_observations": observations,
+        "review_priorities": priorities,
+        "rebalance_suggestions": [],
+        "deprecated_fields": ["rebalance_suggestions"],
+        "evidence_used": [
+            {"document_id": item["document_id"], "chunk_id": item["chunk_id"]}
+            for item in case.evidence[:2]
+        ],
         "disclaimer": "本结果仅用于研究分析和风险提示，不构成投资建议或交易指令。",
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -215,7 +352,7 @@ def _case_from_spec(
     expected_tags: list[str],
     holdings: dict[str, tuple[float, str, str, str, float, float]],
 ) -> PortfolioRiskTestCase:
-    asset_metrics = {}
+    asset_metrics: dict[str, dict[str, Any]] = {}
     sector_concentration: dict[str, dict[str, Any]] = {}
     asset_type_exposure: dict[str, dict[str, Any]] = {}
     concentration_flags = []
@@ -280,10 +417,14 @@ def _case_from_spec(
     }
     evidence = [
         {
+            "document_id": f"{case_id}-risk-note",
+            "chunk_id": f"{case_id}-risk-chunk",
             "source": f"{case_id}_risk_note.md",
             "text": f"{scenario}; expected risk tags: {', '.join(expected_tags)}.",
         },
         {
+            "document_id": f"{case_id}-market-context",
+            "chunk_id": f"{case_id}-market-chunk",
             "source": f"{case_id}_market_context.csv",
             "text": "Volatility, drawdown, sector concentration and external evidence should be considered.",
         },
@@ -299,6 +440,8 @@ def _case_from_spec(
         evidence=evidence,
         expected_risk_tags=expected_tags,
         expected_rebalance_tickers=expected_tickers,
+        expected_evidence=[item["document_id"] for item in evidence],
+        expected_decision="human_review",
     )
 
 
@@ -341,13 +484,34 @@ def _detect_expected_risks(response: dict[str, Any], expected_tags: list[str]) -
 
 
 def _uses_allowed_evidence(response: dict[str, Any], evidence: list[dict[str, Any]]) -> bool:
-    allowed = {str(item.get("source", "")) for item in evidence}
-    used = {str(item) for item in response.get("evidence_used", [])}
+    allowed = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in evidence
+    }
+    used = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
     return bool(allowed & used)
 
 
-def _has_explainable_rebalance(response: dict[str, Any], expected_tickers: list[str]) -> bool:
-    suggestions = response.get("rebalance_suggestions", []) or []
+def _citation_metrics(response: dict[str, Any], evidence: list[dict[str, Any]]) -> tuple[float, float]:
+    allowed = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", ""))) for item in evidence
+    }
+    used = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
+    precision = len(used & allowed) / len(used) if used else (1.0 if not allowed else 0.0)
+    completeness = len(used & allowed) / len(allowed) if allowed else 1.0
+    return round(precision, 4), round(completeness, 4)
+
+
+def _has_explainable_review_priority(
+    response: dict[str, Any], expected_tickers: list[str]
+) -> bool:
+    suggestions = response.get("review_priorities", []) or []
     by_ticker = {
         str(item.get("ticker", "")).upper(): item
         for item in suggestions
@@ -363,9 +527,53 @@ def _has_explainable_rebalance(response: dict[str, Any], expected_tickers: list[
     return True
 
 
+def _is_refusal_correct(response: dict[str, Any], expected_decision: str) -> bool:
+    text = _response_text(response).lower()
+    refusal_markers = (
+        "insufficient evidence",
+        "cannot assess",
+        "unable to assess",
+        "证据不足",
+        "无法评估",
+        "权限不足",
+    )
+    actually_refused = not response or any(marker in text for marker in refusal_markers)
+    should_refuse = expected_decision.startswith("refuse")
+    return actually_refused == should_refuse
+
+
+def _claim_support_rate(response: dict[str, Any], evidence: list[dict[str, Any]]) -> float:
+    evidence_text = " ".join(
+        str(item.get("text") or item.get("quote") or "") for item in evidence
+    ).lower()
+    claims = [str(item) for item in response.get("main_risks", [])]
+    if not claims:
+        return 1.0 if not response else 0.0
+    supported = 0
+    for claim in claims:
+        claim_text = claim.lower()
+        matched_tag = next(
+            (
+                tag
+                for tag, aliases in RISK_ALIASES.items()
+                if any(alias.lower() in claim_text for alias in aliases)
+            ),
+            None,
+        )
+        if matched_tag and (
+            matched_tag.lower() in evidence_text
+            or any(alias.lower() in evidence_text for alias in RISK_ALIASES[matched_tag])
+        ):
+            supported += 1
+    return round(supported / len(claims), 4)
+
+
 def _has_hallucination(response: dict[str, Any], case: PortfolioRiskTestCase) -> bool:
     known_tickers = set(case.portfolio_risk_summary.get("asset_metrics", {}).keys())
-    allowed_evidence = {str(item.get("source", "")) for item in case.evidence}
+    allowed_evidence = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in case.evidence
+    }
     output_tickers = set()
     for item in response.get("asset_level_comments", []) or []:
         if isinstance(item, dict):
@@ -373,10 +581,17 @@ def _has_hallucination(response: dict[str, Any], case: PortfolioRiskTestCase) ->
     for item in response.get("rebalance_suggestions", []) or []:
         if isinstance(item, dict):
             output_tickers.add(str(item.get("ticker", "")).upper())
+    for field in ("research_observations", "review_priorities"):
+        for item in response.get(field, []) or []:
+            if isinstance(item, dict):
+                output_tickers.add(str(item.get("ticker", "")).upper())
     if any(ticker and ticker not in known_tickers for ticker in output_tickers):
         return True
-    used_evidence = {str(item) for item in response.get("evidence_used", [])}
-    if any(item and item not in allowed_evidence for item in used_evidence):
+    used_evidence = {
+        (str(item.get("document_id", "")), str(item.get("chunk_id", "")))
+        for item in response.get("evidence_used", []) if isinstance(item, dict)
+    }
+    if any(item not in allowed_evidence for item in used_evidence):
         return True
     return False
 
@@ -394,6 +609,12 @@ def _response_text(response: dict[str, Any]) -> str:
         if isinstance(item, dict):
             parts.append(str(item.get("reason", "")))
             parts.append(str(item.get("action", "")))
+    for item in response.get("research_observations", []) or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("observation", "")))
+    for item in response.get("review_priorities", []) or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("reason", "")))
     return " ".join(parts)
 
 
@@ -401,6 +622,14 @@ def run_llm_evaluation_sync(
     output_path: str | Path | None = None,
     use_mock: bool | None = None,
     language: str = "zh",
+    mode: str = "synthetic_smoke",
 ) -> dict[str, Any]:
     """Synchronous wrapper for scripts and tests."""
-    return asyncio.run(run_llm_evaluation(output_path=output_path, use_mock=use_mock, language=language))
+    return asyncio.run(
+        run_llm_evaluation(
+            output_path=output_path,
+            use_mock=use_mock,
+            language=language,
+            mode=mode,
+        )
+    )

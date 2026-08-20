@@ -31,6 +31,8 @@ async def telegram_webhook(secret: str, request: Request):
     Cloud Run hält die Instance am Leben solange der Request offen ist.
     Telegram-Webhook-Timeout: 60 Sekunden.
     """
+    if not settings.ENABLE_TELEGRAM:
+        return Response(status_code=404)
     if not settings.TELEGRAM_WEBHOOK_SECRET or \
        not secrets.compare_digest(secret, settings.TELEGRAM_WEBHOOK_SECRET):
         logger.warning("Telegram-Webhook: Ungueltiges Secret")
@@ -47,4 +49,3 @@ async def telegram_webhook(secret: str, request: Request):
         logger.error(f"Telegram-Webhook-Fehler: {e}", exc_info=True)
 
     return Response(status_code=200)
-

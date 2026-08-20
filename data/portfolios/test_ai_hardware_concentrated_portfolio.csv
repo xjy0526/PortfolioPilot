@@ -1,0 +1,8 @@
+ticker,shares,buy_price,current_price,buy_date,currency,sector,name,asset_type,market,exchange,country
+NVDA,25,620.00,955.00,2025-01-12,USD,AI Hardware - Chips,NVIDIA Corp.,equity,US,NASDAQ,US
+AMD,60,132.00,170.00,2025-02-18,USD,AI Hardware - Chips,Advanced Micro Devices,equity,US,NASDAQ,US
+TSM,35,116.00,150.00,2025-03-10,USD,AI Hardware - Foundry,Taiwan Semiconductor,equity,US,NYSE,TW
+ASML,8,700.00,910.00,2025-01-28,EUR,AI Hardware - Equipment,ASML Holding,equity,EU,AMS,NL
+002916.SZ,500,92.00,124.00,2025-04-08,CNY,AI Hardware - PCB,Shennan Circuits,cn_equity,CN-A,SZSE,CN
+300476.SZ,600,58.00,84.00,2025-04-20,CNY,AI Hardware - PCB,Victory Giant Technology,cn_equity,CN-A,SZSE,CN
+159995.SZ,5000,0.92,1.08,2025-05-01,CNY,AI Hardware - ETF,China Semiconductor ETF,etf,CN-A,SZSE,CN

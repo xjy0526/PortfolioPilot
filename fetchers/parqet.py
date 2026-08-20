@@ -1026,8 +1026,9 @@ async def fetch_portfolio_activities_raw() -> list[dict]:
 
 def clear_cache():
     """Loescht Cache und gespeicherte Tokens."""
-    if CACHE_FILE.exists():
-        CACHE_FILE.unlink()
+    _cache.clear()
+    if ACTIVITIES_CACHE_FILE.exists():
+        ACTIVITIES_CACHE_FILE.unlink()
     logger.info("Parqet Cache geloescht")
 
 

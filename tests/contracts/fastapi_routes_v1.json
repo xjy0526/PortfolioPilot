@@ -1,0 +1,747 @@
+{
+  "api_title": "PortfolioPilot",
+  "api_version": "2.0.0",
+  "operation_count": 102,
+  "path_count": 96,
+  "routes": [
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "index__get",
+      "path": "/",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "advisor_chat_endpoint_api_advisor_chat_post",
+      "path": "/api/advisor/chat",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "evaluate_trade_endpoint_api_advisor_evaluate_post",
+      "path": "/api/advisor/evaluate",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "holding_recommendations_endpoint_api_advisor_holding_recommendations_get",
+      "path": "/api/advisor/holding-recommendations",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "analyze_portfolio_endpoint_api_ai_analyze_portfolio_post",
+      "path": "/api/ai/analyze-portfolio",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_analysis_history_endpoint_api_analysis_history_get",
+      "path": "/api/analysis/history",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_latest_analysis_api_analysis_latest_get",
+      "path": "/api/analysis/latest",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "run_analysis_api_analysis_run_post",
+      "path": "/api/analysis/run",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_score_trend_api_analysis_trend__ticker__get",
+      "path": "/api/analysis/trend/{ticker}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_app_settings_api_app_settings_get",
+      "path": "/api/app-settings",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "update_app_settings_api_app_settings_post",
+      "path": "/api/app-settings",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_asset_allocation_api_asset_allocation_get",
+      "path": "/api/asset-allocation",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_attribution_api_attribution_get",
+      "path": "/api/attribution",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_backtest_api_backtest_get",
+      "path": "/api/backtest",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_strategy_backtest_report_api_backtest_report_get",
+      "path": "/api/backtest/report",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_benchmark_api_benchmark_get",
+      "path": "/api/benchmark",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_correlation_api_correlation_get",
+      "path": "/api/correlation",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "activate_demo_api_demo_activate_post",
+      "path": "/api/demo/activate",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "deactivate_demo_api_demo_deactivate_post",
+      "path": "/api/demo/deactivate",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "demo_status_api_demo_status_get",
+      "path": "/api/demo/status",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_dividends_api_dividends_get",
+      "path": "/api/dividends",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_earnings_calendar_api_earnings_calendar_get",
+      "path": "/api/earnings-calendar",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_evaluation_dashboard_api_evaluation_dashboard_get",
+      "path": "/api/evaluation/dashboard",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_evaluation_traces_api_evaluation_traces_get",
+      "path": "/api/evaluation/traces",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_fear_greed_api_fear_greed_get",
+      "path": "/api/fear-greed",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_heatmap_api_heatmap_get",
+      "path": "/api/heatmap",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "download_import_errors_api_import_batches__batch_id__errors_get",
+      "path": "/api/import-batches/{batch_id}/errors",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "list_knowledge_documents_api_knowledge_documents_get",
+      "path": "/api/knowledge/documents",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "create_knowledge_document_api_knowledge_documents_post",
+      "path": "/api/knowledge/documents",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_knowledge_document_api_knowledge_documents__document_id__get",
+      "path": "/api/knowledge/documents/{document_id}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "deactivate_knowledge_document_api_knowledge_documents__document_id__deactivate_post",
+      "path": "/api/knowledge/documents/{document_id}/deactivate",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "publish_knowledge_document_api_knowledge_documents__document_id__publish_post",
+      "path": "/api/knowledge/documents/{document_id}/publish",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_ingestion_job_api_knowledge_ingestion_jobs__job_id__get",
+      "path": "/api/knowledge/ingestion-jobs/{job_id}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "download_ingestion_source_api_knowledge_ingestion_jobs__job_id__source_get",
+      "path": "/api/knowledge/ingestion-jobs/{job_id}/source",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "sync_market_data_api_market_data_sync_post",
+      "path": "/api/market-data/sync",
+      "tags": [
+        "market-data"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_market_indices_api_market_indices_get",
+      "path": "/api/market-indices",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_movers_api_movers_get",
+      "path": "/api/movers",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "parqet_authorize_api_parqet_authorize_get",
+      "path": "/api/parqet/authorize",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "parqet_callback_api_parqet_callback_get",
+      "path": "/api/parqet/callback",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_performance_api_performance_get",
+      "path": "/api/performance",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_api_portfolio_get",
+      "path": "/api/portfolio",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_activities_api_portfolio_activities_get",
+      "path": "/api/portfolio/activities",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_csv_positions_api_portfolio_csv_positions_get",
+      "path": "/api/portfolio/csv-positions",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "create_csv_position_api_portfolio_csv_positions_post",
+      "path": "/api/portfolio/csv-positions",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "DELETE",
+      "operation_id": "delete_csv_position_route_api_portfolio_csv_positions__ticker__delete",
+      "path": "/api/portfolio/csv-positions/{ticker}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operation_id": "update_csv_position_api_portfolio_csv_positions__ticker__put",
+      "path": "/api/portfolio/csv-positions/{ticker}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_history_api_portfolio_history_get",
+      "path": "/api/portfolio/history",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_history_detail_api_portfolio_history_detail_get",
+      "path": "/api/portfolio/history-detail",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_rebalance_api_portfolio_rebalance_get",
+      "path": "/api/portfolio/rebalance",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_risk_summary_api_portfolio_risk_summary_get",
+      "path": "/api/portfolio/risk-summary",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "upload_csv_portfolio_api_portfolio_upload_csv_post",
+      "path": "/api/portfolio/upload-csv",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "list_portfolios_api_portfolios_get",
+      "path": "/api/portfolios",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_portfolio_api_portfolios__portfolio_id__get",
+      "path": "/api/portfolios/{portfolio_id}",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "import_transactions_api_portfolios__portfolio_id__imports_transactions_post",
+      "path": "/api/portfolios/{portfolio_id}/imports/transactions",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_positions_api_portfolios__portfolio_id__positions_get",
+      "path": "/api/portfolios/{portfolio_id}/positions",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "rebuild_portfolio_api_portfolios__portfolio_id__rebuild_post",
+      "path": "/api/portfolios/{portfolio_id}/rebuild",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "list_transactions_api_portfolios__portfolio_id__transactions_get",
+      "path": "/api/portfolios/{portfolio_id}/transactions",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_valuation_api_portfolios__portfolio_id__valuation_get",
+      "path": "/api/portfolios/{portfolio_id}/valuation",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "stream_prices_api_prices_stream_get",
+      "path": "/api/prices/stream",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "list_prompts_api_prompts_get",
+      "path": "/api/prompts",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "create_prompt_api_prompts_post",
+      "path": "/api/prompts",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "compare_prompt_versions_api_prompts_compare_post",
+      "path": "/api/prompts/compare",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "rollback_prompt_api_prompts__prompt_id__rollback_post",
+      "path": "/api/prompts/{prompt_id}/rollback",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "create_prompt_version_api_prompts__prompt_id__versions_post",
+      "path": "/api/prompts/{prompt_id}/versions",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "publish_prompt_version_api_prompts__prompt_id__versions__version__publish_post",
+      "path": "/api/prompts/{prompt_id}/versions/{version}/publish",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "rag_retrieve_endpoint_api_rag_retrieve_post",
+      "path": "/api/rag/retrieve",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_rebalancing_api_rebalancing_get",
+      "path": "/api/rebalancing",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_refresh_api_refresh_post",
+      "path": "/api/refresh",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_parqet_update_api_refresh_parqet_post",
+      "path": "/api/refresh/parqet",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_portfolio_refresh_api_refresh_portfolio_post",
+      "path": "/api/refresh/portfolio",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_price_refresh_api_refresh_prices_post",
+      "path": "/api/refresh/prices",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_scores_refresh_api_refresh_scores_post",
+      "path": "/api/refresh/scores",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_refresh_status_api_refresh_status_get",
+      "path": "/api/refresh/status",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_published_report_api_reports__report_id__get",
+      "path": "/api/reports/{report_id}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "approve_review_api_reviews__review_id__approve_post",
+      "path": "/api/reviews/{review_id}/approve",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "reject_review_api_reviews__review_id__reject_post",
+      "path": "/api/reviews/{review_id}/reject",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "request_review_changes_api_reviews__review_id__request_changes_post",
+      "path": "/api/reviews/{review_id}/request-changes",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_risk_api_risk_get",
+      "path": "/api/risk",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_sectors_api_sectors_get",
+      "path": "/api/sectors",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_sector_rotation_api_sectors_rotation_get",
+      "path": "/api/sectors/rotation",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_shadow_portfolio_api_shadow_portfolio_get",
+      "path": "/api/shadow-portfolio",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_shadow_config_api_shadow_portfolio_config_get",
+      "path": "/api/shadow-portfolio/config",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "save_shadow_config_api_shadow_portfolio_config_post",
+      "path": "/api/shadow-portfolio/config",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_shadow_decision_log_api_shadow_portfolio_decision_log_get",
+      "path": "/api/shadow-portfolio/decision-log",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_shadow_performance_api_shadow_portfolio_performance_get",
+      "path": "/api/shadow-portfolio/performance",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "reset_shadow_portfolio_api_shadow_portfolio_reset_post",
+      "path": "/api/shadow-portfolio/reset",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "run_shadow_agent_api_shadow_portfolio_run_post",
+      "path": "/api/shadow-portfolio/run",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_shadow_transactions_api_shadow_portfolio_transactions_get",
+      "path": "/api/shadow-portfolio/transactions",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_status_api_status_get",
+      "path": "/api/status",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_stock_api_stock__ticker__get",
+      "path": "/api/stock/{ticker}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_stock_history_api_stock__ticker__history_get",
+      "path": "/api/stock/{ticker}/history",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_stock_news_api_stock__ticker__news_get",
+      "path": "/api/stock/{ticker}/news",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_score_history_api_stock__ticker__score_history_get",
+      "path": "/api/stock/{ticker}/score-history",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_tech_picks_api_tech_picks_get",
+      "path": "/api/tech-picks",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "telegram_webhook_api_telegram_webhook__secret__post",
+      "path": "/api/telegram/webhook/{secret}",
+      "tags": [
+        "telegram"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_report_api_trigger_report_post",
+      "path": "/api/trigger-report",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "trigger_weekly_digest_api_trigger_weekly_digest_post",
+      "path": "/api/trigger-weekly-digest",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operation_id": "start_research_report_api_workflows_research_report_post",
+      "path": "/api/workflows/research-report",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_workflow_api_workflows__run_id__get",
+      "path": "/api/workflows/{run_id}",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "health_health_get",
+      "path": "/health",
+      "tags": []
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "live_health_live_get",
+      "path": "/health/live",
+      "tags": [
+        "health"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "ready_health_ready_get",
+      "path": "/health/ready",
+      "tags": [
+        "health"
+      ]
+    }
+  ],
+  "snapshot_version": 1
+}

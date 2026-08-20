@@ -1,0 +1,331 @@
+"""Transaction ledger and derived position snapshot models."""
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.models.base import (
+    Base,
+    MONEY_NUMERIC,
+    PRICE_NUMERIC,
+    QUANTITY_NUMERIC,
+    RATE_NUMERIC,
+    UUIDTimestampMixin,
+    WEIGHT_NUMERIC,
+)
+
+
+class Transaction(UUIDTimestampMixin, Base):
+    __tablename__ = "transactions"
+    __table_args__ = (
+        CheckConstraint(
+            "transaction_type IN ('opening_balance','buy','sell','deposit','withdrawal',"
+            "'dividend','fee','tax','split','transfer_in','transfer_out')",
+            name="transaction_type_allowed",
+        ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_iso3"),
+        CheckConstraint("quantity >= 0", name="quantity_nonnegative"),
+        CheckConstraint("price IS NULL OR price >= 0", name="price_nonnegative"),
+        CheckConstraint("gross_amount >= 0", name="gross_amount_nonnegative"),
+        CheckConstraint("fees >= 0", name="fees_nonnegative"),
+        CheckConstraint("taxes >= 0", name="taxes_nonnegative"),
+        CheckConstraint(
+            "fx_rate_to_base IS NULL OR fx_rate_to_base > 0",
+            name="fx_rate_positive",
+        ),
+        CheckConstraint(
+            "transaction_type NOT IN ('opening_balance','buy','sell','split') "
+            "OR security_id IS NOT NULL",
+            name="security_required",
+        ),
+        Index(
+            "uq_transactions_external_id_not_null",
+            "portfolio_id",
+            "source",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_transactions_source_record_hash_not_null",
+            "portfolio_id",
+            "source",
+            "source_record_hash",
+            unique=True,
+            postgresql_where=text("source_record_hash IS NOT NULL"),
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    security_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("securities.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    transaction_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    quantity: Mapped[Decimal] = mapped_column(QUANTITY_NUMERIC, nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(PRICE_NUMERIC, nullable=True)
+    gross_amount: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    fees: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False, default=Decimal("0"))
+    taxes: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False, default=Decimal("0"))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    fx_rate_to_base: Mapped[Decimal | None] = mapped_column(RATE_NUMERIC, nullable=True)
+    source: Mapped[str] = mapped_column(String(80), nullable=False, default="manual")
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_record_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+
+class ImportBatch(UUIDTimestampMixin, Base):
+    __tablename__ = "import_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "portfolio_id", "source", "file_sha256", name="uq_import_batches_portfolio_source_hash"
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','completed_with_errors','failed','duplicate')",
+            name="import_batch_status_allowed",
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    total_rows: Mapped[int] = mapped_column(nullable=False, default=0)
+    accepted_rows: Mapped[int] = mapped_column(nullable=False, default=0)
+    rejected_rows: Mapped[int] = mapped_column(nullable=False, default=0)
+    error_summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LegacySnapshotGeneration(UUIDTimestampMixin, Base):
+    """Auditable activation history for replaceable dashboard holdings snapshots."""
+
+    __tablename__ = "legacy_snapshot_generations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','superseded')",
+            name="generation_status_allowed",
+        ),
+        CheckConstraint(
+            "generation_number > 0",
+            name="generation_number_positive",
+        ),
+        CheckConstraint(
+            "position_count >= 0",
+            name="position_count_nonnegative",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "source",
+            "generation_number",
+            name="uq_legacy_snapshot_generation_number",
+        ),
+        Index(
+            "uq_legacy_snapshot_generation_active",
+            "portfolio_id",
+            "source",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    import_batch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    generation_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "legacy_snapshot_generations.id",
+            name="fk_legacy_snapshot_generations_superseded_by",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+    position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generation_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+
+class PortfolioValuationSnapshot(UUIDTimestampMixin, Base):
+    __tablename__ = "portfolio_valuation_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "portfolio_id", "as_of", "source", name="uq_portfolio_valuations_portfolio_as_of_source"
+        ),
+        CheckConstraint(
+            "valuation_status IN ('complete','partial','unavailable')",
+            name="valuation_status_allowed",
+        ),
+        CheckConstraint(
+            "coverage_ratio >= 0 AND coverage_ratio <= 1",
+            name="valuation_coverage_ratio_range",
+        ),
+        CheckConstraint(
+            "priced_asset_count >= 0 AND unpriced_asset_count >= 0",
+            name="valuation_asset_counts_nonnegative",
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    valuation_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    total_market_value: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    priced_market_value: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0")
+    )
+    total_cost_basis: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cash_value: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    valuation_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="complete"
+    )
+    priced_asset_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unpriced_asset_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unpriced_assets: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    data_as_of_earliest: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    data_as_of_latest: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    max_staleness_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coverage_ratio: Mapped[Decimal] = mapped_column(
+        WEIGHT_NUMERIC, nullable=False, default=Decimal("1")
+    )
+    data_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sync_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    history_completeness: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="complete"
+    )
+    cash_balances: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    warnings: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
+class PositionSnapshot(UUIDTimestampMixin, Base):
+    __tablename__ = "position_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "valuation_snapshot_id",
+            "security_id",
+            name="uq_position_snapshots_valuation_security",
+        ),
+    )
+
+    valuation_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "portfolio_valuation_snapshots.id",
+            name="fk_position_snapshots_valuation_id_portfolio_valuations",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    security_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    quantity: Mapped[Decimal] = mapped_column(QUANTITY_NUMERIC, nullable=False)
+    average_cost: Mapped[Decimal | None] = mapped_column(PRICE_NUMERIC, nullable=True)
+    price_bar_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("price_bars.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    fx_rate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("fx_rates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    native_price: Mapped[Decimal | None] = mapped_column(PRICE_NUMERIC, nullable=True)
+    native_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    valuation_fx_rate: Mapped[Decimal] = mapped_column(RATE_NUMERIC, nullable=False)
+    market_value_base: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    cost_basis_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    unrealized_pnl_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cost_basis_native: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    cost_basis_base_at_trade: Mapped[Decimal | None] = mapped_column(
+        MONEY_NUMERIC, nullable=True
+    )
+    local_price_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    fx_pnl: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    total_pnl_base: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    weight: Mapped[Decimal | None] = mapped_column(WEIGHT_NUMERIC, nullable=True)
+    base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    snapshot_data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )

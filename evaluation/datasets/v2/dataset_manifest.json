@@ -1,0 +1,125 @@
+{
+  "case_count": 60,
+  "category_distribution": {
+    "cross_document_conflict": 4,
+    "geography_currency": 5,
+    "holding_concentration": 8,
+    "insufficient_evidence_refusal": 5,
+    "liquidity_cash_drag": 5,
+    "multi_asset_risk": 5,
+    "permission_isolation": 4,
+    "public_research_qa": 8,
+    "sector_concentration": 6,
+    "stale_evidence": 4,
+    "volatility_drawdown": 6
+  },
+  "checksum": {
+    "algorithm": "sha256",
+    "dataset_digest": "d78e92d3dc07294f9ab6043409454d5fd4124f6ecf3d4198c1d16981512cffe4",
+    "files": {
+      "documents.jsonl": "453358da2e9580a2135edc27317c1f197838c6ebf6ec07416f5baf845f29627e",
+      "generation_cases.jsonl": "de0d42b44e138fb9449cf70404d1a5b389bf4f79edfda5e50c5c0fa1ceadfad9",
+      "human_labels.jsonl": "43d3316f697f5bcfdfcf9f923308c1a6bcbd80e2c81bbe27b993756ad86a6460",
+      "portfolios.jsonl": "29baa6202dfb5f03decb519f863ccb3740ad0cb0ed11ff169e9e3d6e09e2801b",
+      "retrieval_queries.jsonl": "11b53ca6ef4bce68618735caa782449299064a37bfbb80b828457bd1845b7028",
+      "workflow_cases.jsonl": "125d71715a2c656843a0bec799b90dce547f2a720a72e32ac41ff510efa270c8"
+    },
+    "scope": "all JSONL files listed in checksum.files; manifest excluded"
+  },
+  "created_at": "2026-08-20T00:00:00Z",
+  "data_cutoff": "2025-12-31",
+  "dataset_name": "portfoliopilot_financial_research_eval_v2",
+  "document_count": 18,
+  "human_review_status": {
+    "approved_case_count": 0,
+    "pending_case_count": 60,
+    "policy": "Only labels with review_status=approved, a reviewer_id and reviewed_at may enter human_gold_eval. Automated generation cannot approve labels.",
+    "status": "pending"
+  },
+  "license_notes": "Project-authored fixtures follow the repository license. Public source documents remain governed by their publishers; this dataset stores links, metadata and short project-authored paraphrases rather than source copies.",
+  "portfolio_count": 12,
+  "public_sources": [
+    {
+      "content_origin": "project_authored_paraphrase",
+      "document_id": "doc-public-aapl-2024-10k",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2024-11-01",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
+    },
+    {
+      "content_origin": "project_authored_paraphrase",
+      "document_id": "doc-public-nvda-2025-10k",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-02-26",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000023/nvda-20250126.htm"
+    },
+    {
+      "content_origin": "project_authored_paraphrase",
+      "document_id": "doc-public-msft-2025-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-07-30",
+      "publisher": "Microsoft Investor Relations",
+      "source_url": "https://www.microsoft.com/investor/reports/ar25/index.html"
+    },
+    {
+      "content_origin": "project_authored_paraphrase",
+      "document_id": "doc-public-maotai-2023-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2024-04-03",
+      "publisher": "上海证券交易所",
+      "source_url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2024-04-03/600519_20240403_W0YD.pdf"
+    },
+    {
+      "content_origin": "project_authored_paraphrase",
+      "document_id": "doc-public-etf-510760-2024-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-03-29",
+      "publisher": "上海证券交易所",
+      "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2025-03-29/510760_20250329_OI9P.pdf"
+    }
+  ],
+  "source_policy": {
+    "allowed": [
+      "official public filings",
+      "official fund disclosures",
+      "project-authored synthetic fixtures"
+    ],
+    "forbidden": [
+      "real customer portfolios",
+      "private employer research",
+      "paywalled or unauthorized content"
+    ],
+    "public_document_handling": "Store source metadata and project-authored short paraphrases only; do not redistribute source documents."
+  },
+  "split": {
+    "dev": 12,
+    "test": 12,
+    "train": 36
+  },
+  "synthetic_fields": {
+    "documents.jsonl": [
+      "all synthetic_fixture content",
+      "wording of public_source_paraphrase content"
+    ],
+    "generation_cases.jsonl": [
+      "questions",
+      "expected outputs"
+    ],
+    "portfolios.jsonl": [
+      "all portfolio identities",
+      "positions",
+      "risk_metrics"
+    ],
+    "retrieval_queries.jsonl": [
+      "questions",
+      "expected outputs"
+    ],
+    "workflow_cases.jsonl": [
+      "questions",
+      "expected workflow"
+    ]
+  },
+  "version": "2.0.0"
+}

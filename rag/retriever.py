@@ -13,16 +13,26 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Protocol
+
+from rag.models import PermissionContext
 
 import numpy as np
 
 from config import BASE_DIR, settings
+from app.providers.embeddings import (
+    HashingEmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
+    build_embedding_provider,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
+    model_name: str
+
     def encode(self, texts: list[str]) -> np.ndarray:
         """Encode texts into a 2D float array."""
 
@@ -36,37 +46,17 @@ class DocumentChunk:
     chunk_index: int
 
 
-class HashingEmbedder:
-    """Small deterministic embedding fallback with no external dependency."""
-
-    def __init__(self, dimensions: int = 384):
-        self.dimensions = dimensions
-
-    def encode(self, texts: list[str]) -> np.ndarray:
-        vectors = np.zeros((len(texts), self.dimensions), dtype=np.float32)
-        for row, text in enumerate(texts):
-            tokens = re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
-            for token in tokens:
-                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-                bucket = int.from_bytes(digest[:4], "little") % self.dimensions
-                sign = 1.0 if digest[4] % 2 == 0 else -1.0
-                vectors[row, bucket] += sign
-            norm = np.linalg.norm(vectors[row])
-            if norm > 0:
-                vectors[row] /= norm
-        return vectors
+HashingEmbedder = HashingEmbeddingProvider
 
 
-class SentenceTransformerEmbedder:
+class SentenceTransformerEmbedder(SentenceTransformerEmbeddingProvider):
+    """Compatibility wrapper that applies the configured vector dimension."""
+
     def __init__(self, model_name: str):
-        from sentence_transformers import SentenceTransformer
-
-        self.model = SentenceTransformer(model_name)
-
-    def encode(self, texts: list[str]) -> np.ndarray:
-        return np.asarray(
-            self.model.encode(texts, normalize_embeddings=True),
-            dtype=np.float32,
+        super().__init__(
+            model_name,
+            expected_dimensions=settings.RAG_EMBEDDING_DIMENSION,
+            local_files_only=settings.ENVIRONMENT == "production",
         )
 
 
@@ -93,7 +83,9 @@ class LocalVectorIndex:
 
         if self.faiss_index is not None:
             scores, indices = self.faiss_index.search(query_vec, k)
-            pairs = zip(indices[0].tolist(), scores[0].tolist(), strict=False)
+            pairs: Iterable[tuple[int, float]] = zip(
+                indices[0].tolist(), scores[0].tolist(), strict=False
+            )
         else:
             sims = self.embeddings @ query_vec[0]
             top_indices = np.argsort(sims)[::-1][:k]
@@ -118,33 +110,81 @@ class LocalVectorIndex:
 _INDEX_CACHE: dict[str, tuple[tuple[tuple[str, float, int], ...], LocalVectorIndex]] = {}
 
 
-def retrieve_evidence(query: str, top_k: int = 5, document_dir: str | Path | None = None) -> list[dict]:
-    """Retrieve local evidence chunks for a query.
+def retrieve_evidence(
+    query: str,
+    top_k: int = 5,
+    document_dir: str | Path | None = None,
+    permission_context: PermissionContext | None = None,
+) -> list[dict]:
+    """Retrieve authorized, published and currently effective evidence.
 
-    The function is intentionally safe in empty or partially configured
-    environments: no documents or missing vector libraries simply return [].
+    An explicitly supplied ``document_dir`` keeps the legacy public-directory
+    behavior for local tests/tools. Normal application retrieval uses
+    ``PostgresKnowledgeService``; this function is an explicit offline fallback.
     """
-    root = _resolve_document_dir(document_dir)
-    if not root.exists() or not root.is_dir():
-        return []
+    return retrieve_evidence_with_status(
+        query,
+        top_k=top_k,
+        document_dir=document_dir,
+        permission_context=permission_context,
+    )["citations"]
 
+
+def retrieve_evidence_with_status(
+    query: str,
+    top_k: int = 5,
+    document_dir: str | Path | None = None,
+    permission_context: PermissionContext | None = None,
+    score_threshold: float | None = None,
+) -> dict:
+    """Retrieve evidence plus normalized intent and insufficiency status."""
+    if document_dir is not None:
+        root = _resolve_usable_document_dir(document_dir)
+        if not root.exists() or not root.is_dir():
+            return {"citations": [], "evidence_insufficient": True}
+        try:
+            index = _get_or_build_index(root)
+            citations = index.search(query, top_k=top_k)
+            return {"citations": citations, "evidence_insufficient": not citations}
+        except Exception as exc:
+            logger.warning("Legacy RAG retrieval failed: %s", exc)
+            return {"citations": [], "evidence_insufficient": True}
+
+    # Compatibility-only offline path for local tools and bundled samples.
+    # FastAPI routes and workflow services use PostgresKnowledgeService directly.
+    root = _resolve_usable_document_dir(None)
+    if not root.exists() or not root.is_dir():
+        return {
+            "citations": [],
+            "evidence_insufficient": True,
+            "retrieval_backend": "legacy_local_fallback",
+        }
     try:
-        index = _get_or_build_index(root)
-        return index.search(query, top_k=top_k)
+        citations = _get_or_build_index(root).search(query, top_k=top_k)
+        return {
+            "citations": citations,
+            "evidence_insufficient": not citations,
+            "retrieval_backend": "legacy_local_fallback",
+        }
     except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc)
-        return []
+        logger.warning("Legacy local RAG fallback failed: %s", exc)
+        return {
+            "citations": [],
+            "evidence_insufficient": True,
+            "retrieval_backend": "legacy_local_fallback",
+            "error": str(exc),
+        }
 
 
 def load_documents(document_dir: str | Path | None = None) -> list[dict[str, str]]:
     """Load txt, md and csv documents from a local directory."""
-    root = _resolve_document_dir(document_dir)
+    root = _resolve_usable_document_dir(document_dir)
     if not root.exists() or not root.is_dir():
         return []
 
     docs: list[dict[str, str]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {".txt", ".md", ".csv"}:
+        if not path.is_file() or path.suffix.lower() not in {".txt", ".md", ".csv", ".pdf"}:
             continue
         text = _read_document(path)
         if text.strip():
@@ -204,16 +244,16 @@ def _load_chunks(root: Path) -> list[DocumentChunk]:
 
 
 def _build_embedder() -> Embedder:
-    model_name = getattr(settings, "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-    try:
-        return SentenceTransformerEmbedder(model_name)
-    except Exception as exc:
-        logger.debug("sentence-transformers unavailable, using hashing embedder: %s", exc)
-        return HashingEmbedder()
+    return build_embedding_provider(settings)
 
 
 def _read_document(path: Path) -> str:
     try:
+        if path.suffix.lower() == ".pdf":
+            from rag.parsers import parse_document
+
+            _, blocks, _ = parse_document(path.read_bytes(), path.name, path.stem)
+            return "\n\n".join(block.text for block in blocks)
         if path.suffix.lower() == ".csv":
             return _read_csv_document(path)
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -241,15 +281,37 @@ def _read_csv_document(path: Path) -> str:
 def _directory_signature(root: Path) -> tuple[tuple[str, float, int], ...]:
     items = []
     for path in sorted(root.rglob("*")):
-        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv"}:
+        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv", ".pdf"}:
             stat = path.stat()
             items.append((str(path), math.floor(stat.st_mtime), stat.st_size))
     return tuple(items)
 
 
 def _resolve_document_dir(document_dir: str | Path | None) -> Path:
-    value = document_dir or getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents")
+    value: str | Path = document_dir or str(
+        getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents")
+    )
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
+
+def _resolve_usable_document_dir(document_dir: str | Path | None) -> Path:
+    root = _resolve_document_dir(document_dir)
+    configured = str(getattr(settings, "RAG_DOCUMENT_DIR", "rag_documents") or "").strip()
+    uses_default_dir = document_dir is None and configured in {"", "rag_documents"}
+    if uses_default_dir and not _has_supported_documents(root):
+        demo_docs = BASE_DIR / "data" / "research_docs"
+        if _has_supported_documents(demo_docs):
+            return demo_docs
+    return root
+
+
+def _has_supported_documents(root: Path) -> bool:
+    if not root.exists() or not root.is_dir():
+        return False
+    return any(
+        path.is_file() and path.suffix.lower() in {".txt", ".md", ".csv", ".pdf"}
+        for path in root.rglob("*")
+    )

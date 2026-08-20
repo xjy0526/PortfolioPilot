@@ -18,6 +18,7 @@ from typing import Optional
 
 from config import settings
 from services.display_currency import format_display_money
+from time_utils import display_now
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ async def _cmd_news(chat_id: str):
     if not settings.gemini_configured:
         await send_message(
             "⚠️ Gemini API-Key nicht konfiguriert.\n"
-            "Bitte GEMINI_API_KEY in .env setzen.",
+            "Bitte QWEN_API_KEY in .env setzen.",
             chat_id=chat_id,
         )
         return
@@ -353,7 +354,7 @@ async def _cmd_news(chat_id: str):
 
     # Gemini 2.5 Pro Anfrage
     try:
-        from services.vertex_ai import get_client, get_grounded_config, get_cached_content
+        from services.llm.compat import get_client, get_grounded_config, get_cached_content
 
         client = get_client()
 
@@ -377,7 +378,7 @@ async def _cmd_news(chat_id: str):
         prompt_parts.append(
             "Halte dich prägnant (max 2000 Zeichen). Nutze Emojis für Übersichtlichkeit. "
             "Kein Markdown, nur Plain Text. Datum heute: "
-            + __import__("datetime").datetime.now().strftime("%d.%m.%Y")
+            + display_now().strftime("%d.%m.%Y")
         )
 
         prompt = "".join(prompt_parts)
@@ -612,7 +613,7 @@ async def _cmd_chat(chat_id: str, question: str):
         return
 
     try:
-        from services.vertex_ai import get_client, get_grounded_config, get_cached_content
+        from services.llm.compat import get_client, get_grounded_config, get_cached_content
 
         client = get_client()
         portfolio_context = _get_portfolio_context()
@@ -717,7 +718,7 @@ async def _cmd_risk(chat_id: str, scenario: Optional[str] = None):
     await send_message(f"🛡️ Analysiere Szenario: *{scenario_key.title()}*... (dauert ~15s)", chat_id=chat_id)
 
     try:
-        from services.vertex_ai import get_client, get_grounded_config
+        from services.llm.compat import get_client, get_grounded_config
 
         client = get_client()
         portfolio_context = _get_portfolio_context()
@@ -831,7 +832,7 @@ async def _cmd_wissen_quiz(chat_id: str):
 
     try:
         from services.knowledge_data import get_all_technologies, PROJECT_KNOWLEDGE
-        from services.vertex_ai import get_client
+        from services.llm.compat import get_client
 
         client = get_client()
         techs = get_all_technologies()
@@ -894,7 +895,7 @@ async def _handle_voice_memo(chat_id: str, voice: dict, caption: str = ""):
     if not settings.gemini_configured:
         await send_message(
             "🎙️ Sprachnachrichten benötigen Gemini API.\n"
-            "Bitte GEMINI_API_KEY in .env setzen.",
+            "Bitte QWEN_API_KEY in .env setzen.",
             chat_id=chat_id,
         )
         return
@@ -950,7 +951,7 @@ async def _process_voice_with_gemini(audio_bytes: bytes, caption: str = "") -> s
     Returns:
         KI-Antwort als Text
     """
-    from services.vertex_ai import Content, Part, get_client, get_grounded_config
+    from services.llm.compat import Content, Part, get_client, get_grounded_config
 
     client = get_client()
 

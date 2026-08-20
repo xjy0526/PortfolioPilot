@@ -98,9 +98,8 @@ async def test_generate_recommendations_falls_back_without_qwen(monkeypatch):
 
     summary = _summary([_stock("AAPL", 82, Rating.BUY)])
     monkeypatch.setitem(portfolio_data, "summary", summary)
+    monkeypatch.setattr(settings, "AI_PROVIDER", "qwen")
     monkeypatch.setattr(settings, "QWEN_API_KEY", "")
-    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
-    monkeypatch.setattr(settings, "GCP_PROJECT_ID", "")
 
     report = await generate_holding_recommendations(lang="zh")
 

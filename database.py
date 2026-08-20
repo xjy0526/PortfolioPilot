@@ -14,13 +14,11 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from config import settings
+from time_utils import utc_now
 
 logger = logging.getLogger(__name__)
-
-TZ_BERLIN = ZoneInfo("Europe/Berlin")
 
 DB_PATH = settings.CACHE_DIR / "portfoliopilot.db"
 
@@ -131,6 +129,7 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
     """)
     conn.commit()
     logger.info(f"📦 SQLite-Datenbank initialisiert: {DB_PATH}")
@@ -146,8 +145,9 @@ def save_snapshot(
     eur_usd_rate: float = 1.0,
 ):
     """Speichert einen täglichen Portfolio-Snapshot (UPSERT)."""
-    today = datetime.now(tz=TZ_BERLIN).strftime("%Y-%m-%d")
-    ts = datetime.now(tz=TZ_BERLIN).isoformat()
+    now = utc_now()
+    today = now.date().isoformat()
+    ts = now.isoformat()
 
     conn = _get_conn()
     conn.execute(
@@ -171,7 +171,7 @@ def load_snapshots(days: int = 90) -> list[dict]:
     """Lädt historische Portfolio-Snapshots."""
     conn = _get_conn()
     if days > 0:
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        cutoff = (utc_now() - timedelta(days=days)).date().isoformat()
         rows = conn.execute(
             "SELECT * FROM portfolio_snapshots WHERE date >= ? ORDER BY date",
             (cutoff,),
@@ -233,7 +233,7 @@ def get_analysis_history(days: int = 30) -> list[dict]:
     [{timestamp, level, portfolio_score, portfolio_rating, scores: {ticker: {score, rating, confidence}}}]
     """
     conn = _get_conn()
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    cutoff = (utc_now() - timedelta(days=days)).isoformat()
 
     reports = conn.execute(
         "SELECT * FROM analysis_reports WHERE timestamp >= ? ORDER BY timestamp",
@@ -269,7 +269,7 @@ def get_analysis_history(days: int = 30) -> list[dict]:
 def get_score_trend(ticker: str, days: int = 7) -> list[dict]:
     """Score-Verlauf für einen einzelnen Ticker."""
     conn = _get_conn()
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    cutoff = (utc_now() - timedelta(days=days)).isoformat()
 
     rows = conn.execute(
         "SELECT timestamp, score, rating FROM score_history WHERE ticker = ? AND timestamp >= ? ORDER BY timestamp",
@@ -348,10 +348,6 @@ def migrate_json_to_sqlite():
     return migrated
 
 
-# Automatisch Tabellen erstellen beim Import
-init_db()
-
-
 # ─── Shadow Portfolio Agent ─────────────────────────────────
 
 def shadow_get_meta(key: str, default: str = "") -> str:
@@ -402,7 +398,7 @@ def shadow_upsert_position(
 ):
     """Erstellt oder aktualisiert eine Shadow-Position."""
     conn = _get_conn()
-    now = datetime.now(tz=TZ_BERLIN).isoformat()
+    now = utc_now().isoformat()
     conn.execute(
         """INSERT INTO shadow_portfolio (ticker, name, shares, avg_cost_eur, current_price_eur, sector, first_bought, last_updated)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -438,7 +434,7 @@ def shadow_add_transaction(
 ):
     """Speichert eine Shadow-Transaktion."""
     conn = _get_conn()
-    ts = datetime.now(tz=TZ_BERLIN).isoformat()
+    ts = utc_now().isoformat()
     conn.execute(
         """INSERT INTO shadow_transactions
            (timestamp, action, ticker, name, shares, price_eur, total_eur, reason, score, confidence)
@@ -469,8 +465,9 @@ def shadow_save_performance(
     real_portfolio_value: float = 0,
 ):
     """Speichert einen täglichen Shadow-Performance-Snapshot."""
-    today = datetime.now(tz=TZ_BERLIN).strftime("%Y-%m-%d")
-    ts = datetime.now(tz=TZ_BERLIN).isoformat()
+    now = utc_now()
+    today = now.date().isoformat()
+    ts = now.isoformat()
     conn = _get_conn()
     conn.execute(
         """INSERT INTO shadow_performance
@@ -495,7 +492,7 @@ def shadow_get_performance(days: int = 90) -> list[dict]:
     """Gibt die Shadow-Performance-Historie zurück."""
     conn = _get_conn()
     if days > 0:
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        cutoff = (utc_now() - timedelta(days=days)).date().isoformat()
         rows = conn.execute(
             "SELECT * FROM shadow_performance WHERE date >= ? ORDER BY date",
             (cutoff,),
@@ -515,7 +512,7 @@ def shadow_add_decision_log(
 ):
     """Speichert einen Agent-Zyklusbericht."""
     conn = _get_conn()
-    ts = datetime.now(tz=TZ_BERLIN).isoformat()
+    ts = utc_now().isoformat()
     conn.execute(
         """INSERT INTO shadow_decision_log
            (timestamp, cycle_summary, trades_executed, candidates_evaluated, ai_reasoning, total_value_eur, cash_eur)
