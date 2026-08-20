@@ -48,8 +48,13 @@ class TransactionLedgerService:
         return stored, created
 
     async def rebuild(
-        self, portfolio_id: uuid.UUID, *, as_of: datetime
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        as_of: datetime,
+        knowledge_as_of: datetime | None = None,
     ) -> PositionRebuildResult:
+        knowledge_cutoff = _as_utc(knowledge_as_of or as_of)
         portfolio = await self.portfolios.get(portfolio_id)
         if portfolio is None:
             raise ValueError("portfolio not found")
@@ -66,7 +71,7 @@ class TransactionLedgerService:
         base_costs, missing_fx = await self._historical_base_costs(
             transactions,
             base_currency=portfolio.base_currency,
-            knowledge_as_of=as_of,
+            knowledge_as_of=knowledge_cutoff,
         )
         positions = tuple(
             replace(

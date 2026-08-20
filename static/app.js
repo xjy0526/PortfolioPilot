@@ -4064,12 +4064,24 @@ async function importCsvPortfolio() {
             body: JSON.stringify({ positions: csvParsedData })
         });
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const result = await res.json();
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(t('csvSuccess'), 'success');
+        const persisted = Number(result.persisted_rows || 0);
+        const duplicates = Number(result.duplicate_rows || 0);
+        const rejected = Number(result.rejected_rows || 0);
+        const snapshotStatus = result.valuation_snapshot?.valuation_status || 'unknown';
+        const summary = isZh()
+            ? `已写入 ${persisted} 条，重复 ${duplicates} 条，拒绝 ${rejected} 条；估值 ${snapshotStatus}`
+            : `Persisted ${persisted}, duplicates ${duplicates}, rejected ${rejected}; valuation ${snapshotStatus}`;
+        showToast(`${t('csvSuccess')}: ${summary}`, rejected ? 'warning' : 'success');
         closeCsvUpload();
-        loadPortfolio();
+        await loadPortfolio();
     } catch (err) {
         showToast(t('csvError') + ': ' + err.message, 'error');
     } finally {

@@ -128,6 +128,8 @@ market_value_base = native_market_value * valuation_fx_rate
 
 每个 FastAPI 请求使用独立 `AsyncSession`。每次 Worker 调用也创建自己的 Session，不跨并发任务共享。Worker 使用 PostgreSQL advisory transaction lock 防止同类同步并发执行，并在 `sync_runs` 中记录 started/completed/failed、计数、重试、错误摘要、代码版本与 data cutoff。
 
+日流水线区分两个时间边界：任务开始时只冻结一次 `valuation_as_of`，用于交易账本和估值日期；行情同步成功后再冻结一次统一 `knowledge_cutoff`，用于所有资产的行情/FX `data_as_of` 可见性判断。估值不会逐资产调用当前时间。本次同步晚于任务开始但不晚于该 cutoff 的数据可被使用，cutoff 之后的数据不可见。部分 Provider 失败的成功源、失败源和降级状态写入 run 与 snapshot lineage；全部失败时 run 的 `data_as_of` 保持 `null`，并停止后续估值。
+
 ```bash
 python -m app.workers.run_market_sync
 python -m app.workers.run_position_rebuild

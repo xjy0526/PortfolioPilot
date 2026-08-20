@@ -267,6 +267,8 @@ external_id,transaction_type,ticker,exchange,trade_date,settlement_date,quantity
 
 `quantity`、本金、费用和税均使用非负绝对值，方向由 `transaction_type` 决定。证券买卖的本金由 `quantity * price` 计算；现金类流水在当前 CSV 合同中使用 `quantity` 表示现金绝对金额。重复文件按 SHA256 返回 `idempotent_replay=true`，错误行可通过响应中的 `error_report_url` 下载。
 
+响应中的 `accepted_rows` 与 `persisted_rows` 只统计当前事务实际提交的新交易，`duplicate_rows` 统计文件重放或幂等键冲突，`rejected_rows` 统计校验失败；`inserted_rows` 暂时保留为 `persisted_rows` 的兼容别名。无 `external_id` 的行使用文件 SHA256 与 CSV 行号形成稳定幂等标识：同一文件中的相同行是两笔独立交易，同一文件重放不会再次写入；上游提供的相同 `external_id` 始终视为同一交易。
+
 旧 `ticker,shares,buy_price,...` 持仓 CSV 仍可上传，但证券只会转换成 `opening_balance`，现金行转换成 opening cash deposit，响应明确返回：
 
 ```json
@@ -296,6 +298,8 @@ python -m app.workers.run_daily_pipeline --portfolio-id <portfolio_id>
 
 `run_daily_pipeline` 是运行完成即退出的一次性批处理，不是常驻 Worker。它为整条流水线创建父级 `sync_run`，使用 PostgreSQL session advisory lock，并按 `UTC 日期 + portfolio scope` 生成唯一 `run_key`；同日重复触发返回 `idempotent_replay=true`，不会再次执行子任务。
 
+流水线先冻结一次 `valuation_as_of` 作为交易账本和估值日期，再执行行情同步；同步成功后生成一个统一的 `knowledge_cutoff` 过滤行情与 FX 的 `data_as_of`。这样，任务启动后但本次 cutoff 之前到达的数据能够进入估值，cutoff 之后的数据仍被排除。部分 Provider 失败会记录成功源、失败源和 `degraded=true`；全部失败时不创建估值，失败 run 的 `data_as_of` 为 `null`。
+
 核心 API：
 
 ```text
@@ -309,7 +313,9 @@ POST /api/portfolios/{id}/rebuild?as_of=
 POST /api/market-data/sync
 ```
 
-估值接口不会使用 `as_of` 之后的交易、行情或 FX。响应包含 snapshot ID、`input_hash`、`data_as_of`、价格/FX ID、warning 和 `history_completeness`。
+估值接口不会使用 `valuation_as_of` 之后的交易或交易日，也不会使用统一 `knowledge_cutoff` 之后才可见的行情或 FX。响应包含 snapshot ID、`input_hash`、实际使用数据的 `data_as_of`、价格/FX ID、warning 和 `history_completeness`。
+
+Dashboard 原有 `POST /api/portfolio/upload-csv` 入口继续兼容，但现在作为 adapter 调用同一 PostgreSQL transaction import、position rebuild 和 valuation 服务，不再更新内存组合。响应会返回 `portfolio_id`、`import_batch_id`、真实导入计数、重建状态和快照状态。CSV 自带 `current_price` 或缺失时使用的成本价回退都会在 snapshot lineage 中标为用户提供/研究演示来源，不会伪装成 Provider 行情。
 
 ## AI Provider 配置
 

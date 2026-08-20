@@ -25,7 +25,7 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 | GET | `/api/sectors` | Sektor-Allokation |
 | GET | `/api/fear-greed` | Fear & Greed Index |
 | GET | `/api/status` | System-Status |
-| POST | `/api/portfolio/csv` | 旧 CSV 兼容入口；新业务应使用 transaction import API |
+| POST | `/api/portfolio/upload-csv` | Dashboard 旧 CSV 上传兼容入口；内部转入 PostgreSQL ledger、持仓重建和估值快照 |
 
 ## PostgreSQL Ledger (`app/api/portfolios.py`)
 
@@ -42,7 +42,9 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 | GET | `/api/portfolios/{portfolio_id}/valuation?as_of=` | 读取不晚于 `as_of` 的最新估值快照 |
 | POST | `/api/portfolios/{portfolio_id}/rebuild?as_of=` | 幂等生成组合与 position valuation snapshots |
 
-导入响应包含 `accepted_rows`、`rejected_rows`、`inserted_rows`、`idempotent_replay` 和 `history_completeness`。旧持仓 CSV 返回 `opening_balance_only`，不会被表示成完整交易历史。
+导入响应包含 `accepted_rows`、`duplicate_rows`、`rejected_rows`、`persisted_rows`、兼容别名 `inserted_rows`、`idempotent_replay` 和 `history_completeness`。`accepted_rows` 与 `persisted_rows` 均只统计当前数据库事务实际提交的新交易；同文件重放和命中 `external_id` 幂等约束的行计入 `duplicate_rows`。没有 `external_id` 时，文件 SHA256 与 CSV 行号共同形成稳定行标识，因此同一文件中的两条相同行会分别保存，而同一文件重放不会重复写入。旧持仓 CSV 返回 `opening_balance_only`，不会被表示成完整交易历史。
+
+Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=ok|failed` 与 `positions_imported`；新增 `import_status`、`portfolio_id`、`import_batch_id`、上述真实计数、`position_rebuild` 和 `valuation_snapshot` 状态。它不再写入 `state.portfolio_data`。CSV 中的 `current_price` 会以 `legacy_csv_user_supplied` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback`，两者都不是权威行情源。
 
 ## Market Data (`app/api/market_data.py`)
 
@@ -50,7 +52,9 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 |---|---|---|
 | POST | `/api/market-data/sync` | 显式运行 Provider 同步并返回 `sync_run`、计数和 data cutoff |
 
-请求可包含 `providers`、`start`、`end` 和 `portfolio_id`。Tushare 缺 Token或 Provider 失败时返回错误并将 run 标记 failed，不创建 mock 行情。
+请求可包含 `providers`、`start`、`end` 和 `portfolio_id`。Tushare 缺 Token 或全部 Provider 失败时返回错误并将 run 标记 failed，不创建 mock 行情；部分失败会保留成功 Provider 的原子结果，并在 `successful_providers`、`failed_providers`、`provider_statuses` 和 `degraded` 中披露。
+
+日任务使用两个可追溯时间：`valuation_as_of` 冻结交易账本和交易日，行情同步成功后再生成唯一 `knowledge_cutoff`，用于过滤 `data_as_of`。因此任务开始后、本次 cutoff 之前写入的行情可以进入估值，晚于 cutoff 的数据仍被排除。失败的同步 run 将 `data_as_of` 保持为 `null`，不会把失败时间伪装成有效数据截止时间。
 
 ## Demo Mode (`routes/demo.py`)
 

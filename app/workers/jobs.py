@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select, text
 
 from app.db.models import Portfolio, SyncRun
 from app.db.session import AsyncSessionFactory
 from app.services.market_data_sync import (
+    MarketDataSyncFailure,
     MarketDataSyncService,
     configured_provider_names,
 )
@@ -51,11 +52,25 @@ async def run_market_sync_job(
                         portfolio_id=portfolio_id,
                     )
                     run = await _require_run(session, run_id)
+                    completed_at = utc_now()
+                    knowledge_cutoff = max(
+                        completed_at,
+                        result.data_as_of_latest or completed_at,
+                    )
+                    result_snapshot = result.as_dict()
+                    result_snapshot.update(
+                        {
+                            "sync_status": (
+                                "completed_with_errors" if result.degraded else "completed"
+                            ),
+                            "knowledge_cutoff": knowledge_cutoff.isoformat(),
+                        }
+                    )
                     run.status = "completed"
                     run.retry_count = attempt
-                    run.completed_at = utc_now()
-                    run.data_as_of = datetime.combine(end_date, time.max, tzinfo=UTC)
-                    run.result_snapshot = result.as_dict()
+                    run.completed_at = completed_at
+                    run.data_as_of = knowledge_cutoff
+                    run.result_snapshot = result_snapshot
                 return run
         except Exception as exc:
             if attempt >= max_retries:
@@ -69,13 +84,20 @@ async def run_position_rebuild_job(
     *,
     portfolio_id: uuid.UUID | None = None,
     as_of: datetime | None = None,
+    knowledge_as_of: datetime | None = None,
+    data_source_context: dict[str, object] | None = None,
     max_retries: int = 1,
 ) -> SyncRun:
     cutoff = _as_utc(as_of or utc_now())
+    knowledge_cutoff = _as_utc(knowledge_as_of or cutoff)
     run_id = await _create_run(
         provider="position_rebuild",
         portfolio_id=portfolio_id,
-        config={"as_of": cutoff.isoformat()},
+        config={
+            "valuation_as_of": cutoff.isoformat(),
+            "knowledge_as_of": knowledge_cutoff.isoformat(),
+            "data_source_context": dict(data_source_context or {}),
+        },
     )
     for attempt in range(max_retries + 1):
         try:
@@ -92,7 +114,9 @@ async def run_position_rebuild_job(
                         result = await PortfolioValuationService(session).value(
                             portfolio_id=current_id,
                             as_of=cutoff,
+                            knowledge_as_of=knowledge_cutoff,
                             sync_run_id=run_id,
+                            data_source_context=data_source_context,
                         )
                         hashes[str(current_id)] = result.valuation.input_hash
                         position_count += len(result.positions)
@@ -100,11 +124,14 @@ async def run_position_rebuild_job(
                     run.status = "completed"
                     run.retry_count = attempt
                     run.completed_at = utc_now()
-                    run.data_as_of = cutoff
+                    run.data_as_of = knowledge_cutoff
                     run.result_snapshot = {
                         "portfolio_count": len(portfolio_ids),
                         "position_count": position_count,
                         "input_hashes": hashes,
+                        "valuation_as_of": cutoff.isoformat(),
+                        "knowledge_as_of": knowledge_cutoff.isoformat(),
+                        "data_source_context": dict(data_source_context or {}),
                     }
                 return run
         except Exception as exc:
@@ -120,8 +147,8 @@ async def run_daily_pipeline_job(
     portfolio_id: uuid.UUID | None = None,
     as_of: datetime | None = None,
 ) -> dict[str, object]:
-    cutoff = _as_utc(as_of or utc_now())
-    run_key = _daily_pipeline_run_key(cutoff, portfolio_id)
+    valuation_as_of = _as_utc(as_of or utc_now())
+    run_key = _daily_pipeline_run_key(valuation_as_of, portfolio_id)
     lock_key = f"portfoliopilot:{run_key}"
     async with AsyncSessionFactory() as lock_session:
         await _require_session_advisory_lock(lock_session, lock_key)
@@ -129,28 +156,37 @@ async def run_daily_pipeline_job(
             run_id, replay = await _claim_daily_pipeline_run(
                 run_key=run_key,
                 portfolio_id=portfolio_id,
-                cutoff=cutoff,
+                valuation_as_of=valuation_as_of,
             )
             if replay:
                 return await _daily_pipeline_payload(run_id, idempotent_replay=True)
             try:
                 market_run = await run_market_sync_job(
-                    end=cutoff.date(),
+                    end=valuation_as_of.date(),
                     portfolio_id=portfolio_id,
                 )
+                if market_run.status != "completed" or market_run.data_as_of is None:
+                    raise RuntimeError("market sync completed without a valid knowledge cutoff")
+                knowledge_cutoff = _as_utc(market_run.data_as_of)
+                market_context = _market_data_context(market_run)
                 valuation_run = await run_position_rebuild_job(
                     portfolio_id=portfolio_id,
-                    as_of=cutoff,
+                    as_of=valuation_as_of,
+                    knowledge_as_of=knowledge_cutoff,
+                    data_source_context=market_context,
                 )
                 result = {
                     "status": "completed",
                     "daily_pipeline_run_id": str(run_id),
                     "market_sync_run_id": str(market_run.id),
                     "position_rebuild_run_id": str(valuation_run.id),
-                    "as_of": cutoff.isoformat(),
+                    "as_of": valuation_as_of.isoformat(),
+                    "valuation_as_of": valuation_as_of.isoformat(),
+                    "data_as_of": knowledge_cutoff.isoformat(),
+                    "market_data": market_context,
                     "idempotent_replay": False,
                 }
-                await _complete_daily_pipeline_run(run_id, result, cutoff)
+                await _complete_daily_pipeline_run(run_id, result, knowledge_cutoff)
                 return result
             except Exception as exc:
                 await _fail_daily_pipeline_run(run_id, exc)
@@ -163,7 +199,7 @@ async def _claim_daily_pipeline_run(
     *,
     run_key: str,
     portfolio_id: uuid.UUID | None,
-    cutoff: datetime,
+    valuation_as_of: datetime,
 ) -> tuple[uuid.UUID, bool]:
     async with AsyncSessionFactory.begin() as session:
         run = await session.scalar(
@@ -178,10 +214,10 @@ async def _claim_daily_pipeline_run(
                 run_key=run_key,
                 status="started",
                 started_at=utc_now(),
-                data_as_of=cutoff,
+                data_as_of=None,
                 code_version=settings.resolved_code_version,
                 retry_count=0,
-                config_snapshot={"as_of": cutoff.isoformat()},
+                config_snapshot={"valuation_as_of": valuation_as_of.isoformat()},
                 result_snapshot={},
                 error_message="",
             )
@@ -191,10 +227,10 @@ async def _claim_daily_pipeline_run(
         run.status = "started"
         run.started_at = utc_now()
         run.completed_at = None
-        run.data_as_of = cutoff
+        run.data_as_of = None
         run.code_version = settings.resolved_code_version
         run.retry_count += 1
-        run.config_snapshot = {"as_of": cutoff.isoformat()}
+        run.config_snapshot = {"valuation_as_of": valuation_as_of.isoformat()}
         run.result_snapshot = {}
         run.error_message = ""
         return run.id, False
@@ -203,13 +239,13 @@ async def _claim_daily_pipeline_run(
 async def _complete_daily_pipeline_run(
     run_id: uuid.UUID,
     result: dict[str, object],
-    cutoff: datetime,
+    knowledge_cutoff: datetime,
 ) -> None:
     async with AsyncSessionFactory.begin() as session:
         run = await _require_run(session, run_id)
         run.status = "completed"
         run.completed_at = utc_now()
-        run.data_as_of = cutoff
+        run.data_as_of = knowledge_cutoff
         run.result_snapshot = result
         run.error_message = ""
 
@@ -237,6 +273,7 @@ async def _fail_daily_pipeline_run(run_id: uuid.UUID, exc: Exception) -> None:
         run = await _require_run(session, run_id)
         run.status = "failed"
         run.completed_at = utc_now()
+        run.data_as_of = None
         run.error_message = _error_summary(exc)
 
 
@@ -265,6 +302,8 @@ async def _record_retry(run_id: uuid.UUID, exc: Exception, retry_count: int) -> 
         run = await _require_run(session, run_id)
         run.retry_count = retry_count
         run.error_message = _error_summary(exc)
+        run.data_as_of = None
+        run.result_snapshot = _failed_market_sync_snapshot(run, exc)
         await session.commit()
 
 
@@ -274,6 +313,8 @@ async def _fail_run(run_id: uuid.UUID, exc: Exception, retry_count: int) -> None
         run.status = "failed"
         run.retry_count = retry_count
         run.completed_at = utc_now()
+        run.data_as_of = None
+        run.result_snapshot = _failed_market_sync_snapshot(run, exc)
         run.error_message = _error_summary(exc)
         await session.commit()
 
@@ -329,6 +370,37 @@ def _daily_pipeline_run_key(
 ) -> str:
     scope = str(portfolio_id) if portfolio_id is not None else "all"
     return f"daily_pipeline:{scope}:{cutoff.date().isoformat()}"
+
+
+def _market_data_context(run: SyncRun) -> dict[str, object]:
+    snapshot = dict(run.result_snapshot or {})
+    return {
+        "market_sync_run_id": str(run.id),
+        "sync_status": snapshot.get("sync_status", run.status),
+        "successful_sources": list(snapshot.get("successful_providers", [])),
+        "failed_sources": list(snapshot.get("failed_providers", [])),
+        "degraded": bool(snapshot.get("degraded", False)),
+        "provider_statuses": list(snapshot.get("provider_statuses", [])),
+        "source_data_as_of_earliest": snapshot.get("data_as_of_earliest"),
+        "source_data_as_of_latest": snapshot.get("data_as_of_latest"),
+        "knowledge_cutoff": (_as_utc(run.data_as_of).isoformat() if run.data_as_of else None),
+    }
+
+
+def _failed_market_sync_snapshot(run: SyncRun, exc: Exception) -> dict[str, object]:
+    if isinstance(exc, MarketDataSyncFailure):
+        snapshot = exc.result.as_dict()
+    else:
+        providers = list((run.config_snapshot or {}).get("providers", []))
+        snapshot = {
+            "providers": providers,
+            "successful_providers": [],
+            "failed_providers": providers,
+            "degraded": False,
+            "provider_statuses": [],
+        }
+    snapshot.update({"sync_status": "failed", "knowledge_cutoff": None})
+    return snapshot
 
 
 def _error_summary(exc: Exception) -> str:

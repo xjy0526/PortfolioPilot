@@ -42,7 +42,9 @@ class TransactionImportResult:
     status: str
     total_rows: int
     accepted_rows: int
+    duplicate_rows: int
     rejected_rows: int
+    persisted_rows: int
     inserted_rows: int
     idempotent_replay: bool
     history_completeness: str
@@ -54,7 +56,9 @@ class TransactionImportResult:
             "status": self.status,
             "total_rows": self.total_rows,
             "accepted_rows": self.accepted_rows,
+            "duplicate_rows": self.duplicate_rows,
             "rejected_rows": self.rejected_rows,
+            "persisted_rows": self.persisted_rows,
             "inserted_rows": self.inserted_rows,
             "idempotent_replay": self.idempotent_replay,
             "history_completeness": self.history_completeness,
@@ -116,16 +120,16 @@ class TransactionCsvImporter:
             "duplicate",
         }:
             summary = batch.error_summary or {}
-            batch.status = "duplicate"
-            batch.completed_at = utc_now()
-            await self.session.flush()
+            duplicate_rows = batch.total_rows - batch.rejected_rows
             return TransactionImportResult(
                 import_batch_id=batch.id,
                 status="duplicate",
                 total_rows=batch.total_rows,
-                accepted_rows=batch.accepted_rows,
+                accepted_rows=0,
+                duplicate_rows=duplicate_rows,
                 rejected_rows=batch.rejected_rows,
-                inserted_rows=int(summary.get("inserted_rows", 0)),
+                persisted_rows=0,
+                inserted_rows=0,
                 idempotent_replay=True,
                 history_completeness=str(summary.get("history_completeness", "complete")),
                 errors=tuple(summary.get("errors", [])),
@@ -152,7 +156,10 @@ class TransactionCsvImporter:
                     }
                 )
 
-        inserted = 0
+        normalized = [_with_source_identity(row, file_sha256=file_sha256) for row in normalized]
+        persisted = 0
+        duplicates = 0
+        atomic_failure = False
         savepoint = await self.session.begin_nested()
         try:
             for normalized_row in normalized:
@@ -171,6 +178,15 @@ class TransactionCsvImporter:
                     )
                     security_id = security.id
                 transaction_values = {**normalized_row.values, "source": source}
+                raw_value = transaction_values.get("raw_payload")
+                raw_payload = dict(raw_value) if isinstance(raw_value, dict) else {}
+                raw_payload.update(
+                    {
+                        "source_file_sha256": file_sha256,
+                        "source_row_number": normalized_row.line_number,
+                    }
+                )
+                transaction_values["raw_payload"] = raw_payload
                 transaction = Transaction(
                     portfolio_id=portfolio_id,
                     security_id=security_id,
@@ -179,7 +195,8 @@ class TransactionCsvImporter:
                     **transaction_values,
                 )
                 _, was_created = await self.transactions.add_idempotent(transaction)
-                inserted += int(was_created)
+                persisted += int(was_created)
+                duplicates += int(not was_created)
 
             all_transactions = await self.transactions.list_for_portfolio(portfolio_id)
             PositionRebuilder().rebuild(
@@ -195,25 +212,29 @@ class TransactionCsvImporter:
                 else f"Atomic import failed: {type(exc).__name__}"
             )
             errors.append({"line": 0, "error": message, "row": {}})
-            normalized = []
-            inserted = 0
+            atomic_failure = True
+            persisted = 0
+            duplicates = 0
         else:
             await savepoint.commit()
 
         history = _history_completeness(normalized, legacy=legacy)
         batch.total_rows = len(rows)
-        batch.accepted_rows = len(normalized)
-        batch.rejected_rows = len(rows) - len(normalized)
-        if batch.accepted_rows == batch.total_rows and batch.total_rows > 0:
+        batch.accepted_rows = persisted
+        batch.rejected_rows = len(rows) if atomic_failure else len(rows) - len(normalized)
+        if not atomic_failure and batch.rejected_rows == 0 and batch.total_rows > 0:
             batch.status = "completed"
-        elif batch.accepted_rows > 0:
+        elif not atomic_failure and (persisted > 0 or duplicates > 0):
             batch.status = "completed_with_errors"
         else:
             batch.status = "failed"
         batch.completed_at = utc_now()
         batch.error_summary = {
             "errors": errors,
-            "inserted_rows": inserted,
+            "accepted_rows": persisted,
+            "duplicate_rows": duplicates,
+            "persisted_rows": persisted,
+            "inserted_rows": persisted,
             "history_completeness": history,
             "legacy_positions_csv": legacy,
         }
@@ -223,8 +244,10 @@ class TransactionCsvImporter:
             status=batch.status,
             total_rows=batch.total_rows,
             accepted_rows=batch.accepted_rows,
+            duplicate_rows=duplicates,
             rejected_rows=batch.rejected_rows,
-            inserted_rows=inserted,
+            persisted_rows=persisted,
+            inserted_rows=persisted,
             idempotent_replay=False,
             history_completeness=history,
             errors=tuple(errors),
@@ -380,6 +403,26 @@ def _normalized(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return _NormalizedRow(line_number, values, digest, security)
+
+
+def _with_source_identity(
+    row: _NormalizedRow,
+    *,
+    file_sha256: str,
+) -> _NormalizedRow:
+    """Scope row idempotency to a stable file occurrence, not only its values."""
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "canonical_row_hash": row.source_record_hash,
+                "source_file_sha256": file_sha256,
+                "source_row_number": row.line_number,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return _NormalizedRow(row.line_number, row.values, digest, row.security)
 
 
 ZERO = Decimal("0")

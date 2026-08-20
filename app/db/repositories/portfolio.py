@@ -87,6 +87,14 @@ class TransactionRepository(BaseRepository[Transaction]):
         )
         return list((await self.session.scalars(statement)).all())
 
+    async def list_for_import_batch(self, import_batch_id: uuid.UUID) -> list[Transaction]:
+        statement = (
+            select(Transaction)
+            .where(Transaction.import_batch_id == import_batch_id)
+            .order_by(Transaction.occurred_at, Transaction.created_at, Transaction.id)
+        )
+        return list((await self.session.scalars(statement)).all())
+
 
 class PositionSnapshotRepository(BaseRepository[PositionSnapshot]):
     model = PositionSnapshot

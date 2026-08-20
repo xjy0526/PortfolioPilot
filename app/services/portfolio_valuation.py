@@ -68,16 +68,23 @@ class PortfolioValuationService:
         *,
         portfolio_id: uuid.UUID,
         as_of: datetime,
+        knowledge_as_of: datetime | None = None,
         source: str = "ledger_rebuild",
         sync_run_id: uuid.UUID | None = None,
+        data_source_context: dict[str, object] | None = None,
     ) -> ValuationResult:
         cutoff = _as_utc(as_of)
+        knowledge_cutoff = _as_utc(knowledge_as_of or cutoff)
         portfolio = await self.portfolios.get(portfolio_id)
         if portfolio is None:
             raise ValueError("portfolio not found")
-        rebuilt = await self.ledger.rebuild(portfolio_id, as_of=cutoff)
+        rebuilt = await self.ledger.rebuild(
+            portfolio_id,
+            as_of=cutoff,
+            knowledge_as_of=knowledge_cutoff,
+        )
         rows, warnings, lineage_dates, unpriced_assets, fx_lineage = (
-            await self._value_positions(portfolio, rebuilt)
+            await self._value_positions(portfolio, rebuilt, knowledge_cutoff)
         )
         priced_cash_value, cash_complete = await self._value_cash(
             rebuilt,
@@ -86,6 +93,7 @@ class PortfolioValuationService:
             lineage_dates,
             unpriced_assets,
             fx_lineage,
+            knowledge_cutoff,
         )
         priced_market_value = sum((row["market_value_base"] for row in rows), ZERO)
         priced_market_value += priced_cash_value
@@ -140,6 +148,7 @@ class PortfolioValuationService:
             rows=rows,
             unpriced_assets=unpriced_assets,
             cash_fx_lineage=fx_lineage,
+            knowledge_as_of=knowledge_cutoff,
         )
         snapshot_warnings = list(dict.fromkeys([*rebuilt.warnings, *warnings]))
         if not complete_cost:
@@ -183,6 +192,9 @@ class PortfolioValuationService:
                         else None
                     ),
                     "cash_fx_lineage": fx_lineage,
+                    "valuation_as_of": cutoff.isoformat(),
+                    "knowledge_as_of": knowledge_cutoff.isoformat(),
+                    "data_source_context": dict(data_source_context or {}),
                 },
             )
         )
@@ -218,6 +230,7 @@ class PortfolioValuationService:
                         "price_trade_date": row["price_trade_date"],
                         "price_source": row["price_source"],
                         "price_data_as_of": row["price_data_as_of"],
+                        "knowledge_as_of": knowledge_cutoff.isoformat(),
                         "cost_basis_semantics": "historical_trade_date_fx",
                     },
                 )
@@ -232,6 +245,7 @@ class PortfolioValuationService:
         self,
         portfolio: Portfolio,
         rebuilt: PositionRebuildResult,
+        knowledge_as_of: datetime,
     ) -> tuple[
         list[_ValuationRow],
         list[str],
@@ -264,7 +278,7 @@ class PortfolioValuationService:
                 preferred_source=(
                     "tushare" if security.market.upper() == "CN-A" else "yfinance_research"
                 ),
-                knowledge_as_of=rebuilt.as_of,
+                knowledge_as_of=knowledge_as_of,
             )
             if price is None:
                 warnings.append(f"missing_price:{security.canonical_symbol}")
@@ -275,6 +289,7 @@ class PortfolioValuationService:
                 security.currency,
                 portfolio.base_currency,
                 rebuilt.as_of,
+                knowledge_as_of,
                 warnings,
                 fx_lineage,
             )
@@ -282,6 +297,10 @@ class PortfolioValuationService:
                 warnings.append(f"missing_fx:{security.currency}/{portfolio.base_currency}")
                 unpriced.append(_unpriced_security(security, "missing_valuation_fx"))
                 continue
+            if price.source.startswith("legacy_csv_"):
+                warnings.append(
+                    f"non_market_price_source:{security.canonical_symbol}:{price.source}"
+                )
             native_market_value = position.quantity * native_price
             market_value_base = native_market_value * fx_rate
             historical_cost = (
@@ -339,6 +358,7 @@ class PortfolioValuationService:
         lineage_dates: list[tuple[datetime, date]],
         unpriced: list[dict[str, str]],
         fx_lineage: dict[str, object],
+        knowledge_as_of: datetime,
     ) -> tuple[Decimal, bool]:
         total = ZERO
         complete = True
@@ -346,7 +366,12 @@ class PortfolioValuationService:
             if amount == ZERO:
                 continue
             rate, _, rate_date, data_as_of = await self._valuation_fx(
-                currency, base_currency, rebuilt.as_of, warnings, fx_lineage
+                currency,
+                base_currency,
+                rebuilt.as_of,
+                knowledge_as_of,
+                warnings,
+                fx_lineage,
             )
             if rate is None:
                 complete = False
@@ -368,22 +393,29 @@ class PortfolioValuationService:
         self,
         native_currency: str,
         base_currency: str,
-        as_of: datetime,
+        valuation_as_of: datetime,
+        knowledge_as_of: datetime,
         warnings: list[str],
         lineage: dict[str, object],
     ) -> tuple[Decimal | None, uuid.UUID | None, date | None, datetime | None]:
         native = native_currency.upper()
         base = base_currency.upper()
         if native == base:
-            return ONE, None, as_of.date(), None
+            return ONE, None, valuation_as_of.date(), None
         direct = await self.fx_rates.latest_at_or_before(
-            native, base, as_of.date(), knowledge_as_of=as_of
+            native,
+            base,
+            valuation_as_of.date(),
+            knowledge_as_of=knowledge_as_of,
         )
         if direct is not None:
             lineage[f"{native}/{base}"] = _fx_lineage(direct, direct.rate, inverted=False)
             return direct.rate, direct.id, direct.rate_date, direct.data_as_of
         inverse = await self.fx_rates.latest_at_or_before(
-            base, native, as_of.date(), knowledge_as_of=as_of
+            base,
+            native,
+            valuation_as_of.date(),
+            knowledge_as_of=knowledge_as_of,
         )
         if inverse is not None and inverse.rate > ZERO:
             warnings.append(f"inverted_fx_rate:{base}/{native}")
@@ -400,6 +432,7 @@ class PortfolioValuationService:
         rows: list[_ValuationRow],
         unpriced_assets: list[dict[str, str]],
         cash_fx_lineage: dict[str, object],
+        knowledge_as_of: datetime,
     ) -> str:
         transactions = await self.ledger.list_transactions(
             portfolio.id, as_of=rebuilt.as_of
@@ -411,6 +444,7 @@ class PortfolioValuationService:
                 "cost_basis_method": portfolio.cost_basis_method,
             },
             "as_of": rebuilt.as_of.isoformat(),
+            "knowledge_as_of": knowledge_as_of.isoformat(),
             "transactions": [
                 {
                     "id": str(item.id),

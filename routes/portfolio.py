@@ -12,8 +12,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session
-from app.core.principal import Principal, get_principal
+from app.core.principal import Principal, get_principal, require_writable
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
+from app.services.legacy_csv_import import LegacyCsvPortfolioImportService
 from app.db.models import Security
 from app.db.repositories import PortfolioValuationRepository, TransactionRepository
 from state import portfolio_data
@@ -429,51 +430,53 @@ async def delete_csv_position_route(ticker: str):
 
 
 @router.post("/api/portfolio/upload-csv")
-async def upload_csv_portfolio(data: dict):
-    """Import portfolio from CSV data uploaded by the frontend.
+async def upload_csv_portfolio(
+    data: dict[str, object],
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Compatibility endpoint backed by the PostgreSQL transaction ledger.
 
     Expects JSON body: {"positions": [{"ticker": "AAPL", "shares": 10, "buy_price": 150, ...}, ...]}
     """
-    from fetchers.csv_reader import parse_csv_json, csv_positions_to_portfolio_format, save_csv_positions
-    from services.portfolio_builder import build_portfolio_from_csv
-
+    require_writable()
+    principal.require_role("operator", "admin", "platform_admin")
     positions_raw = data.get("positions", [])
-    if not positions_raw:
+    if not isinstance(positions_raw, list) or not positions_raw:
         return JSONResponse({"error": "No positions provided"}, status_code=400)
+    positions: list[dict[str, object]] = []
+    for row in positions_raw:
+        if not isinstance(row, dict):
+            return JSONResponse({"error": "Each position must be an object"}, status_code=400)
+        positions.append({str(key): value for key, value in row.items()})
 
-    # Parse and validate
-    positions = parse_csv_json(positions_raw)
-    if not positions:
-        return JSONResponse({"error": "No valid positions found in CSV"}, status_code=400)
-
-    saved_path = save_csv_positions(positions)
-
-    # Fetch live prices + daily changes from yFinance
-    tickers = [
-        p['ticker']
-        for p in positions
-        if p.get("asset_type") != "prediction_market"
-    ]
-    prices = {}
-    daily_changes = {}
+    requested_portfolio = data.get("portfolio_id")
+    portfolio_id = None
+    if requested_portfolio:
+        try:
+            portfolio_id = uuid.UUID(str(requested_portfolio))
+        except ValueError:
+            return JSONResponse({"error": "portfolio_id must be a UUID"}, status_code=400)
     try:
-        from fetchers.yfinance_data import quick_price_update
-        prices, daily_changes = await quick_price_update(tickers)
-    except Exception as e:
-        logger.warning(f"Could not fetch live prices for CSV import: {e}")
+        result = await LegacyCsvPortfolioImportService(session).import_positions(
+            positions=positions,
+            principal=principal,
+            portfolio_id=portfolio_id,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
 
-    # Convert to portfolio format
-    portfolio_positions = csv_positions_to_portfolio_format(positions, prices)
-
-    # Build portfolio summary (same pipeline as Parqet)
-    try:
-        result = await build_portfolio_from_csv(portfolio_positions, daily_changes)
-        return {
-            "status": "ok",
-            "positions_imported": len(portfolio_positions),
-            "saved_to": str(saved_path),
-            **result,
-        }
-    except Exception as e:
-        logger.error(f"CSV import failed: {e}")
-        return JSONResponse({"error": f"Import failed: {str(e)}"}, status_code=500)
+    payload = result.as_dict()
+    logger.info(
+        "Legacy dashboard CSV routed to PostgreSQL ledger",
+        extra={
+            "portfolio_id": payload["portfolio_id"],
+            "import_batch_id": payload["import_batch_id"],
+            "persisted_rows": payload["persisted_rows"],
+            "duplicate_rows": payload["duplicate_rows"],
+            "rejected_rows": payload["rejected_rows"],
+        },
+    )
+    if result.imported.status == "failed":
+        return JSONResponse(payload, status_code=422)
+    return payload

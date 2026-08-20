@@ -1,6 +1,7 @@
 """PostgreSQL ledger, import, FX, valuation, and compatibility integration tests."""
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from io import BytesIO
@@ -268,13 +269,153 @@ async def test_distinct_files_with_duplicate_external_id_do_not_duplicate_transa
 
                 assert first.inserted_rows == 1
                 assert duplicate_record.idempotent_replay is False
-                assert duplicate_record.accepted_rows == 1
+                assert duplicate_record.accepted_rows == 0
+                assert duplicate_record.duplicate_rows == 1
+                assert duplicate_record.persisted_rows == 0
                 assert duplicate_record.inserted_rows == 0
                 assert len(rows) == 1
                 assert rows[0].external_id == "broker-001"
 
             await session.delete(user)
             await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_import_counts_preserve_identical_rows_and_distinguish_file_identity() -> None:
+    engine, factory = await _factory()
+    suffix = uuid.uuid4().hex
+    ticker = f"DUP{suffix[:8].upper()}"
+    try:
+        async with factory() as session:
+            async with session.begin():
+                user, portfolio = await _identity(session, base_currency="USD")
+                header = (
+                    b"external_id,transaction_type,ticker,exchange,trade_date,"
+                    b"settlement_date,quantity,price,fees,taxes,currency,note"
+                )
+                identical = (
+                    f",opening_balance,{ticker},NASDAQ,2026-01-02,,1,100,0,0,USD,lot"
+                ).encode()
+                two_rows = b"\n".join([header, identical, identical])
+                importer = TransactionCsvImporter(session)
+
+                first = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="two-identical-rows.csv",
+                    content=two_rows,
+                )
+                first_rows = await TransactionLedgerService(session).list_transactions(portfolio.id)
+                replay = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="renamed-copy.csv",
+                    content=two_rows,
+                )
+                distinct_file = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="same-transaction-new-file.csv",
+                    content=b"\n".join([header, identical]) + b"\n\n",
+                )
+
+                external_first = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="external-first.csv",
+                    content=b"\n".join(
+                        [
+                            header,
+                            (
+                                f"broker-{suffix},opening_balance,{ticker},NASDAQ,"
+                                "2026-01-03,,1,100,0,0,USD,external"
+                            ).encode(),
+                        ]
+                    ),
+                )
+                external_duplicate = await importer.import_bytes(
+                    portfolio_id=portfolio.id,
+                    filename="external-second.csv",
+                    content=b"\n".join(
+                        [
+                            header,
+                            (
+                                f"broker-{suffix},opening_balance,{ticker},NASDAQ,"
+                                "2026-01-03,,1,100,0,0,USD,external duplicate"
+                            ).encode(),
+                        ]
+                    ),
+                )
+                stored = await TransactionLedgerService(session).list_transactions(portfolio.id)
+
+                assert first.accepted_rows == first.persisted_rows == first.inserted_rows == 2
+                assert first.duplicate_rows == first.rejected_rows == 0
+                assert len(first_rows) == 2
+                assert len({row.source_record_hash for row in first_rows}) == 2
+                assert replay.idempotent_replay is True
+                assert replay.accepted_rows == replay.persisted_rows == 0
+                assert replay.duplicate_rows == 2
+                assert replay.rejected_rows == 0
+                assert distinct_file.accepted_rows == distinct_file.persisted_rows == 1
+                assert distinct_file.duplicate_rows == 0
+                assert external_first.persisted_rows == 1
+                assert external_duplicate.persisted_rows == 0
+                assert external_duplicate.duplicate_rows == 1
+                assert external_duplicate.accepted_rows == 0
+                assert len(stored) == 4
+                assert (
+                    first.accepted_rows + first.duplicate_rows + first.rejected_rows
+                    == first.total_rows
+                )
+
+            await session.delete(user)
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_file_import_commits_once_with_truthful_counts() -> None:
+    engine, factory = await _factory()
+    suffix = uuid.uuid4().hex
+    ticker = f"RACE{suffix[:7].upper()}"
+    async with factory() as setup:
+        async with setup.begin():
+            user, portfolio = await _identity(setup, base_currency="USD")
+            user_id = user.id
+            portfolio_id = portfolio.id
+    header = (
+        b"external_id,transaction_type,ticker,exchange,trade_date,settlement_date,"
+        b"quantity,price,fees,taxes,currency,note"
+    )
+    row = f",opening_balance,{ticker},NASDAQ,2026-01-02,,1,100,0,0,USD,lot".encode()
+    content = b"\n".join([header, row, row])
+
+    async def run_import():
+        async with factory() as session:
+            async with session.begin():
+                return await TransactionCsvImporter(session).import_bytes(
+                    portfolio_id=portfolio_id,
+                    filename="concurrent.csv",
+                    content=content,
+                )
+
+    try:
+        first, second = await asyncio.gather(run_import(), run_import())
+        async with factory() as session:
+            stored = await TransactionLedgerService(session).list_transactions(portfolio_id)
+            security_ids = {row.security_id for row in stored if row.security_id is not None}
+        assert sorted([first.persisted_rows, second.persisted_rows]) == [0, 2]
+        assert sorted([first.duplicate_rows, second.duplicate_rows]) == [0, 2]
+        assert sum(result.accepted_rows for result in (first, second)) == 2
+        assert len(stored) == 2
+
+        async with factory.begin() as cleanup:
+            user = await cleanup.get(User, user_id)
+            assert user is not None
+            await cleanup.delete(user)
+            for security_id in security_ids:
+                security = await cleanup.get(Security, security_id)
+                if security is not None:
+                    await cleanup.delete(security)
     finally:
         await engine.dispose()
 
