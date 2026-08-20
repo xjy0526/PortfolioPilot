@@ -4117,8 +4117,8 @@ async function loadManagedHoldings() {
 
     try {
         const res = await fetch('/api/portfolio/csv-positions');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
         managedHoldings = data.positions || [];
         renderManagedHoldings();
     } catch (err) {
@@ -4132,7 +4132,7 @@ function renderManagedHoldings() {
     if (!body) return;
 
     if (!managedHoldings.length) {
-        body.innerHTML = `<tr><td colspan="7">${isZh() ? '还没有本地持仓，先新增一条。' : 'No local holdings yet. Add one above.'}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="7">${isZh() ? '当前持仓快照为空，先新增一条。' : 'The current holdings snapshot is empty. Add one above.'}</td></tr>`;
         return;
     }
 
@@ -4218,9 +4218,14 @@ async function saveManagedPosition(event) {
             body: JSON.stringify({ position: payload }),
         });
         const result = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(isZh() ? '持仓已保存' : 'Holding saved', 'success');
+        showToast(formatManagedSnapshotResult(result, isZh() ? '持仓已保存' : 'Holding saved'), 'success');
         resetHoldingForm();
         await loadManagedHoldings();
         loadPortfolio();
@@ -4242,15 +4247,31 @@ async function deleteManagedHolding(encodedTicker) {
             method: 'DELETE',
         });
         const result = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+        if (!res.ok || result.status === 'failed') {
+            const rowError = Array.isArray(result.errors) && result.errors.length
+                ? result.errors[0].error
+                : null;
+            throw new Error(result.detail || result.error || rowError || `HTTP ${res.status}`);
+        }
 
-        showToast(isZh() ? '持仓已删除' : 'Holding deleted', 'success');
+        showToast(formatManagedSnapshotResult(result, isZh() ? '持仓已删除' : 'Holding deleted'), 'success');
         resetHoldingForm();
         await loadManagedHoldings();
         loadPortfolio();
     } catch (err) {
         showToast(`${isZh() ? '删除失败' : 'Delete failed'}: ${err.message}`, 'error');
     }
+}
+
+function formatManagedSnapshotResult(result, label) {
+    const persisted = Number(result.persisted_rows || 0);
+    const duplicates = Number(result.duplicate_rows || 0);
+    const rejected = Number(result.rejected_rows || 0);
+    const generation = result.snapshot_generation?.generation_number ?? '–';
+    const valuation = result.valuation_snapshot?.valuation_status || result.valuation_snapshot?.status || 'unknown';
+    return isZh()
+        ? `${label}：写入 ${persisted}，重复 ${duplicates}，拒绝 ${rejected}；快照代次 ${generation}，估值 ${valuation}`
+        : `${label}: persisted ${persisted}, duplicates ${duplicates}, rejected ${rejected}; generation ${generation}, valuation ${valuation}`;
 }
 
 // ==================== Shadow Portfolio Agent ====================

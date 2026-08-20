@@ -128,9 +128,12 @@ class PortfolioRepository(BaseRepository[Portfolio]):
         tenant_id: str,
         access: str,
         platform_admin: bool = False,
+        for_update: bool = False,
     ) -> Portfolio | None:
         statement = select(Portfolio).where(Portfolio.id == portfolio_id)
         if platform_admin:
+            if for_update:
+                statement = statement.with_for_update(of=Portfolio)
             return await self.session.scalar(statement)
         access_filter = {
             "read": or_(
@@ -153,6 +156,8 @@ class PortfolioRepository(BaseRepository[Portfolio]):
                 PortfolioMembership.user_id == user_id,
             ),
         ).where(Portfolio.tenant_id == tenant_id, access_filter)
+        if for_update:
+            statement = statement.with_for_update(of=Portfolio)
         return await self.session.scalar(statement)
 
 

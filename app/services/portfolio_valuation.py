@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Portfolio, PortfolioValuationSnapshot, PositionSnapshot, Security
 from app.db.repositories import (
     FxRateRepository,
+    LegacySnapshotGenerationRepository,
     PortfolioRepository,
     PortfolioValuationRepository,
     PositionSnapshotRepository,
@@ -61,6 +62,7 @@ class PortfolioValuationService:
         self.position_snapshots = PositionSnapshotRepository(session)
         self.prices = PriceBarRepository(session)
         self.fx_rates = FxRateRepository(session)
+        self.legacy_generations = LegacySnapshotGenerationRepository(session)
         self.ledger = TransactionLedgerService(session)
 
     async def value(
@@ -78,13 +80,40 @@ class PortfolioValuationService:
         portfolio = await self.portfolios.get(portfolio_id)
         if portfolio is None:
             raise ValueError("portfolio not found")
+        active_legacy_generation = await self.legacy_generations.get_active(
+            portfolio.id
+        )
+        source_context = dict(data_source_context or {})
+        if active_legacy_generation is not None:
+            source_context.update(
+                {
+                    "legacy_snapshot_generation_id": str(
+                        active_legacy_generation.id
+                    ),
+                    "legacy_snapshot_generation_number": (
+                        active_legacy_generation.generation_number
+                    ),
+                    "legacy_snapshot_import_batch_id": str(
+                        active_legacy_generation.import_batch_id
+                    ),
+                }
+            )
         rebuilt = await self.ledger.rebuild(
             portfolio_id,
             as_of=cutoff,
             knowledge_as_of=knowledge_cutoff,
         )
         rows, warnings, lineage_dates, unpriced_assets, fx_lineage = (
-            await self._value_positions(portfolio, rebuilt, knowledge_cutoff)
+            await self._value_positions(
+                portfolio,
+                rebuilt,
+                knowledge_cutoff,
+                active_legacy_import_batch_id=(
+                    active_legacy_generation.import_batch_id
+                    if active_legacy_generation is not None
+                    else None
+                ),
+            )
         )
         priced_cash_value, cash_complete = await self._value_cash(
             rebuilt,
@@ -194,7 +223,7 @@ class PortfolioValuationService:
                     "cash_fx_lineage": fx_lineage,
                     "valuation_as_of": cutoff.isoformat(),
                     "knowledge_as_of": knowledge_cutoff.isoformat(),
-                    "data_source_context": dict(data_source_context or {}),
+                    "data_source_context": source_context,
                 },
             )
         )
@@ -246,6 +275,7 @@ class PortfolioValuationService:
         portfolio: Portfolio,
         rebuilt: PositionRebuildResult,
         knowledge_as_of: datetime,
+        active_legacy_import_batch_id: uuid.UUID | None,
     ) -> tuple[
         list[_ValuationRow],
         list[str],
@@ -279,6 +309,7 @@ class PortfolioValuationService:
                     "tushare" if security.market.upper() == "CN-A" else "yfinance_research"
                 ),
                 knowledge_as_of=knowledge_as_of,
+                active_legacy_import_batch_id=active_legacy_import_batch_id,
             )
             if price is None:
                 warnings.append(f"missing_price:{security.canonical_symbol}")

@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "provider_symbols",
     "transactions",
     "import_batches",
+    "legacy_snapshot_generations",
     "price_bars",
     "fx_rates",
     "portfolio_valuation_snapshots",
@@ -96,6 +97,7 @@ def test_jsonb_runtime_and_configuration_snapshots():
         ("provider_symbols", "mapping_metadata"),
         ("transactions", "raw_payload"),
         ("import_batches", "error_summary"),
+        ("legacy_snapshot_generations", "generation_metadata"),
         ("price_bars", "raw_payload"),
         ("fx_rates", "raw_payload"),
         ("position_snapshots", "snapshot_data"),
@@ -149,6 +151,11 @@ def test_required_idempotency_constraints_are_present():
     assert "uq_price_bars_security_id_trade_date_source" in price_constraints
     assert "uq_transactions_external_id_not_null" in transaction_indexes
     assert "uq_transactions_source_record_hash_not_null" in transaction_indexes
+    generation_indexes = {
+        index.name
+        for index in Base.metadata.tables["legacy_snapshot_generations"].indexes
+    }
+    assert "uq_legacy_snapshot_generation_active" in generation_indexes
     workflow_constraints = {
         constraint.name for constraint in Base.metadata.tables["workflow_runs"].constraints
     }

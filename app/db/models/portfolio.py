@@ -6,7 +6,18 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -123,6 +134,75 @@ class ImportBatch(UUIDTimestampMixin, Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LegacySnapshotGeneration(UUIDTimestampMixin, Base):
+    """Auditable activation history for replaceable dashboard holdings snapshots."""
+
+    __tablename__ = "legacy_snapshot_generations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','superseded')",
+            name="generation_status_allowed",
+        ),
+        CheckConstraint(
+            "generation_number > 0",
+            name="generation_number_positive",
+        ),
+        CheckConstraint(
+            "position_count >= 0",
+            name="position_count_nonnegative",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "source",
+            "generation_number",
+            name="uq_legacy_snapshot_generation_number",
+        ),
+        Index(
+            "uq_legacy_snapshot_generation_active",
+            "portfolio_id",
+            "source",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    import_batch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    generation_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "legacy_snapshot_generations.id",
+            name="fk_legacy_snapshot_generations_superseded_by",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+    position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generation_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
 
 
 class PortfolioValuationSnapshot(UUIDTimestampMixin, Base):

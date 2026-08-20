@@ -21,6 +21,7 @@ from app.db.repositories.market import (
 )
 from app.db.repositories.portfolio import (
     ImportBatchRepository,
+    LegacySnapshotGenerationRepository,
     PortfolioValuationRepository,
     PositionSnapshotRepository,
     TransactionRepository,
@@ -32,6 +33,7 @@ __all__ = [
     "FxRateRepository",
     "HealthRepository",
     "ImportBatchRepository",
+    "LegacySnapshotGenerationRepository",
     "LLMTraceRepository",
     "PortfolioRepository",
     "PortfolioMembershipRepository",

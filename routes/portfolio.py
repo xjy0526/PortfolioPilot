@@ -19,8 +19,7 @@ from app.db.models import Security
 from app.db.repositories import PortfolioValuationRepository, TransactionRepository
 from state import portfolio_data
 from config import settings
-from models import PortfolioSummary, SectorAllocation
-from time_utils import utc_now
+from models import SectorAllocation
 
 logger = logging.getLogger(__name__)
 
@@ -338,94 +337,149 @@ def _is_ws_connected() -> bool:
 
 
 @router.get("/api/portfolio/csv-positions")
-async def get_csv_positions():
-    """List positions stored in the local portfolio CSV."""
-    from fetchers.csv_reader import load_saved_csv_positions, resolve_csv_path, resolve_csv_read_path
-
-    write_path = resolve_csv_path()
-    read_path, sample_fallback = resolve_csv_read_path()
-    return {
-        "exists": read_path.exists(),
-        "csv_path": str(read_path),
-        "write_csv_path": str(write_path),
-        "sample_fallback": sample_fallback,
-        "positions": load_saved_csv_positions() if read_path.exists() else [],
-    }
+async def get_csv_positions(
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List the active PostgreSQL-backed dashboard holdings snapshot."""
+    try:
+        return await LegacyCsvPortfolioImportService(session).list_managed_positions(
+            principal=principal,
+            portfolio_id=portfolio_id,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
 
 
 @router.post("/api/portfolio/csv-positions")
-async def create_csv_position(data: dict):
-    """Add or replace a single position in the local portfolio CSV."""
-    from fetchers.csv_reader import resolve_csv_path, upsert_csv_position
-    from services.portfolio_builder import update_saved_csv_portfolio
-
+async def create_csv_position(
+    data: dict[str, object],
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Add or replace one row in the active dashboard holdings snapshot."""
+    require_writable()
+    principal.require_role("operator", "admin", "platform_admin")
     position = data.get("position", data)
+    if not isinstance(position, dict):
+        return JSONResponse({"error": "position must be an object"}, status_code=400)
     try:
-        positions, saved_position, replaced = upsert_csv_position(position)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-
-    result = await update_saved_csv_portfolio()
+        portfolio_id = _payload_portfolio_id(data)
+        result, saved_position, replaced, position_count = (
+            await LegacyCsvPortfolioImportService(session).upsert_position(
+                position=position,
+                principal=principal,
+                portfolio_id=portfolio_id,
+            )
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    payload = result.as_dict()
+    if result.imported.status == "failed":
+        return JSONResponse(payload, status_code=422)
     return {
+        **payload,
         "status": "ok",
         "action": "updated" if replaced else "created",
         "position": saved_position,
-        "positions": len(positions),
-        "csv_path": str(resolve_csv_path()),
-        "portfolio": result,
+        "positions": position_count,
+        "portfolio": _legacy_mutation_portfolio_payload(payload),
     }
 
 
 @router.put("/api/portfolio/csv-positions/{ticker}")
-async def update_csv_position(ticker: str, data: dict):
-    """Update a single position in the local portfolio CSV."""
-    from fetchers.csv_reader import resolve_csv_path, upsert_csv_position
-    from services.portfolio_builder import update_saved_csv_portfolio
-
+async def update_csv_position(
+    ticker: str,
+    data: dict[str, object],
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Update one row by replacing the active dashboard snapshot."""
+    require_writable()
+    principal.require_role("operator", "admin", "platform_admin")
     position = data.get("position", data)
+    if not isinstance(position, dict):
+        return JSONResponse({"error": "position must be an object"}, status_code=400)
     try:
-        positions, saved_position, replaced = upsert_csv_position(
-            position,
-            original_ticker=ticker,
+        requested_portfolio = portfolio_id or _payload_portfolio_id(data)
+        result, saved_position, replaced, position_count = (
+            await LegacyCsvPortfolioImportService(session).upsert_position(
+                position=position,
+                principal=principal,
+                portfolio_id=requested_portfolio,
+                original_ticker=ticker,
+            )
         )
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-
-    result = await update_saved_csv_portfolio()
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    payload = result.as_dict()
+    if result.imported.status == "failed":
+        return JSONResponse(payload, status_code=422)
     return {
+        **payload,
         "status": "ok",
         "action": "updated" if replaced else "created",
         "position": saved_position,
-        "positions": len(positions),
-        "csv_path": str(resolve_csv_path()),
-        "portfolio": result,
+        "positions": position_count,
+        "portfolio": _legacy_mutation_portfolio_payload(payload),
     }
 
 
 @router.delete("/api/portfolio/csv-positions/{ticker}")
-async def delete_csv_position_route(ticker: str):
-    """Delete a single position from the local portfolio CSV."""
-    from fetchers.csv_reader import delete_csv_position, resolve_csv_path
-    from services.portfolio_builder import update_saved_csv_portfolio
-
-    positions, deleted = delete_csv_position(ticker)
+async def delete_csv_position_route(
+    ticker: str,
+    portfolio_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete one row by replacing the active dashboard snapshot."""
+    require_writable()
+    principal.require_role("operator", "admin", "platform_admin")
+    try:
+        result, deleted, position_count = (
+            await LegacyCsvPortfolioImportService(session).delete_position(
+                ticker=ticker,
+                principal=principal,
+                portfolio_id=portfolio_id,
+            )
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
     if not deleted:
         return JSONResponse({"error": f"Position {ticker} not found"}, status_code=404)
-
-    portfolio_result = {"status": "empty"}
-    if positions:
-        portfolio_result = await update_saved_csv_portfolio()
-    else:
-        portfolio_data["summary"] = PortfolioSummary(display_currency="USD")
-        portfolio_data["source"] = "csv"
-        portfolio_data["last_refresh"] = utc_now()
-
+    assert result is not None
+    payload = result.as_dict()
+    if result.imported.status == "failed":
+        return JSONResponse(payload, status_code=422)
     return {
+        **payload,
         "status": "ok",
         "action": "deleted",
-        "positions": len(positions),
-        "csv_path": str(resolve_csv_path()),
-        "portfolio": portfolio_result,
+        "positions": position_count,
+        "portfolio": _legacy_mutation_portfolio_payload(payload),
+    }
+
+
+def _payload_portfolio_id(data: dict[str, object]) -> uuid.UUID | None:
+    requested = data.get("portfolio_id")
+    if requested is None or requested == "":
+        return None
+    try:
+        return uuid.UUID(str(requested))
+    except ValueError as exc:
+        raise ValueError("portfolio_id must be a UUID") from exc
+
+
+def _legacy_mutation_portfolio_payload(
+    payload: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "portfolio_id": payload["portfolio_id"],
+        "snapshot_generation": payload["snapshot_generation"],
+        "position_rebuild": payload["position_rebuild"],
+        "valuation_snapshot": payload["valuation_snapshot"],
     }
 
 
@@ -450,14 +504,8 @@ async def upload_csv_portfolio(
             return JSONResponse({"error": "Each position must be an object"}, status_code=400)
         positions.append({str(key): value for key, value in row.items()})
 
-    requested_portfolio = data.get("portfolio_id")
-    portfolio_id = None
-    if requested_portfolio:
-        try:
-            portfolio_id = uuid.UUID(str(requested_portfolio))
-        except ValueError:
-            return JSONResponse({"error": "portfolio_id must be a UUID"}, status_code=400)
     try:
+        portfolio_id = _payload_portfolio_id(data)
         result = await LegacyCsvPortfolioImportService(session).import_positions(
             positions=positions,
             principal=principal,

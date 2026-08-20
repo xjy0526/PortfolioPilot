@@ -25,7 +25,11 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 | GET | `/api/sectors` | Sektor-Allokation |
 | GET | `/api/fear-greed` | Fear & Greed Index |
 | GET | `/api/status` | System-Status |
-| POST | `/api/portfolio/upload-csv` | Dashboard 旧 CSV 上传兼容入口；内部转入 PostgreSQL ledger、持仓重建和估值快照 |
+| GET | `/api/portfolio/csv-positions` | 读取 active dashboard holdings generation |
+| POST | `/api/portfolio/csv-positions` | 新增/替换一项，并原子替换完整 dashboard snapshot |
+| PUT | `/api/portfolio/csv-positions/{ticker}` | 编辑一项，并原子替换完整 dashboard snapshot |
+| DELETE | `/api/portfolio/csv-positions/{ticker}` | 删除一项，并原子替换完整 dashboard snapshot |
+| POST | `/api/portfolio/upload-csv` | Dashboard 旧 CSV 上传兼容入口；原子替换 active generation、重建持仓和估值 |
 
 ## PostgreSQL Ledger (`app/api/portfolios.py`)
 
@@ -44,7 +48,11 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 
 导入响应包含 `accepted_rows`、`duplicate_rows`、`rejected_rows`、`persisted_rows`、兼容别名 `inserted_rows`、`idempotent_replay` 和 `history_completeness`。`accepted_rows` 与 `persisted_rows` 均只统计当前数据库事务实际提交的新交易；同文件重放和命中 `external_id` 幂等约束的行计入 `duplicate_rows`。没有 `external_id` 时，文件 SHA256 与 CSV 行号共同形成稳定行标识，因此同一文件中的两条相同行会分别保存，而同一文件重放不会重复写入。旧持仓 CSV 返回 `opening_balance_only`，不会被表示成完整交易历史。
 
-Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=ok|failed` 与 `positions_imported`；新增 `import_status`、`portfolio_id`、`import_batch_id`、上述真实计数、`position_rebuild` 和 `valuation_snapshot` 状态。它不再写入 `state.portfolio_data`。CSV 中的 `current_price` 会以 `legacy_csv_user_supplied` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback`，两者都不是权威行情源。
+Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=ok|failed`、`positions_imported`、单项编辑响应等旧字段；新增 `import_status`、`portfolio_id`、`import_batch_id`、`snapshot_generation`、上述真实计数、`position_rebuild` 和 `valuation_snapshot` 状态。生产响应不再返回 `csv_path` 或 `write_csv_path`。
+
+`legacy_dashboard_csv` 表示“当前持仓快照”，不是追加交易历史。新文件、POST、PUT 或 DELETE 都会在组合行锁和同一数据库事务内创建完整 generation：旧 generation 保留审计并标为 `superseded`，只有唯一 `active` generation 进入 `PositionRebuilder`。相同 active snapshot 重放返回 `idempotent_replay=true`，不新增交易或 generation。该切换只作用于 `legacy_dashboard_csv`，不会删除、覆盖或 supersede `standard_csv`、`manual` 等正式交易来源。
+
+CSV 中的 `current_price` 会以带 import batch 后缀的 `legacy_csv_user_supplied:<batch_id>` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback:<batch_id>`。估值只允许读取 active generation 对应 batch 的这类用户价格，两者都不是权威行情源。
 
 ## Market Data (`app/api/market_data.py`)
 

@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.models import FxRate, PriceBar, ProviderSymbol, Security
@@ -182,6 +182,7 @@ class PriceBarRepository(BaseRepository[PriceBar]):
         *,
         preferred_source: str | None = None,
         knowledge_as_of: datetime | None = None,
+        active_legacy_import_batch_id: uuid.UUID | None = None,
     ) -> PriceBar | None:
         statement = (
             select(PriceBar)
@@ -204,6 +205,16 @@ class PriceBarRepository(BaseRepository[PriceBar]):
         )
         if knowledge_as_of is not None:
             statement = statement.where(PriceBar.data_as_of <= knowledge_as_of)
+        if active_legacy_import_batch_id is None:
+            statement = statement.where(PriceBar.source.not_like("legacy_csv_%"))
+        else:
+            statement = statement.where(
+                or_(
+                    PriceBar.source.not_like("legacy_csv_%"),
+                    PriceBar.raw_payload["import_batch_id"].astext
+                    == str(active_legacy_import_batch_id),
+                )
+            )
         return await self.session.scalar(statement)
 
 

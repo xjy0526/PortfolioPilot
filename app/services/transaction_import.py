@@ -90,6 +90,10 @@ class TransactionCsvImporter:
         filename: str,
         content: bytes,
         source: str = "csv_upload",
+        allow_empty: bool = False,
+        legacy_positions: bool | None = None,
+        require_all_rows_valid: bool = False,
+        validate_portfolio_state: bool = True,
     ) -> TransactionImportResult:
         portfolio = await self.portfolios.get(portfolio_id)
         if portfolio is None:
@@ -97,7 +101,11 @@ class TransactionCsvImporter:
         file_sha256 = hashlib.sha256(content).hexdigest()
         safe_filename = PurePath(filename or "transactions.csv").name
         rows = _read_rows(content)
-        legacy = _is_legacy_positions_csv(rows)
+        legacy = (
+            _is_legacy_positions_csv(rows)
+            if legacy_positions is None
+            else legacy_positions
+        )
         batch, created = await self.batches.get_or_create(
             ImportBatch(
                 portfolio_id=portfolio_id,
@@ -123,7 +131,7 @@ class TransactionCsvImporter:
             duplicate_rows = batch.total_rows - batch.rejected_rows
             return TransactionImportResult(
                 import_batch_id=batch.id,
-                status="duplicate",
+                status="failed" if batch.status == "failed" else "duplicate",
                 total_rows=batch.total_rows,
                 accepted_rows=0,
                 duplicate_rows=duplicate_rows,
@@ -140,6 +148,8 @@ class TransactionCsvImporter:
 
         normalized: list[_NormalizedRow] = []
         errors: list[dict[str, object]] = []
+        if not rows and not allow_empty:
+            errors.append({"line": 0, "error": "CSV contains no data rows", "row": {}})
         for line_number, csv_row in enumerate(rows, start=2):
             try:
                 normalized.append(
@@ -159,70 +169,88 @@ class TransactionCsvImporter:
         normalized = [_with_source_identity(row, file_sha256=file_sha256) for row in normalized]
         persisted = 0
         duplicates = 0
-        atomic_failure = False
-        savepoint = await self.session.begin_nested()
-        try:
-            for normalized_row in normalized:
-                security_id = None
-                if normalized_row.security is not None:
-                    security_input = normalized_row.security
-                    security = await self.security_master.resolve_or_create(
-                        ticker=security_input["ticker"],
-                        exchange=security_input["exchange"],
-                        currency=security_input["currency"],
-                        market=security_input.get("market", ""),
-                        country=security_input.get("country", ""),
-                        name=security_input.get("name", ""),
-                        asset_type=security_input.get("asset_type", "equity"),
-                        sector=security_input.get("sector", "Unknown"),
+        atomic_failure = (not rows and not allow_empty) or (
+            require_all_rows_valid and bool(errors)
+        )
+        if require_all_rows_valid and errors and rows:
+            errors.append(
+                {
+                    "line": 0,
+                    "error": "Snapshot replacement requires every row to be valid",
+                    "row": {},
+                }
+            )
+        if not atomic_failure:
+            savepoint = await self.session.begin_nested()
+            try:
+                for normalized_row in normalized:
+                    security_id = None
+                    if normalized_row.security is not None:
+                        security_input = normalized_row.security
+                        security = await self.security_master.resolve_or_create(
+                            ticker=security_input["ticker"],
+                            exchange=security_input["exchange"],
+                            currency=security_input["currency"],
+                            market=security_input.get("market", ""),
+                            country=security_input.get("country", ""),
+                            name=security_input.get("name", ""),
+                            asset_type=security_input.get("asset_type", "equity"),
+                            sector=security_input.get("sector", "Unknown"),
+                        )
+                        security_id = security.id
+                    transaction_values = {**normalized_row.values, "source": source}
+                    raw_value = transaction_values.get("raw_payload")
+                    raw_payload = dict(raw_value) if isinstance(raw_value, dict) else {}
+                    raw_payload.update(
+                        {
+                            "source_file_sha256": file_sha256,
+                            "source_row_number": normalized_row.line_number,
+                        }
                     )
-                    security_id = security.id
-                transaction_values = {**normalized_row.values, "source": source}
-                raw_value = transaction_values.get("raw_payload")
-                raw_payload = dict(raw_value) if isinstance(raw_value, dict) else {}
-                raw_payload.update(
-                    {
-                        "source_file_sha256": file_sha256,
-                        "source_row_number": normalized_row.line_number,
-                    }
-                )
-                transaction_values["raw_payload"] = raw_payload
-                transaction = Transaction(
-                    portfolio_id=portfolio_id,
-                    security_id=security_id,
-                    import_batch_id=batch.id,
-                    source_record_hash=normalized_row.source_record_hash,
-                    **transaction_values,
-                )
-                _, was_created = await self.transactions.add_idempotent(transaction)
-                persisted += int(was_created)
-                duplicates += int(not was_created)
+                    transaction_values["raw_payload"] = raw_payload
+                    transaction = Transaction(
+                        portfolio_id=portfolio_id,
+                        security_id=security_id,
+                        import_batch_id=batch.id,
+                        source_record_hash=normalized_row.source_record_hash,
+                        **transaction_values,
+                    )
+                    _, was_created = await self.transactions.add_idempotent(transaction)
+                    persisted += int(was_created)
+                    duplicates += int(not was_created)
 
-            all_transactions = await self.transactions.list_for_portfolio(portfolio_id)
-            PositionRebuilder().rebuild(
-                portfolio_id=portfolio_id,
-                transactions=all_transactions,
-                as_of=datetime.max.replace(tzinfo=UTC),
-            )
-        except Exception as exc:
-            await savepoint.rollback()
-            message = (
-                str(exc)
-                if isinstance(exc, (LedgerValidationError, ValueError))
-                else f"Atomic import failed: {type(exc).__name__}"
-            )
-            errors.append({"line": 0, "error": message, "row": {}})
-            atomic_failure = True
-            persisted = 0
-            duplicates = 0
-        else:
-            await savepoint.commit()
+                if validate_portfolio_state:
+                    all_transactions = (
+                        await self.transactions.list_effective_for_portfolio(portfolio_id)
+                    )
+                    PositionRebuilder().rebuild(
+                        portfolio_id=portfolio_id,
+                        transactions=all_transactions,
+                        as_of=datetime.max.replace(tzinfo=UTC),
+                    )
+            except Exception as exc:
+                await savepoint.rollback()
+                message = (
+                    str(exc)
+                    if isinstance(exc, (LedgerValidationError, ValueError))
+                    else f"Atomic import failed: {type(exc).__name__}"
+                )
+                errors.append({"line": 0, "error": message, "row": {}})
+                atomic_failure = True
+                persisted = 0
+                duplicates = 0
+            else:
+                await savepoint.commit()
 
         history = _history_completeness(normalized, legacy=legacy)
         batch.total_rows = len(rows)
         batch.accepted_rows = persisted
         batch.rejected_rows = len(rows) if atomic_failure else len(rows) - len(normalized)
-        if not atomic_failure and batch.rejected_rows == 0 and batch.total_rows > 0:
+        if (
+            not atomic_failure
+            and batch.rejected_rows == 0
+            and (batch.total_rows > 0 or allow_empty)
+        ):
             batch.status = "completed"
         elif not atomic_failure and (persisted > 0 or duplicates > 0):
             batch.status = "completed_with_errors"

@@ -4,11 +4,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import case, delete, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.models import (
     ImportBatch,
+    LegacySnapshotGeneration,
     PortfolioValuationSnapshot,
     PositionSnapshot,
     Transaction,
@@ -78,6 +79,35 @@ class TransactionRepository(BaseRepository[Transaction]):
         as_of: datetime | None = None,
     ) -> list[Transaction]:
         statement = select(Transaction).where(Transaction.portfolio_id == portfolio_id)
+        if as_of is not None:
+            statement = statement.where(Transaction.occurred_at <= as_of)
+        statement = statement.order_by(
+            Transaction.occurred_at,
+            Transaction.created_at,
+            Transaction.id,
+        )
+        return list((await self.session.scalars(statement)).all())
+
+    async def list_effective_for_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        as_of: datetime | None = None,
+        legacy_snapshot_source: str = "legacy_dashboard_csv",
+    ) -> list[Transaction]:
+        """Return formal ledger rows plus only the active dashboard generation."""
+        active_batch_ids = select(LegacySnapshotGeneration.import_batch_id).where(
+            LegacySnapshotGeneration.portfolio_id == portfolio_id,
+            LegacySnapshotGeneration.source == legacy_snapshot_source,
+            LegacySnapshotGeneration.status == "active",
+        )
+        statement = select(Transaction).where(
+            Transaction.portfolio_id == portfolio_id,
+            or_(
+                Transaction.source != legacy_snapshot_source,
+                Transaction.import_batch_id.in_(active_batch_ids),
+            ),
+        )
         if as_of is not None:
             statement = statement.where(Transaction.occurred_at <= as_of)
         statement = statement.order_by(
@@ -201,6 +231,96 @@ class ImportBatchRepository(BaseRepository[ImportBatch]):
         return existing, False
 
 
+class LegacySnapshotGenerationRepository(BaseRepository[LegacySnapshotGeneration]):
+    model = LegacySnapshotGeneration
+
+    async def get_active(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        source: str = "legacy_dashboard_csv",
+        for_update: bool = False,
+    ) -> LegacySnapshotGeneration | None:
+        statement = select(LegacySnapshotGeneration).where(
+            LegacySnapshotGeneration.portfolio_id == portfolio_id,
+            LegacySnapshotGeneration.source == source,
+            LegacySnapshotGeneration.status == "active",
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
+
+    async def list_for_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        source: str = "legacy_dashboard_csv",
+    ) -> list[LegacySnapshotGeneration]:
+        statement = (
+            select(LegacySnapshotGeneration)
+            .where(
+                LegacySnapshotGeneration.portfolio_id == portfolio_id,
+                LegacySnapshotGeneration.source == source,
+            )
+            .order_by(LegacySnapshotGeneration.generation_number)
+        )
+        return list((await self.session.scalars(statement)).all())
+
+    async def activate(
+        self,
+        *,
+        portfolio_id: uuid.UUID,
+        import_batch_id: uuid.UUID,
+        source: str,
+        activated_at: datetime,
+        position_count: int,
+        generation_metadata: dict[str, object],
+    ) -> tuple[LegacySnapshotGeneration, bool, LegacySnapshotGeneration | None]:
+        active = await self.get_active(
+            portfolio_id,
+            source=source,
+            for_update=True,
+        )
+        if active is not None and active.import_batch_id == import_batch_id:
+            return active, False, None
+
+        next_number = int(
+            await self.session.scalar(
+                select(
+                    func.coalesce(
+                        func.max(LegacySnapshotGeneration.generation_number),
+                        0,
+                    )
+                ).where(
+                    LegacySnapshotGeneration.portfolio_id == portfolio_id,
+                    LegacySnapshotGeneration.source == source,
+                )
+            )
+            or 0
+        ) + 1
+        if active is not None:
+            active.status = "superseded"
+            active.superseded_at = activated_at
+            await self.session.flush()
+
+        generation = LegacySnapshotGeneration(
+            id=uuid.uuid4(),
+            portfolio_id=portfolio_id,
+            import_batch_id=import_batch_id,
+            source=source,
+            generation_number=next_number,
+            status="active",
+            activated_at=activated_at,
+            position_count=position_count,
+            generation_metadata=generation_metadata,
+        )
+        await self.add(generation)
+        if active is not None:
+            active.superseded_by_id = generation.id
+            await self.session.flush()
+        return generation, True, active
+
+
 class PortfolioValuationRepository(BaseRepository[PortfolioValuationSnapshot]):
     model = PortfolioValuationSnapshot
 
@@ -286,6 +406,25 @@ class PortfolioValuationRepository(BaseRepository[PortfolioValuationSnapshot]):
                 PortfolioValuationSnapshot.updated_at.desc(),
             )
         statement = statement.limit(1)
+        return await self.session.scalar(statement)
+
+    async def latest_for_source(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        source: str,
+        as_of: datetime | None = None,
+    ) -> PortfolioValuationSnapshot | None:
+        statement = select(PortfolioValuationSnapshot).where(
+            PortfolioValuationSnapshot.portfolio_id == portfolio_id,
+            PortfolioValuationSnapshot.source == source,
+        )
+        if as_of is not None:
+            statement = statement.where(PortfolioValuationSnapshot.as_of <= as_of)
+        statement = statement.order_by(
+            PortfolioValuationSnapshot.as_of.desc(),
+            PortfolioValuationSnapshot.updated_at.desc(),
+        ).limit(1)
         return await self.session.scalar(statement)
 
     async def list_for_portfolio(

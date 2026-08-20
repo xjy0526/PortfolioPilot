@@ -275,7 +275,7 @@ external_id,transaction_type,ticker,exchange,trade_date,settlement_date,quantity
 {"history_completeness":"opening_balance_only"}
 ```
 
-这类数据只表示缺少完整交易历史的期初状态。
+通过标准交易导入 API 接收的这类数据只表示缺少完整交易历史的期初状态。
 
 ### 行情同步与估值
 
@@ -315,7 +315,9 @@ POST /api/market-data/sync
 
 估值接口不会使用 `valuation_as_of` 之后的交易或交易日，也不会使用统一 `knowledge_cutoff` 之后才可见的行情或 FX。响应包含 snapshot ID、`input_hash`、实际使用数据的 `data_as_of`、价格/FX ID、warning 和 `history_completeness`。
 
-Dashboard 原有 `POST /api/portfolio/upload-csv` 入口继续兼容，但现在作为 adapter 调用同一 PostgreSQL transaction import、position rebuild 和 valuation 服务，不再更新内存组合。响应会返回 `portfolio_id`、`import_batch_id`、真实导入计数、重建状态和快照状态。CSV 自带 `current_price` 或缺失时使用的成本价回退都会在 snapshot lineage 中标为用户提供/研究演示来源，不会伪装成 Provider 行情。
+Dashboard 原有 `POST /api/portfolio/upload-csv` 以及 `GET/POST/PUT/DELETE /api/portfolio/csv-positions` 继续兼容，但现在共同调用 PostgreSQL snapshot replacement 服务，不再写本地持仓 CSV，也不更新 `state.portfolio_data`。Dashboard 持仓被定义为“当前持仓快照”：每次修改创建可审计 generation，旧 generation 标记为 `superseded`，只有唯一 `active` generation 参与持仓重建。因此先上传 10 股、再上传 12 股的结果是 12 股，不会叠加成 22 股；其他 `standard_csv`、`manual` 等来源的正式交易不会被 supersede。
+
+兼容响应保留 `status`、`positions_imported`、`position` 和 `positions` 等旧字段，并新增 `portfolio_id`、`import_batch_id`、`snapshot_generation`、真实导入计数、`position_rebuild` 和 `valuation_snapshot`。相同 snapshot 重放不会创建交易或 generation。CSV 自带 `current_price` 或缺失时使用的成本价回退都会绑定到 active import batch，并在 snapshot lineage 中标为用户提供/研究演示来源，不会伪装成 Provider 行情。生产响应不包含本地 `csv_path`。
 
 ## AI Provider 配置
 

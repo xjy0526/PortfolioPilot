@@ -26,6 +26,7 @@ from app.db.models.governance import (
 from app.db.models.market import FxRate, PriceBar, ProviderSymbol, Security
 from app.db.models.portfolio import (
     ImportBatch,
+    LegacySnapshotGeneration,
     PortfolioValuationSnapshot,
     PositionSnapshot,
     Transaction,
@@ -42,6 +43,7 @@ __all__ = [
     "DocumentChunk",
     "DocumentVersion",
     "ImportBatch",
+    "LegacySnapshotGeneration",
     "IngestionJob",
     "LLMCallTrace",
     "Portfolio",

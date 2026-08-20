@@ -51,7 +51,8 @@ tests/contracts/            全量 route 与核心 OpenAPI contract 快照
 ```mermaid
 flowchart LR
     CSV[交易流水 CSV] --> IMPORT[TransactionCsvImporter]
-    LEGACY[旧持仓 CSV] --> OPENING[opening_balance / opening cash]
+    LEGACY[Dashboard 当前持仓 CSV] --> GEN[active / superseded generation]
+    GEN --> OPENING[opening_balance / opening cash]
     OPENING --> IMPORT
     IMPORT --> TX[(PostgreSQL transactions)]
 
@@ -85,6 +86,8 @@ flowchart LR
 ```
 
 旧持仓 CSV 不会被描述成完整交易历史。证券行转换为 `opening_balance`，现金行转换为 opening cash `deposit`，导入响应返回 `history_completeness=opening_balance_only`。
+
+Dashboard 兼容写入采用 replace-snapshot 语义。`legacy_snapshot_generations` 保留每个 `ImportBatch` 的激活与 supersede 血缘；组合行锁串行化并发更新，部分唯一索引保证每个组合和 source 最多一个 active generation。重建查询保留所有正式交易，但只合并 active `legacy_dashboard_csv` generation。替换、重建和估值位于同一请求事务内，任何下游失败都不会切换 active generation。
 
 ## 交易账本
 

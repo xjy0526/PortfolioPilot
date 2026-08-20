@@ -18,6 +18,25 @@ from app.services.transaction_import import TransactionImportResult
 from config import settings
 
 
+class _NestedTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+
+class _Session:
+    def __init__(self, batch=None) -> None:
+        self.batch = batch
+
+    def begin_nested(self) -> _NestedTransaction:
+        return _NestedTransaction()
+
+    async def get(self, model, entity_id):
+        return self.batch
+
+
 def _principal() -> Principal:
     return Principal(
         user_id="legacy-unit-operator",
@@ -46,7 +65,12 @@ def _import_result(*, status: str = "completed") -> TransactionImportResult:
 
 @pytest.mark.asyncio
 async def test_adapter_runs_import_rebuild_and_valuation_with_one_cutoff(monkeypatch) -> None:
-    session = SimpleNamespace()
+    batch = SimpleNamespace(
+        id=uuid.uuid4(),
+        file_sha256="a" * 64,
+        source_filename="dashboard-positions.csv",
+    )
+    session = _Session(batch)
     service = LegacyCsvPortfolioImportService(session)  # type: ignore[arg-type]
     portfolio_id = uuid.uuid4()
     snapshot_id = uuid.uuid4()
@@ -56,6 +80,7 @@ async def test_adapter_runs_import_rebuild_and_valuation_with_one_cutoff(monkeyp
         created_at=datetime(2026, 1, 2, 8),
     )
     imported = _import_result()
+    batch.id = imported.import_batch_id
     importer = SimpleNamespace(import_bytes=AsyncMock(return_value=imported))
     rebuilt = PositionRebuildResult(
         portfolio_id=portfolio_id,
@@ -75,8 +100,21 @@ async def test_adapter_runs_import_rebuild_and_valuation_with_one_cutoff(monkeyp
     )
     valuation_result = SimpleNamespace(valuation=valuation, positions=())
     valuator = SimpleNamespace(value=AsyncMock(return_value=valuation_result))
+    generation = SimpleNamespace(
+        id=uuid.uuid4(),
+        import_batch_id=imported.import_batch_id,
+        status="active",
+        generation_number=1,
+        activated_at=cutoff,
+    )
 
     service._writable_portfolio = AsyncMock(return_value=portfolio)  # type: ignore[method-assign]
+    service.transactions = SimpleNamespace(
+        list_for_import_batch=AsyncMock(return_value=[SimpleNamespace()])
+    )
+    service.generations = SimpleNamespace(
+        activate=AsyncMock(return_value=(generation, True, None))
+    )
     service._persist_declared_prices = AsyncMock(  # type: ignore[method-assign]
         return_value=[{"source": legacy_import.LEGACY_DECLARED_PRICE_SOURCE}]
     )
@@ -102,6 +140,7 @@ async def test_adapter_runs_import_rebuild_and_valuation_with_one_cutoff(monkeyp
     payload = result.as_dict()
     assert payload["status"] == "ok"
     assert payload["portfolio_id"] == str(portfolio_id)
+    assert payload["snapshot_generation"]["generation_number"] == 1
     assert payload["position_rebuild"]["cash_balances"] == {"USD": "25"}
     assert payload["valuation_snapshot"]["snapshot_id"] == str(snapshot_id)
     content = importer.import_bytes.await_args.kwargs["content"].decode("utf-8")
@@ -112,11 +151,14 @@ async def test_adapter_runs_import_rebuild_and_valuation_with_one_cutoff(monkeyp
         knowledge_as_of=cutoff,
     )
     assert valuator.value.await_args.kwargs["knowledge_as_of"] == cutoff
+    assert importer.import_bytes.await_args.kwargs["allow_empty"] is True
+    assert importer.import_bytes.await_args.kwargs["require_all_rows_valid"] is True
+    assert importer.import_bytes.await_args.kwargs["validate_portfolio_state"] is False
 
 
 @pytest.mark.asyncio
 async def test_adapter_stops_before_rebuild_when_atomic_import_fails(monkeypatch) -> None:
-    service = LegacyCsvPortfolioImportService(SimpleNamespace())  # type: ignore[arg-type]
+    service = LegacyCsvPortfolioImportService(_Session())  # type: ignore[arg-type]
     portfolio_id = uuid.uuid4()
     portfolio = SimpleNamespace(
         id=portfolio_id,
@@ -137,6 +179,7 @@ async def test_adapter_stops_before_rebuild_when_atomic_import_fails(monkeypatch
         "status": "not_run",
         "reason": "transaction_import_failed",
     }
+    assert result.snapshot_generation == {"status": "not_activated"}
     assert result.valuation_snapshot == {"status": "not_created"}
 
 
@@ -214,13 +257,16 @@ async def test_declared_price_lineage_distinguishes_current_and_fallback_prices(
 
     sources = await service._persist_declared_prices(
         import_batch_id=batch_id,
+        generation_id=uuid.uuid4(),
         cutoff=datetime(2026, 8, 20, 12, tzinfo=UTC),
     )
 
-    assert [item["source"] for item in sources] == [
-        legacy_import.LEGACY_DECLARED_PRICE_SOURCE,
-        legacy_import.LEGACY_COST_FALLBACK_SOURCE,
-    ]
+    assert str(sources[0]["source"]).startswith(
+        legacy_import.LEGACY_DECLARED_PRICE_SOURCE
+    )
+    assert str(sources[1]["source"]).startswith(
+        legacy_import.LEGACY_COST_FALLBACK_SOURCE
+    )
     assert [item["fallback"] for item in sources] == [False, True]
     first_bar, second_bar = [call.args[0] for call in service.prices.upsert.await_args_list]
     assert first_bar.close == Decimal("1250.50")

@@ -23,9 +23,18 @@ class TransactionLedgerService:
         self.rebuilder = PositionRebuilder()
 
     async def list_transactions(
-        self, portfolio_id: uuid.UUID, *, as_of: datetime | None = None
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        as_of: datetime | None = None,
+        include_superseded_legacy: bool = False,
     ) -> list[Transaction]:
-        return await self.repository.list_for_portfolio(portfolio_id, as_of=as_of)
+        if include_superseded_legacy:
+            return await self.repository.list_for_portfolio(portfolio_id, as_of=as_of)
+        return await self.repository.list_effective_for_portfolio(
+            portfolio_id,
+            as_of=as_of,
+        )
 
     async def add_transaction(self, transaction: Transaction) -> tuple[Transaction, bool]:
         self.rebuilder._validate_transaction(transaction)
@@ -33,7 +42,7 @@ class TransactionLedgerService:
         try:
             stored, created = await self.repository.add_idempotent(transaction)
             if created:
-                transactions = await self.repository.list_for_portfolio(
+                transactions = await self.repository.list_effective_for_portfolio(
                     transaction.portfolio_id
                 )
                 self.rebuilder.rebuild(
