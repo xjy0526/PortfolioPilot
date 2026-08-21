@@ -15,6 +15,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "quality" / "coverage_policy.json"
 HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+ZERO_SHA = "0" * 40
 
 
 CORE_GROUPS: dict[str, Callable[[str], bool]] = {
@@ -46,6 +47,10 @@ class FileCoverage:
     @property
     def percent(self) -> float:
         return _percent(self.covered, self.statements)
+
+
+class CoverageBaseError(ValueError):
+    """Raised when changed-lines coverage cannot use a trustworthy Git base."""
 
 
 def parse_coverage_xml(path: Path) -> tuple[dict[str, FileCoverage], dict[str, float | int]]:
@@ -121,15 +126,114 @@ def parse_changed_lines(diff_text: str) -> dict[str, set[int]]:
     return changed
 
 
-def git_changed_lines(base: str, head: str, *, repository: Path = ROOT) -> dict[str, set[int]]:
+def resolve_commit(ref: str, *, repository: Path = ROOT) -> str:
     completed = subprocess.run(
-        ["git", "diff", "--unified=0", f"{base}...{head}", "--"],
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "unknown git error"
+        raise CoverageBaseError(f"cannot resolve coverage ref {ref!r}: {detail}")
+    return completed.stdout.strip()
+
+
+def resolve_changed_lines_base(
+    base: str,
+    head: str,
+    *,
+    repository: Path = ROOT,
+) -> tuple[str, str]:
+    base_sha = resolve_commit(base, repository=repository)
+    head_sha = resolve_commit(head, repository=repository)
+    completed = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", base_sha, head_sha],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 1:
+        raise CoverageBaseError(
+            f"coverage base {base_sha} is not an ancestor of head {head_sha}; "
+            "refusing to calculate changed-lines coverage from a divergent merge base"
+        )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "unknown git error"
+        raise CoverageBaseError(
+            f"cannot validate coverage base {base_sha} against head {head_sha}: {detail}"
+        )
+    return base_sha, head_sha
+
+
+def _git_changed_lines(
+    base_sha: str,
+    head_sha: str,
+    *,
+    repository: Path = ROOT,
+) -> dict[str, set[int]]:
+    completed = subprocess.run(
+        ["git", "diff", "--unified=0", f"{base_sha}...{head_sha}", "--"],
         cwd=repository,
         check=True,
         capture_output=True,
         text=True,
     )
     return parse_changed_lines(completed.stdout)
+
+
+def git_changed_lines(base: str, head: str, *, repository: Path = ROOT) -> dict[str, set[int]]:
+    base_sha, head_sha = resolve_changed_lines_base(base, head, repository=repository)
+    return _git_changed_lines(base_sha, head_sha, repository=repository)
+
+
+def resolve_ci_base(
+    *,
+    event_name: str,
+    head: str,
+    policy_baseline: str,
+    pull_request_base: str | None = None,
+    push_before: str | None = None,
+    repository: Path = ROOT,
+) -> str:
+    """Resolve the event-specific comparison base and prove it is an ancestor."""
+    if event_name == "pull_request":
+        if not pull_request_base:
+            raise CoverageBaseError("pull_request coverage requires a base SHA")
+        candidates = [pull_request_base]
+    elif event_name == "push":
+        if push_before and push_before != ZERO_SHA:
+            candidates = [push_before]
+        else:
+            candidates = [f"{head}^", policy_baseline]
+    elif event_name == "workflow_dispatch":
+        candidates = [f"{head}^", policy_baseline]
+    else:
+        raise CoverageBaseError(f"unsupported coverage event: {event_name!r}")
+
+    failures: list[str] = []
+    attempted: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in attempted:
+            continue
+        attempted.add(candidate)
+        try:
+            base_sha, _ = resolve_changed_lines_base(
+                candidate,
+                head,
+                repository=repository,
+            )
+        except CoverageBaseError as exc:
+            failures.append(str(exc))
+            continue
+        return base_sha
+
+    detail = "; ".join(failures) or "no usable base candidate was provided"
+    raise CoverageBaseError(
+        f"could not resolve a valid {event_name} coverage base for {head}: {detail}"
+    )
 
 
 def changed_core_coverage(
@@ -192,18 +296,31 @@ def build_report(
     policy: dict[str, Any],
     *,
     head: str,
+    base: str | None = None,
     repository: Path = ROOT,
 ) -> dict[str, Any]:
     files, total = parse_coverage_xml(coverage_xml)
     groups = coverage_groups(files)
     core = aggregate_core(groups)
-    baseline = str(policy["baseline"]["commit_sha"])
-    changed_lines = git_changed_lines(baseline, head, repository=repository)
+    policy_baseline = str(policy["baseline"]["commit_sha"])
+    requested_base = base or policy_baseline
+    resolved_base, resolved_head = resolve_changed_lines_base(
+        requested_base,
+        head,
+        repository=repository,
+    )
+    changed_lines = _git_changed_lines(
+        resolved_base,
+        resolved_head,
+        repository=repository,
+    )
     changed = changed_production_coverage(files, changed_lines)
     changed_core = changed_core_coverage(files, changed_lines)
     return {
         "policy_version": policy["policy_version"],
-        "baseline_commit_sha": baseline,
+        "baseline_commit_sha": policy_baseline,
+        "resolved_base_sha": resolved_base,
+        "resolved_head_sha": resolved_head,
         "head": head,
         "total": total,
         "core": core,
@@ -274,7 +391,8 @@ def markdown_report(report: dict[str, Any], violations: list[str]) -> str:
     lines.extend(
         [
             "",
-            f"Changed production lines since `{report['baseline_commit_sha']}`: "
+            f"Changed production lines since "
+            f"`{report.get('resolved_base_sha', report['baseline_commit_sha'])}`: "
             f"{changed['statements']} executable, {changed['missed']} missed, {changed_percent}.",
             f"Changed core lines: {changed_core['statements']} executable, "
             f"{changed_core['missed']} missed, {changed_core_percent}.",
@@ -305,20 +423,51 @@ def _percent(covered: int, statements: int) -> float:
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--coverage-xml", type=Path, required=True)
+    parser.add_argument("--coverage-xml", type=Path)
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument("--base")
+    parser.add_argument("--resolve-ci-base", action="store_true")
+    parser.add_argument("--event-name")
+    parser.add_argument("--pull-request-base")
+    parser.add_argument("--push-before")
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
     parser.add_argument("--github-summary", type=Path)
     parser.add_argument("--enforce", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.resolve_ci_base:
+        if not args.event_name:
+            parser.error("--event-name is required with --resolve-ci-base")
+    elif args.coverage_xml is None:
+        parser.error("--coverage-xml is required unless --resolve-ci-base is used")
+    return args
 
 
 def main() -> int:
     args = _arguments()
     policy = json.loads(args.policy.read_text(encoding="utf-8"))
-    report = build_report(args.coverage_xml, policy, head=args.head)
+    try:
+        if args.resolve_ci_base:
+            print(
+                resolve_ci_base(
+                    event_name=args.event_name,
+                    head=args.head,
+                    policy_baseline=str(policy["baseline"]["commit_sha"]),
+                    pull_request_base=args.pull_request_base,
+                    push_before=args.push_before,
+                )
+            )
+            return 0
+        report = build_report(
+            args.coverage_xml,
+            policy,
+            head=args.head,
+            base=args.base,
+        )
+    except CoverageBaseError as exc:
+        print(f"coverage base error: {exc}", file=sys.stderr)
+        return 2
     violations = policy_violations(report)
     markdown = markdown_report(report, violations)
     print(markdown, end="")

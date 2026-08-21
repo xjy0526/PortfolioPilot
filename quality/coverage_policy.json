@@ -1,12 +1,14 @@
 {
   "policy_version": 1,
   "baseline": {
-    "commit_sha": "6415132031b143d3b3999bedbc63da757037c4ce",
-    "captured_at": "2026-08-19T21:27:46Z",
-    "ci_run_url": "https://github.com/xjy0526/PortfolioPilot/actions/runs/32303771421",
-    "total_coverage_percent": 63.04,
-    "core_coverage_percent": 81.68,
-    "note": "Total preserves the existing --cov=. scope, including legacy and tests; core contains only the declared production packages."
+    "commit_sha": "2464f6bd08a6e91c9c301b1fd300a2f91aca27f0",
+    "captured_at": "2026-08-20T20:33:11Z",
+    "ci_run_url": "https://github.com/xjy0526/PortfolioPilot/actions/runs/32414699756",
+    "source_head_sha": "1224e91bc0df8fb0a51fef0bf7c5237568878267",
+    "tree_sha": "91a9d3ddbe9ea5c1350cb483f86a474ea89a92c1",
+    "total_coverage_percent": 66.7585,
+    "core_coverage_percent": 86.0451,
+    "note": "The main squash commit has the same tree as the validated PR head; the baseline metrics come from that PR head's successful CI run."
   },
   "thresholds": {
     "total_coverage_percent": 63.04,

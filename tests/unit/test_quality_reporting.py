@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 from scripts import coverage_quality, summarize_test_results
 from scripts.coverage_quality import (
     CORE_GROUPS,
+    ZERO_SHA,
+    CoverageBaseError,
     FileCoverage,
     aggregate_core,
     build_report,
@@ -21,6 +24,8 @@ from scripts.coverage_quality import (
     parse_changed_lines,
     parse_coverage_xml,
     policy_violations,
+    resolve_changed_lines_base,
+    resolve_ci_base,
 )
 from scripts.summarize_test_results import markdown_summary, parse_junit
 
@@ -28,6 +33,35 @@ from scripts.summarize_test_results import markdown_summary, parse_junit
 def _write(path: Path, content: str) -> Path:
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _git(repository: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _init_git_repository(repository: Path) -> str:
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    _git(repository, "config", "user.name", "Coverage Test")
+    _git(repository, "config", "user.email", "coverage@example.invalid")
+    _write(repository / "sample.py", "value = 1\n")
+    _git(repository, "add", "sample.py")
+    _git(repository, "commit", "-m", "base")
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def _commit(repository: Path, content: str, message: str) -> str:
+    _write(repository / "sample.py", content)
+    _git(repository, "add", "sample.py")
+    _git(repository, "commit", "-m", message)
+    return _git(repository, "rev-parse", "HEAD")
 
 
 def test_coverage_xml_builds_total_and_core_matrix(tmp_path: Path) -> None:
@@ -122,7 +156,10 @@ diff --git a/README.md b/README.md
     assert production_result == result
 
 
-def test_build_report_uses_git_baseline_for_changed_lines(tmp_path: Path, monkeypatch) -> None:
+def test_build_report_prefers_explicit_base_for_changed_lines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     coverage_xml = _write(
         tmp_path / "coverage.xml",
         """<coverage lines-valid="2" lines-covered="1">
@@ -140,46 +177,184 @@ def test_build_report_uses_git_baseline_for_changed_lines(tmp_path: Path, monkey
         "high_risk_groups": [],
     }
 
-    def fake_changed_lines(base: str, head: str, *, repository: Path):
-        assert base == "a" * 40
+    def fake_resolve(base: str, head: str, *, repository: Path):
+        assert base == "b" * 40
         assert head == "phase8"
+        assert repository == tmp_path
+        return "c" * 40, "d" * 40
+
+    def fake_changed_lines(base: str, head: str, *, repository: Path):
+        assert base == "c" * 40
+        assert head == "d" * 40
         assert repository == tmp_path
         return {"app/providers/source.py": {9, 10}}
 
-    monkeypatch.setattr(coverage_quality, "git_changed_lines", fake_changed_lines)
-    report = build_report(coverage_xml, policy, head="phase8", repository=tmp_path)
+    monkeypatch.setattr(coverage_quality, "resolve_changed_lines_base", fake_resolve)
+    monkeypatch.setattr(coverage_quality, "_git_changed_lines", fake_changed_lines)
+    report = build_report(
+        coverage_xml,
+        policy,
+        base="b" * 40,
+        head="phase8",
+        repository=tmp_path,
+    )
 
     assert report["changed_lines"]["coverage_percent"] == 50.0
     assert report["changed_core_lines"]["coverage_percent"] == 50.0
     assert report["baseline_commit_sha"] == "a" * 40
+    assert report["resolved_base_sha"] == "c" * 40
+    assert report["resolved_head_sha"] == "d" * 40
 
 
-def test_git_changed_lines_invokes_zero_context_diff(tmp_path: Path, monkeypatch) -> None:
-    observed: dict[str, object] = {}
+def test_changed_lines_accepts_a_real_ancestor_base(tmp_path: Path) -> None:
+    repository = tmp_path / "ancestor"
+    base = _init_git_repository(repository)
+    head = _commit(repository, "value = 1\nadded = 2\n", "head")
 
-    def fake_run(command, *, cwd, check, capture_output, text):
-        observed.update(
-            command=command,
-            cwd=cwd,
-            check=check,
-            capture_output=capture_output,
-            text=text,
+    assert resolve_changed_lines_base(base, head, repository=repository) == (base, head)
+    assert git_changed_lines(base, head, repository=repository) == {"sample.py": {2}}
+
+
+def test_changed_lines_rejects_a_squash_diverged_base(tmp_path: Path) -> None:
+    repository = tmp_path / "diverged"
+    common = _init_git_repository(repository)
+    head = _commit(repository, "value = 2\n", "main head")
+    _git(repository, "switch", "-c", "feature", common)
+    diverged_base = _commit(repository, "value = 3\n", "feature head")
+
+    with pytest.raises(CoverageBaseError, match="is not an ancestor"):
+        resolve_changed_lines_base(diverged_base, head, repository=repository)
+
+    with pytest.raises(CoverageBaseError, match="divergent merge base"):
+        git_changed_lines(diverged_base, head, repository=repository)
+
+
+def test_changed_lines_rejects_an_unknown_ref(tmp_path: Path) -> None:
+    repository = tmp_path / "unknown-ref"
+    _init_git_repository(repository)
+
+    with pytest.raises(CoverageBaseError, match="cannot resolve coverage ref"):
+        resolve_changed_lines_base("missing", "HEAD", repository=repository)
+
+
+def test_changed_lines_surfaces_ancestor_validation_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        coverage_quality,
+        "resolve_commit",
+        lambda ref, *, repository: "a" * 40 if ref == "base" else "b" * 40,
+    )
+    monkeypatch.setattr(
+        coverage_quality.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Result",
+            (),
+            {"returncode": 128, "stderr": "repository unavailable"},
+        )(),
+    )
+
+    with pytest.raises(CoverageBaseError, match="repository unavailable"):
+        resolve_changed_lines_base("base", "head", repository=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("event_name", "pull_request_base", "push_before", "expected_candidate"),
+    [
+        ("pull_request", "pr-base", None, "pr-base"),
+        ("push", None, "push-before", "push-before"),
+        ("workflow_dispatch", None, None, "head^"),
+    ],
+)
+def test_ci_base_resolution_uses_event_specific_candidate(
+    tmp_path: Path,
+    monkeypatch,
+    event_name: str,
+    pull_request_base: str | None,
+    push_before: str | None,
+    expected_candidate: str,
+) -> None:
+    observed: list[tuple[str, str]] = []
+
+    def fake_resolve(base: str, head: str, *, repository: Path):
+        observed.append((base, head))
+        assert repository == tmp_path
+        return "a" * 40, "b" * 40
+
+    monkeypatch.setattr(coverage_quality, "resolve_changed_lines_base", fake_resolve)
+
+    assert resolve_ci_base(
+        event_name=event_name,
+        head="head",
+        policy_baseline="policy-base",
+        pull_request_base=pull_request_base,
+        push_before=push_before,
+        repository=tmp_path,
+    ) == "a" * 40
+    assert observed == [(expected_candidate, "head")]
+
+
+def test_zero_push_before_sha_falls_back_without_using_zero(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[str] = []
+
+    def fake_resolve(base: str, head: str, *, repository: Path):
+        observed.append(base)
+        return "a" * 40, "b" * 40
+
+    monkeypatch.setattr(coverage_quality, "resolve_changed_lines_base", fake_resolve)
+
+    assert resolve_ci_base(
+        event_name="push",
+        head="head",
+        policy_baseline="policy-base",
+        push_before=ZERO_SHA,
+        repository=tmp_path,
+    ) == "a" * 40
+    assert observed == ["head^"]
+
+
+def test_manual_base_resolution_falls_back_to_policy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[str] = []
+
+    def fake_resolve(base: str, head: str, *, repository: Path):
+        observed.append(base)
+        if base == "head^":
+            raise CoverageBaseError("head has no parent")
+        return "a" * 40, "b" * 40
+
+    monkeypatch.setattr(coverage_quality, "resolve_changed_lines_base", fake_resolve)
+
+    assert resolve_ci_base(
+        event_name="workflow_dispatch",
+        head="head",
+        policy_baseline="policy-base",
+        repository=tmp_path,
+    ) == "a" * 40
+    assert observed == ["head^", "policy-base"]
+
+
+def test_ci_base_resolution_rejects_missing_or_unsupported_events() -> None:
+    with pytest.raises(CoverageBaseError, match="requires a base SHA"):
+        resolve_ci_base(
+            event_name="pull_request",
+            head="head",
+            policy_baseline="policy-base",
         )
-        return type("Result", (), {"stdout": "+++ b/scripts/new.py\n@@ -0,0 +1,2 @@\n+a\n+b\n"})()
 
-    monkeypatch.setattr(coverage_quality.subprocess, "run", fake_run)
-
-    assert git_changed_lines("base", "head", repository=tmp_path) == {
-        "scripts/new.py": {1, 2}
-    }
-    assert observed["command"] == [
-        "git",
-        "diff",
-        "--unified=0",
-        "base...head",
-        "--",
-    ]
-    assert observed["cwd"] == tmp_path
+    with pytest.raises(CoverageBaseError, match="unsupported coverage event"):
+        resolve_ci_base(
+            event_name="schedule",
+            head="head",
+            policy_baseline="policy-base",
+        )
 
 
 def test_coverage_policy_reports_each_failed_gate() -> None:
@@ -253,7 +428,12 @@ def test_coverage_policy_file_has_a_reproducible_baseline() -> None:
     assert policy["baseline"]["ci_run_url"].startswith("https://github.com/")
     assert policy["thresholds"]["total_coverage_percent"] >= 63.0
     assert policy["thresholds"]["core_coverage_percent"] >= 81.0
-    assert policy["thresholds"]["changed_lines_percent"] >= 85.0
+    assert policy["baseline"]["commit_sha"] == (
+        "2464f6bd08a6e91c9c301b1fd300a2f91aca27f0"
+    )
+    assert policy["baseline"]["total_coverage_percent"] == 66.7585
+    assert policy["baseline"]["core_coverage_percent"] == 86.0451
+    assert policy["thresholds"]["changed_lines_percent"] == 85.0
 
 
 def _passing_report() -> dict:
@@ -298,7 +478,13 @@ def test_coverage_cli_writes_machine_and_human_reports(
     github_summary = tmp_path / "github.md"
     report = _passing_report()
 
-    monkeypatch.setattr(coverage_quality, "build_report", lambda *_args, **_kwargs: report)
+    observed: dict[str, object] = {}
+
+    def fake_build_report(*args, **kwargs):
+        observed.update(kwargs)
+        return report
+
+    monkeypatch.setattr(coverage_quality, "build_report", fake_build_report)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -308,6 +494,8 @@ def test_coverage_cli_writes_machine_and_human_reports(
             str(coverage_xml),
             "--policy",
             str(policy_path),
+            "--base",
+            "c" * 40,
             "--json-output",
             str(json_output),
             "--markdown-output",
@@ -319,6 +507,7 @@ def test_coverage_cli_writes_machine_and_human_reports(
     )
 
     assert coverage_quality.main() == 0
+    assert observed["base"] == "c" * 40
     assert json.loads(json_output.read_text(encoding="utf-8"))["head"] == "HEAD"
     assert "Gate: PASS" in markdown_output.read_text(encoding="utf-8")
     assert "Changed production lines" in github_summary.read_text(encoding="utf-8")
@@ -327,6 +516,38 @@ def test_coverage_cli_writes_machine_and_human_reports(
     report["total"]["coverage_percent"] = 1.0
     assert coverage_quality.main() == 1
     assert "coverage gate: total coverage" in capsys.readouterr().err
+
+
+def test_coverage_cli_resolves_ci_base_or_fails_clearly(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    policy_path = _write(
+        tmp_path / "policy.json",
+        json.dumps({"baseline": {"commit_sha": "policy-base"}}),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "coverage_quality.py",
+        "--policy",
+        str(policy_path),
+        "--resolve-ci-base",
+        "--event-name",
+        "workflow_dispatch",
+        "--head",
+        "head",
+    ])
+    monkeypatch.setattr(coverage_quality, "resolve_ci_base", lambda **kwargs: "a" * 40)
+
+    assert coverage_quality.main() == 0
+    assert capsys.readouterr().out.strip() == "a" * 40
+
+    def fail_base(**kwargs):
+        raise CoverageBaseError("diverged")
+
+    monkeypatch.setattr(coverage_quality, "resolve_ci_base", fail_base)
+    assert coverage_quality.main() == 2
+    assert "coverage base error: diverged" in capsys.readouterr().err
 
 
 def test_junit_cli_appends_github_summary(tmp_path: Path, monkeypatch, capsys) -> None:
