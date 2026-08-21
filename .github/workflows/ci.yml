@@ -233,10 +233,30 @@ jobs:
           python -m coverage report
           python -m coverage xml
 
+      - name: Resolve coverage comparison base
+        id: coverage-base
+        env:
+          COVERAGE_EVENT_NAME: ${{ github.event_name }}
+          COVERAGE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          COVERAGE_PUSH_BEFORE_SHA: ${{ github.event.before || '' }}
+          COVERAGE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          resolved_base="$(
+            python scripts/coverage_quality.py \
+              --resolve-ci-base \
+              --event-name "$COVERAGE_EVENT_NAME" \
+              --pull-request-base "$COVERAGE_PR_BASE_SHA" \
+              --push-before "$COVERAGE_PUSH_BEFORE_SHA" \
+              --head "$COVERAGE_HEAD_SHA"
+          )"
+          echo "sha=$resolved_base" >> "$GITHUB_OUTPUT"
+          echo "Resolved coverage base: \`$resolved_base\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Report and enforce coverage quality
         run: >-
           python scripts/coverage_quality.py
           --coverage-xml coverage.xml
+          --base "${{ steps.coverage-base.outputs.sha }}"
           --head "${{ github.event.pull_request.head.sha || github.sha }}"
           --json-output coverage-quality.json
           --markdown-output coverage-quality.md

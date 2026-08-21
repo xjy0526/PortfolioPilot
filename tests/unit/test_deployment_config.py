@@ -72,6 +72,10 @@ def test_ci_reports_total_core_changed_and_test_runtime_quality():
 
     assert "scripts/coverage_quality.py" in workflow
     assert "--coverage-xml coverage.xml" in workflow
+    assert "--resolve-ci-base" in workflow
+    assert "github.event.pull_request.base.sha" in workflow
+    assert "github.event.before" in workflow
+    assert '--base "${{ steps.coverage-base.outputs.sha }}"' in workflow
     assert '--head "${{ github.event.pull_request.head.sha || github.sha }}"' in workflow
     assert "--enforce" in workflow
     assert "coverage-quality.json" in workflow
