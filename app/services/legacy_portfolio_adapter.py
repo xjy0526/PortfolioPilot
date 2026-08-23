@@ -40,7 +40,7 @@ class LegacyPortfolioAdapter:
         as_of: datetime | None = None,
         principal: Principal | None = None,
     ) -> LegacyPortfolioContext | None:
-        portfolio = await self._resolve_portfolio(portfolio_id, principal=principal)
+        portfolio = await self.resolve_portfolio(portfolio_id, principal=principal)
         if portfolio is None:
             return None
         valuation = await self.valuations.latest_at_or_before(
@@ -120,6 +120,15 @@ class LegacyPortfolioAdapter:
             is_demo=False,
         )
         return LegacyPortfolioContext(portfolio, valuation, summary)
+
+    async def resolve_portfolio(
+        self,
+        portfolio_id: uuid.UUID | None = None,
+        *,
+        principal: Principal | None = None,
+    ) -> Portfolio | None:
+        """Resolve the dashboard portfolio without requiring a valuation snapshot."""
+        return await self._resolve_portfolio(portfolio_id, principal=principal)
 
     async def _resolve_portfolio(
         self,
