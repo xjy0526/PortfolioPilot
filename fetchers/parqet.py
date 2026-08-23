@@ -10,7 +10,7 @@ Drei Datenquellen in Prioritaet (alle via connect.parqet.com):
   2. GET  /activities   → Cursor-Pagination, manuell aggregieren (Fallback)
   3. GET  /activities   → Internal API (api.parqet.com), Offset-Pagination (Fallback)
 
-API-Dokumentation: docs/Parqet API/
+Kompatibilitaets-Dokumentation: docs/integrations/parqet.md
 
 Cache-Strategie:
   1. Fresh Cache (TTL) → Positionen direkt laden

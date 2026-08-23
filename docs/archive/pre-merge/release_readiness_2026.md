@@ -1,3 +1,5 @@
+> **Historical pre-merge snapshot. Superseded by the current main branch and the v2.0.0 release documentation. This file is preserved only for audit history.**
+
 # PortfolioPilot 发布前基线审计（2026）
 
 > 审计性质：release readiness audit，不是生产验收，也不是投资、模型效果或合规认证。
@@ -14,7 +16,7 @@
 
 本文原始审计快照保留不改写。后续第四阶段已将 PostgreSQL restart persistence 从普通 pytest 的 opt-in skip 改为独立 Compose E2E：普通套件明确 deselect `postgres_restart` marker，GitHub Actions 的 `PostgreSQL restart persistence E2E` job 则必须真实执行，默认 production container job 对其设置显式依赖。实时结果以 [CI workflow](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml) 和 PR checks 为准。
 
-独立场景使用 `docker-compose.e2e.yml` 启动 FastAPI app 与 PostgreSQL/pgvector，应用 Alembic migration，写入带唯一 namespace 的业务夹具，记录 UUID、文档 checksum、embedding checksum 和估值 input hash，执行真实 PostgreSQL restart，并在 readiness 恢复后验证交易、重建持仓、估值快照、研究文档/chunk/embedding、Prompt 版本、LLM Trace、Workflow、人工审核和发布报告。随后用同 namespace 重放 seed，检查无重复写入。完整命令、Docker socket 边界和故障清理见 [`docs/testing.md`](../testing.md)。
+独立场景使用 `docker-compose.e2e.yml` 启动 FastAPI app 与 PostgreSQL/pgvector，应用 Alembic migration，写入带唯一 namespace 的业务夹具，记录 UUID、文档 checksum、embedding checksum 和估值 input hash，执行真实 PostgreSQL restart，并在 readiness 恢复后验证交易、重建持仓、估值快照、研究文档/chunk/embedding、Prompt 版本、LLM Trace、Workflow、人工审核和发布报告。随后用同 namespace 重放 seed，检查无重复写入。完整命令、Docker socket 边界和故障清理见 [`docs/testing.md`](../../testing.md)。
 
 ## 1. 执行结论
 
@@ -447,7 +449,7 @@ docs: add release readiness baseline audit
 
 本地 Python 为 3.13.9，目标 Python 3.12 的最终权威结果必须来自提交后的 GitHub
 Actions。完整模块矩阵、风险说明和门槛依据见
-[`core_coverage_matrix_2026.md`](core_coverage_matrix_2026.md)。
+[`core_coverage_matrix_2026.md`](../../audits/core_coverage_matrix_2026.md)。
 
 ### 17.3 CI 变化
 
