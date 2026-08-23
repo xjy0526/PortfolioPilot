@@ -82,6 +82,35 @@ async def test_read_only_production_does_not_require_writable_object_storage():
 
 
 @pytest.mark.asyncio
+async def test_production_fixture_mode_makes_readiness_fail():
+    resources = SimpleNamespace(
+        embedder=_Embedder(),
+        object_storage=_AvailableStorage(),
+    )
+    configuration = Settings(
+        _env_file=None,
+        ENVIRONMENT="production",
+        READ_ONLY_DEMO=True,
+        DEMO_FIXTURE_MODE=True,
+        OBJECT_STORAGE_BACKEND="local",
+        RAG_ALLOW_HASHING_FALLBACK=False,
+    )
+
+    result = await preflight.run_deployment_preflight(
+        _Session(),
+        configuration=configuration,
+        resources=resources,
+    )
+
+    assert result.ready is False
+    assert result.payload["configuration"] == {
+        "status": "invalid",
+        "reason": "DEMO_FIXTURE_MODE is forbidden in production",
+        "read_only_demo": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_required_object_storage_failure_makes_readiness_fail():
     resources = SimpleNamespace(
         embedder=_Embedder(),
