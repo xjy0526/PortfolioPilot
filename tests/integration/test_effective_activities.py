@@ -14,16 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import main
 from app.api.dependencies import get_db_session
+from app.api.portfolios import audit_transactions, list_transactions
 from app.core.principal import Principal, get_principal
 from app.db.models import Security, Transaction, User
 from app.db.repositories import (
     PortfolioMembershipRepository,
     PortfolioRepository,
+    TransactionRepository,
     UserRepository,
 )
 from app.services.legacy_csv_import import LegacyCsvPortfolioImportService
 from app.services.security_master import SecurityMasterService
 from app.services.transaction_ledger import TransactionLedgerService
+from routes.portfolio import get_portfolio_activities
 
 pytestmark = pytest.mark.postgres
 
@@ -336,6 +339,38 @@ async def test_effective_activity_and_admin_audit_survive_database_reconnect() -
 
         before_restart_activity_ids = [row["id"] for row in activities]
         before_restart_audit_ids = [row["id"] for row in audit_rows]
+        async with factory() as session:
+            direct_activities = await get_portfolio_activities(
+                portfolio_id=portfolio_id,
+                principal=viewer,
+                session=session,
+            )
+            direct_transactions = await list_transactions(
+                portfolio_id=portfolio_id,
+                as_of=None,
+                principal=viewer,
+                session=session,
+            )
+            direct_audit = await audit_transactions(
+                portfolio_id=portfolio_id,
+                principal=platform_admin,
+                session=session,
+            )
+            historical_audit = await TransactionRepository(
+                session
+            ).list_audit_for_portfolio(
+                portfolio_id,
+                as_of=datetime(2026, 8, 20, 1, tzinfo=UTC),
+            )
+        assert [row["id"] for row in direct_activities] == before_restart_activity_ids
+        assert [str(row["id"]) for row in direct_transactions] == before_restart_activity_ids
+        assert [row["id"] for row in direct_audit["transactions"]] == (
+            before_restart_audit_ids
+        )
+        assert [row.transaction.quantity for row in historical_audit] == [
+            Decimal("3"),
+            Decimal("10"),
+        ]
         await engine.dispose()
 
         engine, factory = _factory()
