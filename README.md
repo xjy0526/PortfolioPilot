@@ -4,6 +4,8 @@
 
 PortfolioPilot 是一个面向基金投研场景的可追溯投资组合研究平台。系统将交易流水、市场数据、风险分析和研究知识库统一到 PostgreSQL，通过受治理的 RAG、Prompt Registry、LLM Trace 和人工审核工作流，生成带证据引用、可验证、可复核的组合研究结果。
 
+**Latest release: [v2.0.0](docs/releases/v2.0.0.md)**（Release PR 文档；Tag 和 GitHub Release 尚未创建）
+
 项目聚焦研究流程与工程可追溯性，不提供自动交易，不构成投资建议、交易指令或收益承诺。
 
 ## 核心能力
@@ -202,6 +204,9 @@ python -m app.workers.run_daily_pipeline --help
 | [docs/testing.md](docs/testing.md) | 测试分层与 PostgreSQL restart E2E |
 | [docs/deployment.md](docs/deployment.md) | Web、Cron、对象存储、preflight 与恢复边界 |
 | [docs/current-limitations.md](docs/current-limitations.md) | 当前已知限制和 mock/fallback 条件 |
+| [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md) | v2.0.0 正式版本说明与发布边界 |
+| [docs/releases/v2.0.0-migration.md](docs/releases/v2.0.0-migration.md) | PostgreSQL、legacy generation、S3 与回滚迁移指南 |
+| [CHANGELOG.md](CHANGELOG.md) | 面向版本的 Added/Changed/Fixed/Security 摘要 |
 | [docs/evaluation-v2.md](docs/evaluation-v2.md) | V2 数据 schema、模式隔离、人工标注与指标解释 |
 | [docs/case_studies/ai_hardware_portfolio_case.md](docs/case_studies/ai_hardware_portfolio_case.md) | AI 硬件组合研究案例 |
 | [docs/audits/release_readiness_2026.md](docs/audits/release_readiness_2026.md) | 带日期和 SHA 的发布准备审计 |

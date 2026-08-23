@@ -1,5 +1,7 @@
 # 📡 PortfolioPilot API Reference
 
+API documentation version: `2.0.0`.
+
 Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), sofern nicht anders angegeben.
 
 ## Health (`app/api/health.py`)

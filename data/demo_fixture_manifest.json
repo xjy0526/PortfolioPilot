@@ -1,0 +1,20 @@
+{
+  "fixture_name": "portfoliopilot_repository_demo_fixtures",
+  "schema_version": "2.0.0",
+  "data_classification": "synthetic_and_public_training_material",
+  "synthetic_data_used": true,
+  "production_data_used": false,
+  "real_customer_portfolio_used": false,
+  "files": {
+    "transactions": "data/portfolios/example_transactions.csv",
+    "portfolio_snapshot": "data/portfolios/example_multi_asset_portfolio.csv",
+    "historical_prices": "data/prices/example_historical_prices.csv",
+    "research_document": "data/research_docs/public_fund_research_faq.md"
+  },
+  "execution_boundary": {
+    "deterministic_synthetic_smoke_available": true,
+    "one_command_governed_demo_available": false,
+    "external_provider_calls_required": false
+  },
+  "disclaimer": "Repository fixtures are for engineering and research demonstration only; they are not production data or investment advice."
+}

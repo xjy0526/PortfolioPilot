@@ -1,6 +1,11 @@
 # PortfolioPilot - Production Container
 FROM python:3.12-slim AS dependencies
 
+ARG APP_VERSION=2.0.0
+LABEL org.opencontainers.image.title="PortfolioPilot" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.source="https://github.com/xjy0526/PortfolioPilot"
+
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \

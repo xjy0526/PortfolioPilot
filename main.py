@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
+from app import __version__
 from app.api.health import router as health_router
 from app.api.evaluation import router as evaluation_router
 from app.api.market_data import router as market_data_router
@@ -77,7 +78,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description="Multi-market portfolio risk analysis and evidence-driven research platform",
-    version="2.0.0",
+    version=__version__,
     lifespan=lifespan,
     dependencies=[Depends(get_db_session)],
 )
