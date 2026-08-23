@@ -9,11 +9,12 @@ from fastapi import APIRouter
 
 from state import portfolio_data, refresh_progress
 from config import settings
-from services.refresh import _refresh_data, _quick_price_refresh, _update_parqet
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+parqet_router = APIRouter()
+telegram_router = APIRouter()
 
 
 @router.get("/api/refresh/status")
@@ -31,6 +32,8 @@ async def get_refresh_status():
 @router.post("/api/refresh")
 async def trigger_refresh():
     """Kompletter Refresh: Portfolio + Finanzdaten."""
+    from services.refresh import _refresh_data
+
     if portfolio_data["refreshing"]:
         return {"status": "already_refreshing", "message": "Refresh läuft bereits..."}
 
@@ -42,9 +45,13 @@ async def trigger_refresh():
 @router.post("/api/refresh/prices")
 async def trigger_price_refresh():
     """Schneller Kurs-Update via yfinance (für Cloud Scheduler)."""
+    from services.refresh import _quick_price_refresh
+
     summary = portfolio_data.get("summary")
     if not summary or not summary.stocks:
         # Kein Portfolio geladen -> vollen Refresh starten
+        from services.refresh import _refresh_data
+
         asyncio.create_task(_refresh_data())
         return {"status": "full_refresh", "message": "Kein Portfolio - starte vollen Refresh"}
 
@@ -52,9 +59,11 @@ async def trigger_price_refresh():
     return {"status": "ok", "message": f"Kurse aktualisiert für {summary.num_positions} Positionen"}
 
 
-@router.post("/api/refresh/portfolio")
+@parqet_router.post("/api/refresh/portfolio")
 async def trigger_portfolio_refresh():
     """Nur Parqet-Portfolio neu laden (Cache löschen)."""
+    from services.refresh import _refresh_data
+
     if portfolio_data["refreshing"]:
         return {"status": "already_refreshing", "message": "Refresh läuft bereits..."}
 
@@ -71,9 +80,11 @@ async def trigger_portfolio_refresh():
     return {"status": "started", "message": "Portfolio-Abgleich gestartet!"}
 
 
-@router.post("/api/refresh/parqet")
+@parqet_router.post("/api/refresh/parqet")
 async def trigger_parqet_update():
     """Update Parqet: Positionen + aktuelle Kurse (schnell, ~10s)."""
+    from services.refresh import _update_parqet
+
     if portfolio_data["refreshing"]:
         return {"status": "already_refreshing", "message": "Update läuft bereits..."}
 
@@ -91,6 +102,8 @@ async def trigger_parqet_update():
 @router.post("/api/refresh/scores")
 async def trigger_scores_refresh():
     """Nur Finanzdaten neu bewerten (alle Caches löschen außer Portfolio)."""
+    from services.refresh import _refresh_data
+
     if portfolio_data["refreshing"]:
         return {"status": "already_refreshing", "message": "Refresh läuft bereits..."}
 
@@ -108,7 +121,7 @@ async def trigger_scores_refresh():
     return {"status": "started", "message": f"Neubewertung gestartet ({cleared} Caches gelöscht)!"}
 
 
-@router.post("/api/trigger-report")
+@telegram_router.post("/api/trigger-report")
 async def trigger_report():
     """Manuell AI-Report + Telegram senden (für lokale Entwicklung)."""
     if not settings.telegram_configured:
@@ -134,13 +147,15 @@ async def trigger_report():
     return {"status": "started", "message": f"AI-Report wird gesendet ({len(scored)} Aktien mit Score)..."}
 
 
-@router.post("/api/trigger-weekly-digest")
+@telegram_router.post("/api/trigger-weekly-digest")
 async def trigger_weekly_digest():
     """Weekly Digest via Cloud Scheduler (Freitag 22:30 CET).
 
     1. Quick-Price-Refresh (aktuelle Kurse nach US-Börsenschluss)
     2. Weekly Digest generieren und via Telegram senden
     """
+    from services.refresh import _quick_price_refresh
+
     if not settings.telegram_configured:
         return {"status": "error", "message": "Telegram nicht konfiguriert"}
 
@@ -163,4 +178,3 @@ async def trigger_weekly_digest():
 
     asyncio.create_task(_send_digest())
     return {"status": "started", "message": "Weekly Digest wird generiert und gesendet..."}
-

@@ -178,3 +178,6 @@ def test_optional_extensions_are_disabled_by_default():
     assert current.ENABLE_TELEGRAM is False
     assert current.ENABLE_PARQET is False
     assert current.ENABLE_SHADOW_AGENT is False
+    assert current.ENABLE_TECH_RADAR is False
+    assert current.ENABLE_TRADE_ADVISOR is False
+    assert current.ENABLE_LEGACY_SQLITE_COMPAT is False

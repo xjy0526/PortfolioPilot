@@ -14,14 +14,16 @@ def test_personal_mode_keeps_personal_features(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_TELEGRAM", False)
     monkeypatch.setattr(settings, "ENABLE_PARQET", False)
     monkeypatch.setattr(settings, "ENABLE_SHADOW_AGENT", False)
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", False)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", False)
 
     payload = app_settings._public_settings()
 
     assert payload["app_mode"] == "personal"
     assert payload["feature_flags"] == {
-        "tech_picks": True,
+        "tech_picks": False,
         "shadow_agent": False,
-        "trade_advisor": True,
+        "trade_advisor": False,
         "polymarket": False,
         "telegram": False,
         "parqet": False,
@@ -34,6 +36,8 @@ def test_fund_research_mode_hides_personal_features(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_TELEGRAM", False)
     monkeypatch.setattr(settings, "ENABLE_PARQET", False)
     monkeypatch.setattr(settings, "ENABLE_SHADOW_AGENT", False)
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", False)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", False)
 
     payload = app_settings._public_settings()
 
@@ -66,6 +70,17 @@ def test_shadow_agent_requires_explicit_feature_flag():
 
     assert disabled.shadow_agent_enabled is False
     assert enabled.shadow_agent_enabled is True
+
+
+def test_tech_radar_and_trade_advisor_require_explicit_feature_flags(monkeypatch):
+    monkeypatch.setattr(settings, "APP_MODE", "personal")
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", True)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", True)
+
+    flags = app_settings._public_settings()["feature_flags"]
+
+    assert flags["tech_picks"] is True
+    assert flags["trade_advisor"] is True
 
 
 def test_frontend_marks_personal_only_entries_and_neutral_labels():

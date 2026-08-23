@@ -56,6 +56,11 @@ flowchart LR
 
 设计边界：确定性引擎负责账本、估值、风险和目标权重；LLM 只解释结构化结果与已检索证据，不能直接修改目标权重。
 
+运行时入口显式分为 `register_core_routes`、`register_compat_routes` 和
+`register_experimental_routes`。Core 使用 PostgreSQL/pgvector；旧 Dashboard URL 通过 adapter
+读取同一事实源；Telegram、Shadow、Trade Advisor、Tech Radar 与 Parqet 只有在各自 flag 开启时
+才注册。完整分类见 [模块运行边界](docs/module-boundaries.md)。
+
 ## 5 分钟 Quick Start
 
 项目目标运行时为 Python 3.12，CI 使用 Python 3.12 验证。以下应用命令已在当前仓库实际执行；macOS/Linux 使用示例中的激活命令，Windows 可改用 `venv\Scripts\activate`。
@@ -107,6 +112,7 @@ APP_MODE=fund_research
 READ_ONLY_DEMO=false
 OBJECT_STORAGE_BACKEND=local
 OBJECT_STORAGE_LOCAL_ROOT=data/object_storage
+ENABLE_LEGACY_SQLITE_COMPAT=false
 EMBEDDING_PROVIDER=hashing
 RAG_ALLOW_HASHING_FALLBACK=true
 QWEN_API_KEY=
@@ -198,6 +204,7 @@ python -m app.workers.run_daily_pipeline --help
 | [docs/demo-script.md](docs/demo-script.md) | 5-8 分钟面试演示流程、预期输出与 fallback |
 | [docs/demo-recording-guide.md](docs/demo-recording-guide.md) | 真实截图/GIF 录制、脱敏与验收清单 |
 | [docs/architecture.md](docs/architecture.md) | 当前架构、边界和数据流 |
+| [docs/module-boundaries.md](docs/module-boundaries.md) | Core、Compatibility 与 Experimental 的加载和依赖边界 |
 | [docs/api.md](docs/api.md) | API 索引与兼容接口 |
 | [docs/testing.md](docs/testing.md) | 测试分层与 PostgreSQL restart E2E |
 | [docs/deployment.md](docs/deployment.md) | Web、Cron、对象存储、preflight 与恢复边界 |
@@ -215,9 +222,15 @@ ENABLE_POLYMARKET=false
 ENABLE_TELEGRAM=false
 ENABLE_PARQET=false
 ENABLE_SHADOW_AGENT=false
+ENABLE_TECH_RADAR=false
+ENABLE_TRADE_ADVISOR=false
+ENABLE_LEGACY_SQLITE_COMPAT=false
 ```
 
-关闭这些扩展不影响 PostgreSQL 账本、风险分析、Hybrid RAG、Prompt/Trace、人工审核和回测。`APP_MODE=fund_research` 会进一步隐藏个人化和交易式表达入口。
+关闭这些扩展不影响 PostgreSQL 账本、风险分析、Hybrid RAG、Prompt/Trace、人工审核和回测。
+`ENABLE_LEGACY_SQLITE_COMPAT` 只控制旧 SQLite 初始化与旧 in-memory Demo，不控制
+PostgreSQL-backed `/api/portfolio` adapter；production 会拒绝该开关为 `true`。
+`APP_MODE=fund_research` 会进一步隐藏个人化和交易式表达入口。
 
 ## 深入配置与模块说明
 

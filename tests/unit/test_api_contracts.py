@@ -9,7 +9,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 
+from app.api.router_registry import (
+    register_compat_routes,
+    register_core_routes,
+    register_experimental_routes,
+)
+from config import Settings
 from main import app
 from scripts.export_api_contract import (
     CORE_API_PATHS,
@@ -68,7 +75,27 @@ def test_every_frontend_api_path_is_registered() -> None:
         match.group("url").split("?", maxsplit=1)[0]
         for match in API_STRING_PATTERN.finditer(frontend_source)
     }
-    registered_paths = set(app.openapi()["paths"])
+    compatibility_app = FastAPI()
+    compatibility_settings = Settings(
+        _env_file=None,
+        ENVIRONMENT="test",
+        ENABLE_LEGACY_SQLITE_COMPAT=True,
+        ENABLE_TELEGRAM=True,
+        ENABLE_PARQET=True,
+        ENABLE_SHADOW_AGENT=True,
+        ENABLE_TECH_RADAR=True,
+        ENABLE_TRADE_ADVISOR=True,
+    )
+    register_core_routes(compatibility_app)
+    register_compat_routes(
+        compatibility_app,
+        configuration=compatibility_settings,
+    )
+    register_experimental_routes(
+        compatibility_app,
+        configuration=compatibility_settings,
+    )
+    registered_paths = set(compatibility_app.openapi()["paths"])
     missing = sorted(
         path
         for path in frontend_paths

@@ -47,6 +47,12 @@ READ_ONLY_DEMO=true
 EMBEDDING_PROVIDER=sentence_transformers
 RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 RAG_ALLOW_HASHING_FALLBACK=false
+ENABLE_LEGACY_SQLITE_COMPAT=false
+ENABLE_TELEGRAM=false
+ENABLE_PARQET=false
+ENABLE_SHADOW_AGENT=false
+ENABLE_TECH_RADAR=false
+ENABLE_TRADE_ADVISOR=false
 ```
 
 生产可写模式额外要求：
@@ -93,8 +99,14 @@ Preflight 使用与 `/health/ready` 相同的规则：
 4. Embedding provider 可加载；
 5. 模式要求的 object storage bucket 可访问；
 6. production auth 与 read-only/write-mode 配置一致。
+7. legacy SQLite compatibility 未启用，实验 Router 只按已审批的 feature flag 注册。
 
 任一必要检查失败时 CLI 返回非零，`/health/ready` 返回 HTTP 503。`/health/live` 始终只检查进程，不代表数据库、模型或 bucket 可用。
+
+production 不允许 `ENABLE_LEGACY_SQLITE_COMPAT=true`。该开关只用于 development/test 的旧库
+迁移验证；它会执行旧 SQLite 初始化和 JSON-to-SQLite migration，任何失败都会阻止启动。Core
+模式的 liveness/readiness 不依赖 SQLite。模块与 Router 分类见
+[module-boundaries.md](module-boundaries.md)。
 
 ## 6. 对象权限与数据记录
 

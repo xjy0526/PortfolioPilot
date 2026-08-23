@@ -12,11 +12,12 @@ import logging
 from fastapi import APIRouter
 
 from state import portfolio_data
-from services.refresh import _refresh_data
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+tech_radar_router = APIRouter()
+trade_advisor_router = APIRouter()
 
 
 @router.post("/api/analysis/run")
@@ -117,6 +118,8 @@ async def get_score_trend(ticker: str, days: int = 7):
 
 async def _run_full_analysis():
     """Volle Analyse: Refresh aller Daten + Report generieren."""
+    from services.refresh import _refresh_data
+
     # _refresh_data erstellt bereits Scores → wir generieren danach den Report
     await _refresh_data()
 
@@ -256,7 +259,7 @@ async def get_backtest(lookback_days: int = 30, forward_days: int = 14):
 # A3: Sektor-Rotation-Endpoint
 # ─────────────────────────────────────────────────────────────
 
-@router.get("/api/sectors/rotation")
+@tech_radar_router.get("/api/sectors/rotation")
 async def get_sector_rotation():
     """Sektor-Rotation-Analyse: Relative Sektor-Performance vs. S&P 500."""
     # Demo-Modus
@@ -282,7 +285,7 @@ async def get_sector_rotation():
 # AI Trade Advisor Endpoint
 # ─────────────────────────────────────────────────────────────
 
-@router.post("/api/advisor/evaluate")
+@trade_advisor_router.post("/api/advisor/evaluate")
 async def evaluate_trade_endpoint(data: dict):
     """AI Trade Advisor: Evaluiert Kauf/Verkauf-Entscheidungen.
 
@@ -321,7 +324,7 @@ async def evaluate_trade_endpoint(data: dict):
     return result
 
 
-@router.post("/api/advisor/chat")
+@trade_advisor_router.post("/api/advisor/chat")
 async def advisor_chat_endpoint(data: dict):
     """AI Advisor Chat: Freie Konversation mit Portfolio-Kontext.
 
@@ -348,7 +351,7 @@ async def advisor_chat_endpoint(data: dict):
     return result
 
 
-@router.get("/api/advisor/holding-recommendations")
+@trade_advisor_router.get("/api/advisor/holding-recommendations")
 async def holding_recommendations_endpoint(lang: str = "zh"):
     """AI Holding Advisor: Gibt Empfehlungen fuer alle aktuellen Positionen."""
     if lang not in ("zh", "en"):
