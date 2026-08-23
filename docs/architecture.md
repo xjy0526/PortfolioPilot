@@ -89,6 +89,8 @@ flowchart LR
 
 Dashboard 兼容写入采用 replace-snapshot 语义。`legacy_snapshot_generations` 保留每个 `ImportBatch` 的激活与 supersede 血缘；组合行锁串行化并发更新，部分唯一索引保证每个组合和 source 最多一个 active generation。重建查询保留所有正式交易，但只合并 active `legacy_dashboard_csv` generation。替换、重建和估值位于同一请求事务内，任何下游失败都不会切换 active generation。
 
+Dashboard 读取同样受 generation lineage 约束。`PortfolioValuationRepository.latest_for_legacy_generation()` 在 PostgreSQL 内核对 active generation、import batch、`ledger_rebuild` 来源、完整估值状态、覆盖率和 `as_of`；`LegacyPortfolioAdapter` 不加载全量快照做 Python 过滤，也不回退到旧累计估值。升级后若 active generation 尚无匹配估值，API 返回 `409 portfolio_rebuild_required`，由显式 repair Service 重建后才能恢复流量。
+
 ## 交易账本
 
 `TransactionLedgerService` 使用以下语义：

@@ -54,6 +54,19 @@ Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=o
 
 CSV 中的 `current_price` 会以带 import batch 后缀的 `legacy_csv_user_supplied:<batch_id>` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback:<batch_id>`。估值只允许读取 active generation 对应 batch 的这类用户价格，两者都不是权威行情源。
 
+当组合存在 active `legacy_dashboard_csv` generation 时，所有通过 `LegacyPortfolioAdapter` 读取 Dashboard 组合的接口只接受 `source=ledger_rebuild`、`valuation_status=complete`、覆盖完整，且 `config_snapshot.data_source_context` 同时关联当前 generation ID 与 import batch ID 的估值。旧累计估值、superseded generation 估值和缺少 lineage 的估值不会被静默返回。没有匹配快照时统一返回 HTTP `409`：
+
+```json
+{
+  "error": "portfolio_rebuild_required",
+  "portfolio_id": "<uuid>",
+  "active_generation_id": "<uuid>",
+  "reason": "valuation_generation_mismatch"
+}
+```
+
+运维人员应运行 `python -m scripts.rebuild_stale_legacy_valuations --dry-run` 扫描，再使用同一命令去掉 `--dry-run` 重建。没有 legacy generation 的正式交易组合继续读取正常 `ledger_rebuild` 估值，不会被标记为需要 legacy repair。
+
 ## Market Data (`app/api/market_data.py`)
 
 | 方法 | 路径 | 说明 |

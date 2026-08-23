@@ -36,6 +36,7 @@ MAJOR_CLI_MODULES = (
     "evaluation.run_v2_eval",
     "scripts.build_evaluation_v2_dataset",
     "scripts.export_api_contract",
+    "scripts.rebuild_stale_legacy_valuations",
 )
 
 
