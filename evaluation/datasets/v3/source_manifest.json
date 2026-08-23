@@ -1,0 +1,225 @@
+{
+  "case_count": 45,
+  "category_distribution": {
+    "citation_entailment": 5,
+    "cross_document_comparison": 5,
+    "evidence_insufficient": 4,
+    "numeric_consistency": 5,
+    "permission_filtering": 4,
+    "point_in_time_sensitivity": 4,
+    "portfolio_risk_explanation": 6,
+    "refusal_safety": 3,
+    "single_document_fact_qa": 5,
+    "workflow_rule_boundary": 4
+  },
+  "checksum": {
+    "algorithm": "sha256",
+    "immutable_files": {
+      "candidate_cases.jsonl": "956365a55e04aa80d7c10b5f48dd5f8ab9e81b3b585fa511c6b75a5bc13d3ab0",
+      "documents.jsonl": "453358da2e9580a2135edc27317c1f197838c6ebf6ec07416f5baf845f29627e",
+      "portfolios.jsonl": "29baa6202dfb5f03decb519f863ccb3740ad0cb0ed11ff169e9e3d6e09e2801b"
+    },
+    "scope": "immutable source files only; mutable human label files excluded"
+  },
+  "created_at": "2026-08-23T13:59:30Z",
+  "data_cutoff": "2025-12-31",
+  "dataset_name": "portfoliopilot_human_review_v3",
+  "human_review_policy": {
+    "approved_label_count": 0,
+    "automated_approval_allowed": false,
+    "committed_label_state": "pending",
+    "conflicts_require_adjudication": true,
+    "minimum_reviewer_count": 2,
+    "reviewers_must_be_distinct": true
+  },
+  "license_notes": "Project-authored fixtures follow the repository license. Public-source entries contain short project-authored paraphrases and retain source metadata; source documents are not redistributed.",
+  "source_policy": "Only repository-contained project-authored public paraphrases and synthetic fixtures are used. No customer portfolio, internal research or paid content.",
+  "sources": [
+    {
+      "classification": "public_source_paraphrase",
+      "content_checksum": "5e124e53864019256d9e0895a0b2df26001a6803406605b5a389b33260230b77",
+      "document_id": "doc-public-aapl-2024-10k",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2024-11-01",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "source_identifier": "SEC accession 0000320193-24-000123",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
+    },
+    {
+      "classification": "public_source_paraphrase",
+      "content_checksum": "72dc0077050e746b0d5def9fe73d97d78b5503272b82aa6ce6fa7fa9c0c844f4",
+      "document_id": "doc-public-nvda-2025-10k",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-02-26",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "source_identifier": "SEC accession 0001045810-25-000023",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000023/nvda-20250126.htm"
+    },
+    {
+      "classification": "public_source_paraphrase",
+      "content_checksum": "e91dc5b122878cf327df792ee420564f4c6fea08d97c4150e2dcb3689dbe7694",
+      "document_id": "doc-public-msft-2025-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-07-30",
+      "publisher": "Microsoft Investor Relations",
+      "source_identifier": "Microsoft Annual Report 2025",
+      "source_url": "https://www.microsoft.com/investor/reports/ar25/index.html"
+    },
+    {
+      "classification": "public_source_paraphrase",
+      "content_checksum": "86bf41582040eaaaba42b6902e6e4c8d44c2534653b291b5c7b4ba0b0737729b",
+      "document_id": "doc-public-maotai-2023-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2024-04-03",
+      "publisher": "上海证券交易所",
+      "source_identifier": "SSE 600519_20240403_W0YD",
+      "source_url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2024-04-03/600519_20240403_W0YD.pdf"
+    },
+    {
+      "classification": "public_source_paraphrase",
+      "content_checksum": "c2d87389d7512de568cf97333f17114c1c1b12803dd80ef7de6073c30362d623",
+      "document_id": "doc-public-etf-510760-2024-ar",
+      "license_use_note": "Official public source metadata plus a short project-authored paraphrase; the source document is not redistributed and its own use terms still apply.",
+      "publish_date": "2025-03-29",
+      "publisher": "上海证券交易所",
+      "source_identifier": "SSE 510760_20250329_OI9P",
+      "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2025-03-29/510760_20250329_OI9P.pdf"
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "ce8a7b0c07125a78e7730355d9aaefba918d3344237baa0297c4238873c3a48d",
+      "document_id": "doc-policy-single-asset",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "6dcf42b6f7a479b426e96ee2a03b28717021a182cd6d9a8178f2bb57a42b707c",
+      "document_id": "doc-policy-sector",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "1f8c79090e5f9859dbfbf23bfbfe8b7a11865ed2531e2ca809e5f6c0f82208f6",
+      "document_id": "doc-policy-fx",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "73ad680f6261b7cbc8a798406ec22f3bb368d4b388247cf2929677a83e3b0cd4",
+      "document_id": "doc-policy-volatility",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "55cb1a1dc5afbab424a8db25b3f86ca87631efb021c5ad2a7d9671d18c9eb39b",
+      "document_id": "doc-policy-liquidity",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "85e6f335d67c28a2f31d9ed94d77fff0af30c179fa5fe645ebdd1d2dec66532d",
+      "document_id": "doc-policy-multi-asset",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "a71ddefd137ae8396958de10116ed48bb4fbf07aeb7895fdb185ffe085a5c467",
+      "document_id": "doc-conflict-demand-positive",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "2849bcf3cd7e2d1985be2024df2c69da7d7ec8d578e536951021f0eee473c4f2",
+      "document_id": "doc-conflict-demand-cautious",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "c722bdf47f8c8e0d9cf63dfd6b81aa36c358ef511b643a5341f8994191657aa1",
+      "document_id": "doc-stale-market-outlook",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2023-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "a45be461b7840fa45d883d844fab8384f441ef6a38eff7fcd0685ee4ebf54705",
+      "document_id": "doc-permission-public",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "98733d5a84a87cd0be771b344cfc11d8141a6070fc95e3177e7750734803fe7a",
+      "document_id": "doc-permission-restricted",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "69dd38e11fff1c167103f2547255107efbe4ebe7780c5df97b7a99f7e4a08762",
+      "document_id": "doc-policy-refusal",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    },
+    {
+      "classification": "synthetic_fixture",
+      "content_checksum": "1792036f679cf17e5c2b586b2f183d86bbed18b0a0d29732f3e89d434999325c",
+      "document_id": "doc-policy-workflow",
+      "license_use_note": "Project-authored evaluation fixture; repository license applies.",
+      "publish_date": "2025-01-01",
+      "publisher": "PortfolioPilot",
+      "source_identifier": null,
+      "source_url": null
+    }
+  ],
+  "synthetic_fields": [
+    "all portfolio holdings and risk metrics",
+    "all policy and scenario fixtures",
+    "candidate questions and review tasks"
+  ],
+  "version": "3.0.0"
+}
