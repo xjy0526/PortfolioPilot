@@ -73,6 +73,15 @@ hybrid_rrf_reranker
 
 前三种必须有完整 case results。reranker 未配置时必须写 `available=false` 和明确的 `unavailable_reason`，不能补造分数。
 
+每个可用 Retriever case 必须包含字符串 `case_id`、`retrieved` 列表和非负
+`latency_ms`。每条 retrieved item 必须包含非空 `document_id` 与有限数值 `score`，同一
+case 不允许重复 document ID。每个 Generation case 必须包含字符串 `case_id`、
+`citation_document_ids` 列表、布尔 `refused` 和非负 `latency_ms`，重复 citation ID 同样
+会被拒绝。缺字段或类型错误的 bundle 会在计算任何指标前 fail closed。
+
+`answer_completeness=not_applicable` 不进入完整性指标分母；报告同时输出实际适用的
+`answer_completeness_sample_count`。
+
 ## 4. 分配两位 Reviewer
 
 Reviewer identity 必须来自真实人员分配，可使用稳定的内部匿名 ID；不得由自动化程序虚构第二位审核者。

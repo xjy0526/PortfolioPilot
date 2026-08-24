@@ -114,6 +114,8 @@ def validate_prediction_bundle(
     if not isinstance(bundle.get("generation"), list):
         raise ValueError("prediction bundle requires generation results")
     generation_cases = _index_cases(bundle["generation"], "generation")
+    for case in generation_cases.values():
+        _validate_generation_case(case)
     known_case_ids = set(dataset.case_ids)
     unknown_generation = sorted(set(generation_cases).difference(known_case_ids))
     if unknown_generation:
@@ -125,6 +127,8 @@ def validate_prediction_bundle(
         if not isinstance(result, dict) or result.get("available") is not True:
             continue
         variant_cases = _index_cases(result["cases"], variant)
+        for case in variant_cases.values():
+            _validate_retrieval_case(case, variant)
         unknown_retrieval = sorted(set(variant_cases).difference(known_case_ids))
         if unknown_retrieval:
             raise ValueError(f"{variant} contains unknown cases: {unknown_retrieval}")
@@ -220,6 +224,7 @@ def evaluate_generation_results(
     numeric_hits = 0
     numeric_total = 0
     completeness_hits = 0
+    completeness_total = 0
     unsupported_claims = 0
     latencies: list[float] = []
     for case_id, label in label_by_case.items():
@@ -244,7 +249,9 @@ def evaluate_generation_results(
         if label["numeric_consistency"] != "not_applicable":
             numeric_total += 1
             numeric_hits += label["numeric_consistency"] == "pass"
-        completeness_hits += label["answer_completeness"] == "complete"
+        if label["answer_completeness"] != "not_applicable":
+            completeness_total += 1
+            completeness_hits += label["answer_completeness"] == "complete"
         unsupported_claims += label["unsupported_claim"] is True
         latency = prediction.get("latency_ms")
         if isinstance(latency, (int, float)) and latency >= 0:
@@ -260,7 +267,8 @@ def evaluate_generation_results(
         "evidence_insufficient_sample_count": evidence_accuracy_total,
         "refusal_precision": _rate(refusal_true_positive, refused_total),
         "numeric_consistency_rate": _rate(numeric_hits, numeric_total),
-        "answer_completeness_rate": _rate(completeness_hits, count),
+        "answer_completeness_rate": _rate(completeness_hits, completeness_total),
+        "answer_completeness_sample_count": completeness_total,
         "unsupported_claim_rate": _rate(unsupported_claims, count),
         "p50_latency_ms": _percentile(latencies, 0.50),
         "p95_latency_ms": _percentile(latencies, 0.95),
@@ -401,11 +409,70 @@ def _rows_sha256(rows: list[dict[str, Any]]) -> str:
 def _index_cases(rows: list[dict[str, Any]], source: str) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for row in rows:
-        case_id = str(row.get("case_id", "")).strip()
+        if not isinstance(row, dict):
+            raise ValueError(f"{source} case result must be an object")
+        raw_case_id = row.get("case_id")
+        if not isinstance(raw_case_id, str):
+            raise ValueError(f"{source} requires string case IDs")
+        case_id = raw_case_id.strip()
         if not case_id or case_id in indexed:
             raise ValueError(f"{source} requires unique, non-empty case IDs")
         indexed[case_id] = row
     return indexed
+
+
+def _validate_retrieval_case(case: dict[str, Any], source: str) -> None:
+    case_id = case["case_id"]
+    retrieved = case.get("retrieved")
+    if not isinstance(retrieved, list):
+        raise ValueError(f"{source} case {case_id} requires a retrieved list")
+    _validate_latency(case.get("latency_ms"), f"{source} case {case_id}")
+    seen_document_ids: set[str] = set()
+    for item in retrieved:
+        if not isinstance(item, dict):
+            raise ValueError(f"{source} case {case_id} retrieved items must be objects")
+        document_id = item.get("document_id")
+        if not isinstance(document_id, str) or not document_id.strip():
+            raise ValueError(f"{source} case {case_id} requires non-empty document IDs")
+        canonical_id = document_id.strip()
+        if canonical_id in seen_document_ids:
+            raise ValueError(f"{source} case {case_id} contains duplicate document IDs")
+        seen_document_ids.add(canonical_id)
+        score = item.get("score")
+        if not _is_finite_number(score):
+            raise ValueError(f"{source} case {case_id} requires numeric retrieval scores")
+
+
+def _validate_generation_case(case: dict[str, Any]) -> None:
+    case_id = case["case_id"]
+    citations = case.get("citation_document_ids")
+    if not isinstance(citations, list):
+        raise ValueError(f"generation case {case_id} requires a citation_document_ids list")
+    canonical_citations: list[str] = []
+    for document_id in citations:
+        if not isinstance(document_id, str) or not document_id.strip():
+            raise ValueError(
+                f"generation case {case_id} requires non-empty citation document IDs"
+            )
+        canonical_citations.append(document_id.strip())
+    if len(canonical_citations) != len(set(canonical_citations)):
+        raise ValueError(f"generation case {case_id} contains duplicate citation document IDs")
+    if not isinstance(case.get("refused"), bool):
+        raise ValueError(f"generation case {case_id} requires boolean refused")
+    _validate_latency(case.get("latency_ms"), f"generation case {case_id}")
+
+
+def _validate_latency(value: Any, source: str) -> None:
+    if not _is_finite_number(value) or float(value) < 0:
+        raise ValueError(f"{source} requires non-negative numeric latency_ms")
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
 
 
 def _retrieval_metrics(

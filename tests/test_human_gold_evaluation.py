@@ -393,6 +393,31 @@ def test_two_reviewer_agreement_and_adjudication_enable_metrics(tmp_path: Path) 
     ]
 
 
+def test_answer_completeness_excludes_not_applicable_labels(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path)
+    prediction_path = tmp_path / "predictions.json"
+    digest = _write_bundle(dataset, prediction_path)
+    _complete_reviews(dataset, prediction_sha256=digest)
+    for filename in (
+        "labels_reviewer_a.jsonl",
+        "labels_reviewer_b.jsonl",
+        "adjudicated_labels.jsonl",
+    ):
+        rows = jsonl(dataset.root / filename)
+        rows[0]["answer_completeness"] = "not_applicable"
+        write_jsonl(dataset.root / filename, rows)
+    completed = HumanGoldDataset.load(dataset.root)
+
+    report = build_human_gold_report(
+        dataset=completed,
+        bundle=json.loads(prediction_path.read_text(encoding="utf-8")),
+        prediction_path=prediction_path,
+    )
+
+    assert report["generation_metrics"]["answer_completeness_rate"] == 1.0
+    assert report["generation_metrics"]["answer_completeness_sample_count"] == 44
+
+
 def test_two_reviewer_consensus_does_not_invent_a_third_reviewer(
     tmp_path: Path,
 ) -> None:
@@ -619,6 +644,49 @@ def test_human_gold_rejects_mock_or_fixture_prediction_bundles(
     bundle["metadata"].update(metadata_override)
 
     with pytest.raises(RuntimeError, match=error):
+        validate_prediction_bundle(bundle, dataset=dataset, mode="human_gold_eval")
+
+
+@pytest.mark.parametrize(
+    ("payload_kind", "error"),
+    [
+        ("retrieval_missing", "requires a retrieved list"),
+        ("retrieval_wrong_type", "retrieved items must be objects"),
+        ("generation_missing", "requires a citation_document_ids list"),
+        ("generation_wrong_type", "requires boolean refused"),
+    ],
+)
+def test_prediction_bundle_rejects_incomplete_or_mistyped_case_payloads(
+    tmp_path: Path,
+    payload_kind: str,
+    error: str,
+) -> None:
+    dataset = _dataset(tmp_path)
+    bundle = _prediction_bundle(dataset)
+    if payload_kind == "retrieval_missing":
+        case_id = bundle["retrievers"]["bm25_fts_only"]["cases"][0]["case_id"]
+        bundle["retrievers"]["bm25_fts_only"]["cases"][0] = {"case_id": case_id}
+    elif payload_kind == "retrieval_wrong_type":
+        bundle["retrievers"]["bm25_fts_only"]["cases"][0]["retrieved"] = ["doc"]
+    elif payload_kind == "generation_missing":
+        case_id = bundle["generation"][0]["case_id"]
+        bundle["generation"][0] = {"case_id": case_id}
+    else:
+        bundle["generation"][0]["refused"] = "false"
+
+    with pytest.raises(ValueError, match=error):
+        validate_prediction_bundle(bundle, dataset=dataset, mode="human_gold_eval")
+
+
+def test_prediction_bundle_rejects_duplicate_retrieved_document_ids(
+    tmp_path: Path,
+) -> None:
+    dataset = _dataset(tmp_path)
+    bundle = _prediction_bundle(dataset)
+    retrieved = bundle["retrievers"]["bm25_fts_only"]["cases"][0]["retrieved"]
+    retrieved.append(dict(retrieved[0]))
+
+    with pytest.raises(ValueError, match="contains duplicate document IDs"):
         validate_prediction_bundle(bundle, dataset=dataset, mode="human_gold_eval")
 
 
