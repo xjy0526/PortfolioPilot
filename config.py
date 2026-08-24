@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # Production safety. READ_ONLY_DEMO defaults to True in production and
     # False elsewhere when it is not explicitly configured.
     READ_ONLY_DEMO: bool | None = None
+    # Enables deterministic fixture seeding for the local showcase only. This
+    # mode is deliberately rejected by production preflight.
+    DEMO_FIXTURE_MODE: bool = False
     ALLOW_RUNTIME_SECRET_CONFIGURATION: bool = False
     ALLOW_DEV_IDENTITY_HEADERS: bool = False
 
@@ -400,6 +403,8 @@ class Settings(BaseSettings):
 
     def validate_runtime_configuration(self) -> None:
         """Fail closed when a production deployment has an unsafe identity mode."""
+        if self.ENVIRONMENT == "production" and self.DEMO_FIXTURE_MODE:
+            raise RuntimeError("DEMO_FIXTURE_MODE is forbidden in production")
         if self.ENVIRONMENT != "production":
             return
         if self.ALLOW_DEV_IDENTITY_HEADERS:
