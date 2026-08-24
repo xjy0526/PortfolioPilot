@@ -598,6 +598,30 @@ def test_prediction_provenance_contract_is_complete(tmp_path: Path) -> None:
         assert field in bundle["metadata"]
 
 
+@pytest.mark.parametrize(
+    ("metadata_override", "error"),
+    [
+        ({"mock_response_used": True}, "cannot evaluate mock responses"),
+        ({"real_model_used": False}, "requires real_model_used=true"),
+        (
+            {"response_source": "deterministic_fixture"},
+            "requires response_source=live_model",
+        ),
+    ],
+)
+def test_human_gold_rejects_mock_or_fixture_prediction_bundles(
+    tmp_path: Path,
+    metadata_override: dict[str, object],
+    error: str,
+) -> None:
+    dataset = _dataset(tmp_path)
+    bundle = _prediction_bundle(dataset)
+    bundle["metadata"].update(metadata_override)
+
+    with pytest.raises(RuntimeError, match=error):
+        validate_prediction_bundle(bundle, dataset=dataset, mode="human_gold_eval")
+
+
 def test_available_reranker_must_cover_the_same_cases(tmp_path: Path) -> None:
     dataset = _dataset(tmp_path)
     bundle = _prediction_bundle(dataset)
