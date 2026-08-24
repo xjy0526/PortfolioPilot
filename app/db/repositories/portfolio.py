@@ -336,7 +336,6 @@ class LegacySnapshotGenerationRepository(BaseRepository[LegacySnapshotGeneration
         *,
         portfolio_id: uuid.UUID | None = None,
         source: str = "legacy_dashboard_csv",
-        limit: int | None = None,
     ) -> list[LegacySnapshotGeneration]:
         statement = select(LegacySnapshotGeneration).where(
             LegacySnapshotGeneration.source == source,
@@ -350,8 +349,6 @@ class LegacySnapshotGenerationRepository(BaseRepository[LegacySnapshotGeneration
             LegacySnapshotGeneration.portfolio_id,
             LegacySnapshotGeneration.generation_number,
         )
-        if limit is not None:
-            statement = statement.limit(limit)
         return list((await self.session.scalars(statement)).all())
 
     async def activate(

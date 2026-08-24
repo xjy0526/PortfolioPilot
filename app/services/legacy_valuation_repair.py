@@ -95,14 +95,17 @@ class LegacyValuationRepairService:
         portfolio_id: uuid.UUID | None = None,
         limit: int | None = None,
     ) -> LegacyValuationScanResult:
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be greater than zero")
         cutoff = _as_utc(as_of)
         generations = await self.generations.list_active(
             portfolio_id=portfolio_id,
             source=LEGACY_SNAPSHOT_SOURCE,
-            limit=limit,
         )
         candidates: list[LegacyValuationRepairCandidate] = []
+        scanned_portfolios = 0
         for generation in generations:
+            scanned_portfolios += 1
             matching = await self.valuations.latest_for_legacy_generation(
                 generation.portfolio_id,
                 generation.id,
@@ -127,8 +130,10 @@ class LegacyValuationRepairService:
                     reason=_mismatch_reason(latest, generation.id),
                 )
             )
+            if limit is not None and len(candidates) >= limit:
+                break
         return LegacyValuationScanResult(
-            scanned_portfolios=len(generations),
+            scanned_portfolios=scanned_portfolios,
             candidates=tuple(candidates),
         )
 

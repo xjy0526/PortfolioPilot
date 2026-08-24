@@ -37,6 +37,7 @@ from app.db.models import (
 from app.db.repositories import (
     PortfolioRepository,
     PortfolioValuationRepository,
+    TransactionRepository,
 )
 from app.services.legacy_portfolio_adapter import (
     LegacyPortfolioAdapter,
@@ -163,6 +164,8 @@ async def _api_request(
 async def _seed_0006_additive_state(
     factory: async_sessionmaker[AsyncSession],
     suffix: str,
+    *,
+    portfolio_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID, Principal, datetime]:
     first_created = datetime(2026, 8, 18, 10, tzinfo=UTC)
     second_created = first_created + timedelta(days=1)
@@ -187,6 +190,8 @@ async def _seed_0006_additive_state(
             name=f"Legacy Lineage {suffix}",
             base_currency="USD",
         )
+        if portfolio_id is not None:
+            portfolio.id = portfolio_id
         session.add(portfolio)
         await session.flush()
         principal = Principal(
@@ -683,6 +688,177 @@ async def test_0006_upgrade_rejects_additive_valuation_until_idempotent_repair()
         )
         assert isolated.status_code == 503
         assert "active_generation_id" not in isolated.json()
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _drop_database(base_url, database)
+
+
+@pytest.mark.asyncio
+async def test_limited_repair_advances_to_later_stale_portfolios() -> None:
+    base_url = _database_url()
+    database = f"pp_lineage_limit_{uuid.uuid4().hex}"
+    database_url = _application_database_url(base_url, database)
+    portfolio_ids = [uuid.UUID(int=index) for index in range(1, 5)]
+    await _create_database(base_url, database)
+    engine = None
+    try:
+        await asyncio.to_thread(
+            _run_alembic,
+            database_url,
+            "upgrade",
+            REVISION_BEFORE_GENERATIONS,
+        )
+        engine, factory = _factory(database_url)
+        old_as_of: datetime | None = None
+        principals: dict[uuid.UUID, Principal] = {}
+        for index, portfolio_id in enumerate(portfolio_ids, start=1):
+            suffix = f"{index:08d}{uuid.uuid4().hex}"
+            seeded_id, _, principal, seeded_as_of = await _seed_0006_additive_state(
+                factory,
+                suffix,
+                portfolio_id=portfolio_id,
+            )
+            assert seeded_id == portfolio_id
+            principals[portfolio_id] = principal
+            old_as_of = seeded_as_of
+        assert old_as_of is not None
+        await engine.dispose()
+        engine = None
+
+        await asyncio.to_thread(
+            _run_alembic,
+            database_url,
+            "upgrade",
+            GENERATION_REVISION,
+        )
+        engine, factory = _factory(database_url)
+        cutoff = old_as_of + timedelta(days=2)
+
+        for portfolio_id in portfolio_ids[:2]:
+            healthy = await run_repair(
+                dry_run=False,
+                portfolio_id=portfolio_id,
+                limit=1,
+                continue_on_error=False,
+                as_of=cutoff,
+                session_factory=factory,
+            )
+            assert healthy["status"] == "completed"
+            assert healthy["affected_portfolios"] == 1
+            assert healthy["outcomes"][0]["status"] == "rebuilt"
+
+        first_dry_run = await run_repair(
+            dry_run=True,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert first_dry_run["scanned_portfolios"] == 3
+        assert first_dry_run["affected_portfolios"] == 1
+        assert first_dry_run["outcomes"][0]["portfolio_id"] == str(
+            portfolio_ids[2]
+        )
+
+        first_repair = await run_repair(
+            dry_run=False,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert first_repair["affected_portfolios"] == 1
+        assert first_repair["outcomes"][0]["portfolio_id"] == str(portfolio_ids[2])
+        assert first_repair["outcomes"][0]["status"] == "rebuilt"
+
+        second_dry_run = await run_repair(
+            dry_run=True,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert second_dry_run["scanned_portfolios"] == 4
+        assert second_dry_run["affected_portfolios"] == 1
+        assert second_dry_run["outcomes"][0]["portfolio_id"] == str(
+            portfolio_ids[3]
+        )
+
+        second_repair = await run_repair(
+            dry_run=False,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert second_repair["affected_portfolios"] == 1
+        assert second_repair["outcomes"][0]["portfolio_id"] == str(portfolio_ids[3])
+        assert second_repair["outcomes"][0]["status"] == "rebuilt"
+
+        final_dry_run = await run_repair(
+            dry_run=True,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert final_dry_run["scanned_portfolios"] == 4
+        assert final_dry_run["affected_portfolios"] == 0
+
+        async with factory.begin() as session:
+            formal, formal_principal = await _create_formal_portfolio(
+                session,
+                uuid.uuid4().hex,
+                cutoff,
+            )
+        async with factory() as session:
+            repository = TransactionRepository(session)
+            effective = await repository.list_effective_for_portfolio(
+                portfolio_ids[2]
+            )
+            audit = await repository.list_audit_for_portfolio(portfolio_ids[2])
+            formal_effective = await repository.list_effective_for_portfolio(formal.id)
+            assert [row.quantity for row in effective] == [Decimal("12")]
+            assert [row.transaction.quantity for row in audit] == [
+                Decimal("10"),
+                Decimal("12"),
+            ]
+            assert [row.effective for row in audit] == [False, True]
+            assert [row.quantity for row in formal_effective] == [Decimal("3")]
+            formal_context = await LegacyPortfolioAdapter(session).load(
+                portfolio_id=formal.id,
+                as_of=cutoff,
+                principal=formal_principal,
+            )
+            assert formal_context is not None
+            assert formal_context.summary.stocks[0].position.shares == 3
+
+        await engine.dispose()
+        engine = None
+        engine, factory = _factory(database_url)
+        after_reconnect = await run_repair(
+            dry_run=True,
+            portfolio_id=None,
+            limit=1,
+            continue_on_error=False,
+            as_of=cutoff,
+            session_factory=factory,
+        )
+        assert after_reconnect["affected_portfolios"] == 0
+        async with factory() as session:
+            context = await LegacyPortfolioAdapter(session).load(
+                portfolio_id=portfolio_ids[3],
+                as_of=cutoff,
+                principal=principals[portfolio_ids[3]],
+            )
+            assert context is not None
+            assert context.summary.stocks[0].position.shares == 12
     finally:
         if engine is not None:
             await engine.dispose()

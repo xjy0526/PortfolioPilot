@@ -12,6 +12,7 @@ from app.services.legacy_portfolio_adapter import PortfolioRebuildRequired
 from app.services.legacy_valuation_repair import (
     LegacyValuationRepairCandidate,
     LegacyValuationRepairOutcome,
+    LegacyValuationRepairService,
     LegacyValuationScanResult,
     _mismatch_reason,
 )
@@ -118,6 +119,117 @@ def test_repair_value_objects_and_mismatch_reasons() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_scan_applies_limit_after_stale_candidate_filtering() -> None:
+    generations = [
+        SimpleNamespace(
+            portfolio_id=uuid.UUID(int=index),
+            id=uuid.UUID(int=100 + index),
+            generation_number=1,
+        )
+        for index in range(1, 5)
+    ]
+
+    class FakeGenerationRepository:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def list_active(self, **kwargs: object) -> list[SimpleNamespace]:
+            self.calls.append(dict(kwargs))
+            portfolio_id = kwargs.get("portfolio_id")
+            if portfolio_id is None:
+                return generations
+            return [
+                generation
+                for generation in generations
+                if generation.portfolio_id == portfolio_id
+            ]
+
+    class FakeValuationRepository:
+        def __init__(self) -> None:
+            self.matching_generation_ids = {
+                generations[0].id,
+                generations[1].id,
+            }
+            self.checked_generation_ids: list[uuid.UUID] = []
+
+        async def latest_for_legacy_generation(
+            self,
+            _portfolio_id: uuid.UUID,
+            generation_id: uuid.UUID,
+            _cutoff: datetime,
+            **_kwargs: object,
+        ) -> object | None:
+            self.checked_generation_ids.append(generation_id)
+            if generation_id in self.matching_generation_ids:
+                return SimpleNamespace(id=uuid.uuid4())
+            return None
+
+        async def latest_for_source(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    generation_repository = FakeGenerationRepository()
+    valuation_repository = FakeValuationRepository()
+    service = LegacyValuationRepairService.__new__(LegacyValuationRepairService)
+    service.generations = generation_repository  # type: ignore[assignment]
+    service.valuations = valuation_repository  # type: ignore[assignment]
+    cutoff = datetime(2026, 8, 24, tzinfo=UTC)
+
+    first = await service.scan(as_of=cutoff, limit=1)
+    assert first.scanned_portfolios == 3
+    assert first.affected_portfolios == 1
+    assert first.candidates[0].portfolio_id == generations[2].portfolio_id
+    assert valuation_repository.checked_generation_ids == [
+        generation.id for generation in generations[:3]
+    ]
+    assert generation_repository.calls[-1] == {
+        "portfolio_id": None,
+        "source": "legacy_dashboard_csv",
+    }
+
+    valuation_repository.matching_generation_ids.add(generations[2].id)
+    valuation_repository.checked_generation_ids.clear()
+    second = await service.scan(as_of=cutoff, limit=1)
+    assert second.scanned_portfolios == 4
+    assert second.affected_portfolios == 1
+    assert second.candidates[0].portfolio_id == generations[3].portfolio_id
+    assert valuation_repository.checked_generation_ids == [
+        generation.id for generation in generations
+    ]
+
+    valuation_repository.matching_generation_ids = {
+        generations[0].id,
+        generations[1].id,
+    }
+    all_stale = await service.scan(as_of=cutoff, limit=None)
+    assert all_stale.scanned_portfolios == 4
+    assert [candidate.portfolio_id for candidate in all_stale.candidates] == [
+        generations[2].portfolio_id,
+        generations[3].portfolio_id,
+    ]
+
+    one_portfolio = await service.scan(
+        as_of=cutoff,
+        portfolio_id=generations[3].portfolio_id,
+        limit=1,
+    )
+    assert one_portfolio.scanned_portfolios == 1
+    assert [candidate.portfolio_id for candidate in one_portfolio.candidates] == [
+        generations[3].portfolio_id
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_scan_rejects_non_positive_candidate_limit(limit: int) -> None:
+    service = LegacyValuationRepairService.__new__(LegacyValuationRepairService)
+    with pytest.raises(ValueError, match="limit must be greater than zero"):
+        await service.scan(
+            as_of=datetime(2026, 8, 24, tzinfo=UTC),
+            limit=limit,
+        )
+
+
 class _SessionContext:
     async def __aenter__(self) -> object:
         return object()
@@ -218,3 +330,15 @@ def test_repair_cli_parses_options_and_returns_report(monkeypatch, capsys) -> No
 
     with pytest.raises(SystemExit):
         repair_script._arguments(["--limit", "0"])
+
+
+def test_repair_cli_help_describes_stale_candidate_limit(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        repair_script._arguments(["--help"])
+
+    assert exc_info.value.code == 0
+    help_output = " ".join(capsys.readouterr().out.split())
+    assert (
+        "Maximum number of stale valuation candidates to report or repair."
+        in help_output
+    )

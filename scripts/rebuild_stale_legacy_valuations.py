@@ -40,7 +40,7 @@ async def run_repair(
     as_of: datetime,
     session_factory: async_sessionmaker[AsyncSession] = AsyncSessionFactory,
 ) -> dict[str, object]:
-    """Scan once, then repair each affected portfolio in its own transaction."""
+    """Select at most ``limit`` stale candidates, then repair each separately."""
     cutoff = _as_utc(as_of)
     async with session_factory() as session:
         scan = await LegacyValuationRepairService(session).scan(
@@ -119,7 +119,7 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=_positive_int,
-        help="Maximum number of active legacy portfolios to scan.",
+        help="Maximum number of stale valuation candidates to report or repair.",
     )
     parser.add_argument(
         "--continue-on-error",
