@@ -15,8 +15,9 @@ from app.api.dependencies import get_db_session
 from app.core.principal import Principal, get_principal, require_writable
 from app.services.legacy_portfolio_adapter import LegacyPortfolioAdapter
 from app.services.legacy_csv_import import LegacyCsvPortfolioImportService
+from app.services.transaction_ledger import TransactionLedgerService
 from app.db.models import Security
-from app.db.repositories import PortfolioValuationRepository, TransactionRepository
+from app.db.repositories import PortfolioValuationRepository
 from state import portfolio_data
 from config import settings
 from models import SectorAllocation
@@ -166,13 +167,13 @@ async def get_portfolio_activities(
     principal: Principal = Depends(get_principal),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """Alle Kauf/Verkauf/Dividenden-Transaktionen von Parqet."""
-    context = await LegacyPortfolioAdapter(session).load(
+    """Return effective portfolio activity while hiding superseded snapshots."""
+    portfolio = await LegacyPortfolioAdapter(session).resolve_portfolio(
         portfolio_id=portfolio_id, principal=principal
     )
-    if context is None:
+    if portfolio is None:
         return []
-    rows = await TransactionRepository(session).list_for_portfolio(context.portfolio.id)
+    rows = await TransactionLedgerService(session).list_transactions(portfolio.id)
     output = []
     for row in rows:
         security = await session.get(Security, row.security_id) if row.security_id else None
@@ -190,6 +191,7 @@ async def get_portfolio_activities(
                 "taxes": float(row.taxes),
                 "currency": row.currency,
                 "source": row.source,
+                "effective": True,
             }
         )
     return output

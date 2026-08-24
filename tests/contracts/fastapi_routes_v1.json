@@ -1,8 +1,8 @@
 {
   "api_title": "PortfolioPilot",
   "api_version": "2.0.0",
-  "operation_count": 79,
-  "path_count": 74,
+  "operation_count": 80,
+  "path_count": 75,
   "routes": [
     {
       "deprecated": false,
@@ -359,6 +359,15 @@
       "method": "GET",
       "operation_id": "list_transactions_api_portfolios__portfolio_id__transactions_get",
       "path": "/api/portfolios/{portfolio_id}/transactions",
+      "tags": [
+        "portfolio-ledger"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "audit_transactions_api_portfolios__portfolio_id__transactions_audit_get",
+      "path": "/api/portfolios/{portfolio_id}/transactions/audit",
       "tags": [
         "portfolio-ledger"
       ]

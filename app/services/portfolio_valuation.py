@@ -74,6 +74,7 @@ class PortfolioValuationService:
         source: str = "ledger_rebuild",
         sync_run_id: uuid.UUID | None = None,
         data_source_context: dict[str, object] | None = None,
+        required_fx_source: str | None = None,
     ) -> ValuationResult:
         cutoff = _as_utc(as_of)
         knowledge_cutoff = _as_utc(knowledge_as_of or cutoff)
@@ -84,6 +85,8 @@ class PortfolioValuationService:
             portfolio.id
         )
         source_context = dict(data_source_context or {})
+        if required_fx_source is not None:
+            source_context["required_fx_source"] = required_fx_source
         if active_legacy_generation is not None:
             source_context.update(
                 {
@@ -113,6 +116,7 @@ class PortfolioValuationService:
                     if active_legacy_generation is not None
                     else None
                 ),
+                required_fx_source=required_fx_source,
             )
         )
         priced_cash_value, cash_complete = await self._value_cash(
@@ -123,6 +127,7 @@ class PortfolioValuationService:
             unpriced_assets,
             fx_lineage,
             knowledge_cutoff,
+            required_fx_source=required_fx_source,
         )
         priced_market_value = sum((row["market_value_base"] for row in rows), ZERO)
         priced_market_value += priced_cash_value
@@ -276,6 +281,7 @@ class PortfolioValuationService:
         rebuilt: PositionRebuildResult,
         knowledge_as_of: datetime,
         active_legacy_import_batch_id: uuid.UUID | None,
+        required_fx_source: str | None,
     ) -> tuple[
         list[_ValuationRow],
         list[str],
@@ -323,6 +329,7 @@ class PortfolioValuationService:
                 knowledge_as_of,
                 warnings,
                 fx_lineage,
+                required_source=required_fx_source,
             )
             if fx_rate is None:
                 warnings.append(f"missing_fx:{security.currency}/{portfolio.base_currency}")
@@ -390,6 +397,8 @@ class PortfolioValuationService:
         unpriced: list[dict[str, str]],
         fx_lineage: dict[str, object],
         knowledge_as_of: datetime,
+        *,
+        required_fx_source: str | None,
     ) -> tuple[Decimal, bool]:
         total = ZERO
         complete = True
@@ -403,6 +412,7 @@ class PortfolioValuationService:
                 knowledge_as_of,
                 warnings,
                 fx_lineage,
+                required_source=required_fx_source,
             )
             if rate is None:
                 complete = False
@@ -428,6 +438,8 @@ class PortfolioValuationService:
         knowledge_as_of: datetime,
         warnings: list[str],
         lineage: dict[str, object],
+        *,
+        required_source: str | None,
     ) -> tuple[Decimal | None, uuid.UUID | None, date | None, datetime | None]:
         native = native_currency.upper()
         base = base_currency.upper()
@@ -438,6 +450,7 @@ class PortfolioValuationService:
             base,
             valuation_as_of.date(),
             knowledge_as_of=knowledge_as_of,
+            source=required_source,
         )
         if direct is not None:
             lineage[f"{native}/{base}"] = _fx_lineage(direct, direct.rate, inverted=False)
@@ -447,6 +460,7 @@ class PortfolioValuationService:
             native,
             valuation_as_of.date(),
             knowledge_as_of=knowledge_as_of,
+            source=required_source,
         )
         if inverse is not None and inverse.rate > ZERO:
             warnings.append(f"inverted_fx_rate:{base}/{native}")

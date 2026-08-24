@@ -41,8 +41,14 @@ MAJOR_CLI_MODULES = (
     "evaluation.run_full_eval",
     "evaluation.run_llm_eval",
     "evaluation.run_v2_eval",
+    "evaluation.prepare_human_review",
+    "evaluation.validate_human_labels",
+    "evaluation.adjudicate_human_labels",
+    "evaluation.run_human_gold_eval",
     "scripts.build_evaluation_v2_dataset",
+    "scripts.build_human_gold_v3_dataset",
     "scripts.export_api_contract",
+    "scripts.rebuild_stale_legacy_valuations",
 )
 
 
@@ -139,3 +145,37 @@ def test_major_cli_help_is_executable(module: str) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout.lower()
+
+
+def test_api_contract_export_script_is_directly_executable(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ENVIRONMENT": "test",
+            "EMBEDDING_PROVIDER": "hashing",
+            "RAG_ALLOW_HASHING_FALLBACK": "true",
+        }
+    )
+    routes_output = tmp_path / "routes.json"
+    contract_output = tmp_path / "core.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "export_api_contract.py"),
+            "--routes-output",
+            str(routes_output),
+            "--contract-output",
+            str(contract_output),
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(routes_output.read_text(encoding="utf-8"))["path_count"] > 0
+    assert json.loads(contract_output.read_text(encoding="utf-8"))["paths"]

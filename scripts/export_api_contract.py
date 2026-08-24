@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 DEFAULT_ROUTES_OUTPUT = ROOT / "tests" / "contracts" / "fastapi_routes_v1.json"
 DEFAULT_CONTRACT_OUTPUT = ROOT / "tests" / "contracts" / "core_api_contract_v1.json"
 HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put"})
@@ -19,6 +23,7 @@ CORE_API_PATHS = (
     "/api/portfolios",
     "/api/portfolios/{portfolio_id}",
     "/api/portfolios/{portfolio_id}/transactions",
+    "/api/portfolios/{portfolio_id}/transactions/audit",
     "/api/portfolios/{portfolio_id}/imports/transactions",
     "/api/import-batches/{batch_id}/errors",
     "/api/portfolios/{portfolio_id}/positions",

@@ -65,42 +65,23 @@ flowchart LR
 
 项目目标运行时为 Python 3.12，CI 使用 Python 3.12 验证。以下应用命令已在当前仓库实际执行；macOS/Linux 使用示例中的激活命令，Windows 可改用 `venv\Scripts\activate`。
 
-### A. 最小只读研究演示
+### A. 一键确定性只读 Demo
 
-该路径不连接外部账户、不调用真实模型、不写 PostgreSQL 业务表，只读取仓库内自行构造的 fixture，并在 `cache/` 生成本地报告。
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install -r requirements.txt
-
-python -m evaluation.run_v2_eval \
-  --mode synthetic_smoke \
-  --output cache/evaluation/v2/synthetic_smoke/quickstart.json
-
-python -m backtest.run_backtest \
-  --portfolio data/portfolios/example_multi_asset_portfolio.csv \
-  --prices data/prices/example_historical_prices.csv \
-  --output cache/backtest_report.json \
-  --train-window 5 \
-  --holding-window 3 \
-  --rebalance-frequency 3 \
-  --transaction-cost-bps 5 \
-  --slippage-bps 2 \
-  --turnover-limit 1.0
-```
-
-检查报告中的披露字段：
+Docker Desktop 启动后执行：
 
 ```bash
-python -c "import json; p=json.load(open('cache/evaluation/v2/synthetic_smoke/quickstart.json')); print({k:p[k] for k in ('evaluation_mode','git_commit_sha','dataset_version','sample_count','mock_response_used','human_reviewed_count')})"
-python -c "import json; p=json.load(open('cache/backtest_report.json')); print({k:p[k] for k in ('data_source','run_mode','mock_price_data_used','execution_convention')})"
+make demo
 ```
 
-预期：评测报告明确显示 `evaluation_mode=synthetic_smoke`、`dataset_version=2.0.0`、
-`sample_count=60`、`mock_response_used=true` 和 `human_reviewed_count=0`；这些字段只证明 V2
-fixture 的工程链路，不是模型效果。回测使用本地 CSV，`mock_price_data_used=false` 只表示没有触发
-随机行情生成器，不表示该示例 CSV 是经授权的生产行情。
+命令会启动 PostgreSQL + pgvector、执行 migration、幂等写入固定 synthetic 交易/行情/FX，
+生成估值和风险数据，并建立文档、Prompt、mock Trace、Review 与 Published Report 的完整链路。
+Web 最终以 `READ_ONLY_DEMO=true` 运行，不需要任何 API Key。
+
+数据库、migration、seed 和 smoke 使用 Docker `internal` network；Web 仅通过绑定到
+`127.0.0.1` 的 ingress bridge 供本机浏览器访问。所有外部 Provider 均禁用且不配置凭据，
+运行流程不会调用 yfinance、Tushare、Qwen、OpenAI、FMP 或 Parqet。首次镜像构建仍可能
+需要访问镜像仓库和 Python 包索引；完整命令、provenance、reset 边界与故障排查见
+[确定性 Demo Quick Start](docs/demo-quickstart.md)。
 
 ### B. 完整本地开发
 
@@ -177,8 +158,8 @@ python -m app.workers.run_daily_pipeline --help
 | 模式 | 数据/模型边界 | CI 默认执行 |
 |---|---|:---:|
 | `synthetic_smoke` | 自行构造 fixture + deterministic mock，只验证工程链路和规则 | 是 |
-| `live_model_eval` | V1 真实模型调用或 V2 可追溯 live prediction bundle；不回退 mock | 否 |
-| `human_gold_eval` | V2 必须存在 independently approved labels | 否 |
+| `live_model_eval` | 真实模型调用或 V2/V3 可追溯 live prediction bundle；不回退 mock | 否 |
+| `human_gold_eval` | V3 要求两位独立 Reviewer，并完成全部冲突裁决 | 否 |
 | `production_monitoring` | 必须存在真实生产观测数据 | 否 |
 
 ## Data & Evaluation Disclosure
@@ -202,6 +183,7 @@ python -m app.workers.run_daily_pipeline --help
 | 文档 | 内容 |
 |---|---|
 | [docs/demo-script.md](docs/demo-script.md) | 5-8 分钟面试演示流程、预期输出与 fallback |
+| [docs/demo-quickstart.md](docs/demo-quickstart.md) | 无 API Key 的确定性一键 Demo、数据披露与 smoke 范围 |
 | [docs/demo-recording-guide.md](docs/demo-recording-guide.md) | 真实截图/GIF 录制、脱敏与验收清单 |
 | [docs/architecture.md](docs/architecture.md) | 当前架构、边界和数据流 |
 | [docs/module-boundaries.md](docs/module-boundaries.md) | Core、Compatibility 与 Experimental 的加载和依赖边界 |
@@ -210,6 +192,7 @@ python -m app.workers.run_daily_pipeline --help
 | [docs/deployment.md](docs/deployment.md) | Web、Cron、对象存储、preflight 与恢复边界 |
 | [docs/current-limitations.md](docs/current-limitations.md) | 当前已知限制和 mock/fallback 条件 |
 | [docs/evaluation-v2.md](docs/evaluation-v2.md) | V2 数据 schema、模式隔离、人工标注与指标解释 |
+| [docs/evaluation-human-review.md](docs/evaluation-human-review.md) | V3 双人标注、冲突裁决与 human-gold 评测流程 |
 | [docs/case_studies/ai_hardware_portfolio_case.md](docs/case_studies/ai_hardware_portfolio_case.md) | AI 硬件组合研究案例 |
 | [docs/audits/release_readiness_2026.md](docs/audits/release_readiness_2026.md) | 带日期和 SHA 的发布准备审计 |
 
@@ -654,6 +637,10 @@ cache/evaluation/v2/production_monitoring/
 `live_model_eval` 必须传入明确标记为非 mock 的真实模型预测 bundle；
 `production_monitoring` 必须传入真实生产观测文件，二者都不会静默降级。
 
+V3 在 `evaluation/datasets/v3/` 提供 45 条待审核候选案例、双人独立标签模板和冲突裁决模板。
+三份 committed 标签文件全部为 `pending`，approved 数量为 0；仓库当前没有 human-gold 模型指标。
+真实人工流程与 CLI 见 [V3 人工评测说明](docs/evaluation-human-review.md)。
+
 以下 V1 入口继续保留，用于兼容原有报告和回归测试。
 
 运行检索评测：
@@ -686,7 +673,7 @@ V1 输出 `cache/full_evaluation_report.json`，覆盖：
 
 评测模式分为 `synthetic_smoke`、`live_model_eval`、`human_gold_eval` 和
 `production_monitoring`。V1 黄金集位于 `evaluation/datasets/*_gold_v1.jsonl`，仍作为兼容夹具；
-新的人工复核流程只使用 V2。两套数据都不包含真实持仓、授权研报或私有数据。
+新的双人复核与冲突裁决流程使用 V3；V1/V2 继续作为兼容与 synthetic smoke 夹具。三套数据都不包含真实持仓、授权研报或私有数据。
 
 每份评测 JSON 都保存 `evaluation_mode`、UTC 生成时间、完整 Git commit SHA、模型 Provider/名称、数据集名称/版本，以及 mock、人工标签和生产数据使用标记。`hallucination_flag_rate` 必须与报告模式、样本量和有效响应数一起解释；例如 synthetic 报告中的 0 只表示该批规则夹具没有触发标记，不是“模型零幻觉”。仓库不在 README 中长期写死测试数或覆盖率，当前状态以 [CI](https://github.com/xjy0526/PortfolioPilot/actions/workflows/ci.yml) 和带日期/SHA 的审计快照为准。
 
@@ -694,7 +681,7 @@ Prompt Registry 当前的 `static_render_success_rate` 和 `static_expected_toke
 
 Dashboard 的 `Eval & Trace` 页面同时展示评测模式、mock/live、数据集版本、样本量、数据截止日、
 人工复核数量、95% 置信区间和 badcase 分布，以及 Prompt Trace 与实际/估算成本。它优先读取最新
-V2 分模式报告，并兼容 V1；缺少完整 provenance 的旧报告不会显示为有效评测。只读接口包括：
+V2 分模式报告，并兼容 V1；V3 当前通过独立 CLI 生成文件报告，尚未接入该 Dashboard。缺少完整 provenance 的旧报告不会显示为有效评测。只读接口包括：
 
 ```text
 GET /api/evaluation/dashboard

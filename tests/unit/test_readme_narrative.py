@@ -52,6 +52,7 @@ def test_primary_documentation_has_no_broken_local_links() -> None:
     missing: list[str] = []
     documents = (
         README,
+        ROOT / "docs" / "demo-quickstart.md",
         ROOT / "docs" / "demo-script.md",
         ROOT / "docs" / "demo-recording-guide.md",
         ROOT / "docs" / "api.md",

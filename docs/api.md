@@ -35,7 +35,7 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 | GET | `/api/stock/{ticker}` | Einzelaktie Details |
 | GET | `/api/stock/{ticker}/history` | Kurs-History einer Einzelaktie |
 | GET | `/api/portfolio/history` | Portfolio-Wert-Entwicklung |
-| GET | `/api/portfolio/activities` | Kauf-/Verkaufs-Aktivitäten |
+| GET | `/api/portfolio/activities` | 当前有效的买卖、分红及其他组合活动；不含 superseded legacy snapshot |
 | GET | `/api/rebalancing` | Rebalancing-Empfehlungen |
 | GET | `/api/tech-picks` | Tech-Aktien Screening (yFinance Screener) |
 | GET | `/api/sectors` | Sektor-Allokation |
@@ -55,7 +55,8 @@ Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), s
 |---|---|---|
 | GET | `/api/portfolios` | 列出 active portfolios |
 | GET | `/api/portfolios/{portfolio_id}` | 读取基准币种、成本法、展示时区和 benchmark 配置 |
-| GET | `/api/portfolios/{portfolio_id}/transactions?as_of=` | 按稳定顺序读取账本流水 |
+| GET | `/api/portfolios/{portfolio_id}/transactions?as_of=` | 按稳定顺序读取 effective portfolio activity |
+| GET | `/api/portfolios/{portfolio_id}/transactions/audit` | 管理员读取完整 audit transaction history 与 legacy generation lineage |
 | POST | `/api/portfolios/{portfolio_id}/imports/transactions` | 上传标准交易流水或旧持仓 CSV |
 | GET | `/api/import-batches/{batch_id}/errors` | 下载行级 CSV 问题报告 |
 | GET | `/api/portfolios/{portfolio_id}/positions?as_of=` | 从账本重建证券与分币种现金，不写快照 |
@@ -68,7 +69,24 @@ Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=o
 
 `legacy_dashboard_csv` 表示“当前持仓快照”，不是追加交易历史。新文件、POST、PUT 或 DELETE 都会在组合行锁和同一数据库事务内创建完整 generation：旧 generation 保留审计并标为 `superseded`，只有唯一 `active` generation 进入 `PositionRebuilder`。相同 active snapshot 重放返回 `idempotent_replay=true`，不新增交易或 generation。该切换只作用于 `legacy_dashboard_csv`，不会删除、覆盖或 supersede `standard_csv`、`manual` 等正式交易来源。
 
+普通 `/api/portfolio/activities` 和 `/api/portfolios/{portfolio_id}/transactions` 使用与持仓重建相同的 effective transaction 查询：`standard_csv`、`manual`、broker/API 等正式流水全部保留，`legacy_dashboard_csv` 仅返回当前 active generation。兼容 activities 响应保留原字段并增加 `effective=true`，不会暴露 generation、supersede 或 import batch 审计字段。
+
+`/api/portfolios/{portfolio_id}/transactions/audit` 是显式的 **audit transaction history**，不是用户正常活动流水。它要求 `platform_admin` 或该组合的 admin membership，返回正式交易和所有 active/superseded legacy transactions；legacy 行包含 `generation_id`、`generation_number`、`generation_status`、`superseded_at`、`superseded_by_id` 和 `effective`。无权限时按组合资源隔离规则返回 404，避免泄露其他 tenant 的组合是否存在。
+
 CSV 中的 `current_price` 会以带 import batch 后缀的 `legacy_csv_user_supplied:<batch_id>` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback:<batch_id>`。估值只允许读取 active generation 对应 batch 的这类用户价格，两者都不是权威行情源。
+
+当组合存在 active `legacy_dashboard_csv` generation 时，所有通过 `LegacyPortfolioAdapter` 读取 Dashboard 组合的接口只接受 `source=ledger_rebuild`、`valuation_status=complete`、覆盖完整，且 `config_snapshot.data_source_context` 同时关联当前 generation ID 与 import batch ID 的估值。旧累计估值、superseded generation 估值和缺少 lineage 的估值不会被静默返回。没有匹配快照时统一返回 HTTP `409`：
+
+```json
+{
+  "error": "portfolio_rebuild_required",
+  "portfolio_id": "<uuid>",
+  "active_generation_id": "<uuid>",
+  "reason": "valuation_generation_mismatch"
+}
+```
+
+运维人员应运行 `python -m scripts.rebuild_stale_legacy_valuations --dry-run` 扫描，再使用同一命令去掉 `--dry-run` 重建。没有 legacy generation 的正式交易组合继续读取正常 `ledger_rebuild` 估值，不会被标记为需要 legacy repair。
 
 ## Market Data (`app/api/market_data.py`)
 
