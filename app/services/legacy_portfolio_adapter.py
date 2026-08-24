@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.principal import Principal
 from app.db.models import Portfolio, PortfolioValuationSnapshot, Security
 from app.db.repositories import (
+    LegacySnapshotGenerationRepository,
     PortfolioRepository,
     PortfolioValuationRepository,
     PositionSnapshotRepository,
@@ -26,12 +27,37 @@ class LegacyPortfolioContext:
     summary: PortfolioSummary
 
 
+class PortfolioRebuildRequired(RuntimeError):
+    """Raised when the dashboard cannot prove valuation-generation lineage."""
+
+    def __init__(
+        self,
+        *,
+        portfolio_id: uuid.UUID,
+        active_generation_id: uuid.UUID,
+        reason: str = "valuation_generation_mismatch",
+    ) -> None:
+        self.portfolio_id = portfolio_id
+        self.active_generation_id = active_generation_id
+        self.reason = reason
+        super().__init__(reason)
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "error": "portfolio_rebuild_required",
+            "portfolio_id": str(self.portfolio_id),
+            "active_generation_id": str(self.active_generation_id),
+            "reason": self.reason,
+        }
+
+
 class LegacyPortfolioAdapter:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.portfolios = PortfolioRepository(session)
         self.valuations = PortfolioValuationRepository(session)
         self.positions = PositionSnapshotRepository(session)
+        self.generations = LegacySnapshotGenerationRepository(session)
 
     async def load(
         self,
@@ -43,11 +69,25 @@ class LegacyPortfolioAdapter:
         portfolio = await self.resolve_portfolio(portfolio_id, principal=principal)
         if portfolio is None:
             return None
-        valuation = await self.valuations.latest_at_or_before(
-            portfolio.id,
-            _as_utc(as_of or utc_now()),
-            preferred_source="ledger_rebuild",
-        )
+        cutoff = _as_utc(as_of or utc_now())
+        active_generation = await self.generations.get_active(portfolio.id)
+        if active_generation is not None:
+            valuation = await self.valuations.latest_for_legacy_generation(
+                portfolio.id,
+                active_generation.id,
+                cutoff,
+            )
+            if valuation is None:
+                raise PortfolioRebuildRequired(
+                    portfolio_id=portfolio.id,
+                    active_generation_id=active_generation.id,
+                )
+        else:
+            valuation = await self.valuations.latest_for_source(
+                portfolio.id,
+                source="ledger_rebuild",
+                as_of=cutoff,
+            )
         if valuation is None:
             return None
         if valuation.valuation_status != "complete" or valuation.total_market_value is None:

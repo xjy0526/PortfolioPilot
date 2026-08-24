@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import String, and_, case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -331,6 +331,26 @@ class LegacySnapshotGenerationRepository(BaseRepository[LegacySnapshotGeneration
         )
         return list((await self.session.scalars(statement)).all())
 
+    async def list_active(
+        self,
+        *,
+        portfolio_id: uuid.UUID | None = None,
+        source: str = "legacy_dashboard_csv",
+    ) -> list[LegacySnapshotGeneration]:
+        statement = select(LegacySnapshotGeneration).where(
+            LegacySnapshotGeneration.source == source,
+            LegacySnapshotGeneration.status == "active",
+        )
+        if portfolio_id is not None:
+            statement = statement.where(
+                LegacySnapshotGeneration.portfolio_id == portfolio_id
+            )
+        statement = statement.order_by(
+            LegacySnapshotGeneration.portfolio_id,
+            LegacySnapshotGeneration.generation_number,
+        )
+        return list((await self.session.scalars(statement)).all())
+
     async def activate(
         self,
         *,
@@ -490,6 +510,56 @@ class PortfolioValuationRepository(BaseRepository[PortfolioValuationSnapshot]):
             PortfolioValuationSnapshot.as_of.desc(),
             PortfolioValuationSnapshot.updated_at.desc(),
         ).limit(1)
+        return await self.session.scalar(statement)
+
+    async def latest_for_legacy_generation(
+        self,
+        portfolio_id: uuid.UUID,
+        generation_id: uuid.UUID,
+        as_of: datetime,
+        *,
+        valuation_source: str = "ledger_rebuild",
+        legacy_source: str = "legacy_dashboard_csv",
+    ) -> PortfolioValuationSnapshot | None:
+        """Return only a complete valuation linked to one active generation."""
+        generation_context = func.jsonb_extract_path_text(
+            PortfolioValuationSnapshot.config_snapshot,
+            "data_source_context",
+            "legacy_snapshot_generation_id",
+        )
+        import_batch_context = func.jsonb_extract_path_text(
+            PortfolioValuationSnapshot.config_snapshot,
+            "data_source_context",
+            "legacy_snapshot_import_batch_id",
+        )
+        statement = (
+            select(PortfolioValuationSnapshot)
+            .join(
+                LegacySnapshotGeneration,
+                LegacySnapshotGeneration.id == generation_id,
+            )
+            .where(
+                PortfolioValuationSnapshot.portfolio_id == portfolio_id,
+                PortfolioValuationSnapshot.source == valuation_source,
+                PortfolioValuationSnapshot.valuation_status == "complete",
+                PortfolioValuationSnapshot.total_market_value.is_not(None),
+                PortfolioValuationSnapshot.unpriced_asset_count == 0,
+                PortfolioValuationSnapshot.coverage_ratio == 1,
+                PortfolioValuationSnapshot.input_hash != "",
+                PortfolioValuationSnapshot.as_of <= as_of,
+                LegacySnapshotGeneration.portfolio_id == portfolio_id,
+                LegacySnapshotGeneration.source == legacy_source,
+                LegacySnapshotGeneration.status == "active",
+                generation_context == str(generation_id),
+                import_batch_context
+                == func.cast(LegacySnapshotGeneration.import_batch_id, String),
+            )
+            .order_by(
+                PortfolioValuationSnapshot.as_of.desc(),
+                PortfolioValuationSnapshot.updated_at.desc(),
+            )
+            .limit(1)
+        )
         return await self.session.scalar(statement)
 
     async def list_for_portfolio(

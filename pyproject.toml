@@ -16,7 +16,7 @@ python_version = "3.12"
 exclude = [
     "^(tests|analytics|backtest|engine|evaluation|fetchers|portfolio_optimizer|prompts|rag|routes)/",
     "^services/(?!llm_client\\.py$|market_data/postgres_provider\\.py$)",
-    "^scripts/(?!(bootstrap_portfolio|coverage_quality|postgres_restart_e2e|summarize_test_results)\\.py$)",
+    "^scripts/(?!(bootstrap_portfolio|coverage_quality|postgres_restart_e2e|rebuild_stale_legacy_valuations|summarize_test_results)\\.py$)",
     "^(cache_manager|config|database|logging_config|main|models|run_job|state)\\.py$",
 ]
 files = [
@@ -32,6 +32,7 @@ files = [
     "scripts/bootstrap_portfolio.py",
     "scripts/coverage_quality.py",
     "scripts/postgres_restart_e2e.py",
+    "scripts/rebuild_stale_legacy_valuations.py",
     "scripts/summarize_test_results.py",
 ]
 ignore_missing_imports = true

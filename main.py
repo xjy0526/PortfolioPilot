@@ -6,7 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -16,6 +17,7 @@ from app.api.market_data import router as market_data_router
 from app.api.portfolios import router as db_portfolio_router
 from app.db.session import dispose_async_engine, get_db_session
 from app.core.resources import close_resources, initialize_resources
+from app.services.legacy_portfolio_adapter import PortfolioRebuildRequired
 from cache_manager import CacheManager
 from config import settings
 from logging_config import setup_logging
@@ -89,6 +91,20 @@ app.add_middleware(BasicAuthMiddleware)
 app.add_middleware(ReadOnlyDemoMiddleware)
 if settings.auth_configured:
     logger.info("Dashboard password protection enabled")
+
+
+@app.exception_handler(PortfolioRebuildRequired)
+async def portfolio_rebuild_required_handler(
+    _request: Request,
+    exc: PortfolioRebuildRequired,
+) -> JSONResponse:
+    """Expose stale legacy valuation lineage as a recoverable conflict."""
+    logger.warning(
+        "Portfolio valuation rebuild required: portfolio_id=%s generation_id=%s",
+        exc.portfolio_id,
+        exc.active_generation_id,
+    )
+    return JSONResponse(status_code=409, content=exc.as_dict())
 
 STATIC_DIR.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

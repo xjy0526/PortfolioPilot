@@ -10,6 +10,7 @@
 - SQLite 仅供迁移脚本、迁移一致性校验、公共文档召回对比和少量默认关闭的旧扩展读取，核心服务不依赖 `database._get_conn`。
 - `state.portfolio_data` 仍被部分非核心旧模块引用，但当前组合页、DB API、风险汇总、AI 分析、调仓研究和 Workflow 的组合输入已来自 PostgreSQL valuation snapshot。
 - `scripts/migrate_sqlite_to_postgres.py` 迁移旧总览快照和 Shadow 模拟交易；`scripts/migrate_governance_sqlite_to_postgres.py` 显式迁移研究治理数据，随后必须运行一致性与召回对比脚本。
+- 从 generation migration 之前升级的 legacy Dashboard 组合可能只有旧 additive valuation；系统会返回 `409 portfolio_rebuild_required`，必须先运行 `scripts/rebuild_stale_legacy_valuations.py` 扫描和重建，不会自动回退旧估值。脚本的 `--limit` 表示本轮最多选择的 stale candidates 数量；健康或已修复组合不会消耗限额，重复运行会继续处理后续候选。`--dry-run` 不写数据库，`--continue-on-error` 只允许越过单个修复失败项并如实保留失败状态。
 
 ## 2. 当前还不是生产级严格 walk-forward 回测
 
