@@ -24,6 +24,7 @@ from app.db.repositories.portfolio import (
     LegacySnapshotGenerationRepository,
     PortfolioValuationRepository,
     PositionSnapshotRepository,
+    TransactionAuditRecord,
     TransactionRepository,
 )
 from app.db.repositories.runs import RiskRunRepository, SyncRunRepository
@@ -46,6 +47,7 @@ __all__ = [
     "ResearchRepository",
     "SecurityRepository",
     "SyncRunRepository",
+    "TransactionAuditRecord",
     "TransactionRepository",
     "UserRepository",
     "WorkflowRepository",

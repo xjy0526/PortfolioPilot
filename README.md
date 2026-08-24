@@ -60,42 +60,23 @@ flowchart LR
 
 项目目标运行时为 Python 3.12，CI 使用 Python 3.12 验证。以下应用命令已在当前仓库实际执行；macOS/Linux 使用示例中的激活命令，Windows 可改用 `venv\Scripts\activate`。
 
-### A. 最小只读研究演示
+### A. 一键确定性只读 Demo
 
-该路径不连接外部账户、不调用真实模型、不写 PostgreSQL 业务表，只读取仓库内自行构造的 fixture，并在 `cache/` 生成本地报告。
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install -r requirements.txt
-
-python -m evaluation.run_v2_eval \
-  --mode synthetic_smoke \
-  --output cache/evaluation/v2/synthetic_smoke/quickstart.json
-
-python -m backtest.run_backtest \
-  --portfolio data/portfolios/example_multi_asset_portfolio.csv \
-  --prices data/prices/example_historical_prices.csv \
-  --output cache/backtest_report.json \
-  --train-window 5 \
-  --holding-window 3 \
-  --rebalance-frequency 3 \
-  --transaction-cost-bps 5 \
-  --slippage-bps 2 \
-  --turnover-limit 1.0
-```
-
-检查报告中的披露字段：
+Docker Desktop 启动后执行：
 
 ```bash
-python -c "import json; p=json.load(open('cache/evaluation/v2/synthetic_smoke/quickstart.json')); print({k:p[k] for k in ('evaluation_mode','git_commit_sha','dataset_version','sample_count','mock_response_used','human_reviewed_count')})"
-python -c "import json; p=json.load(open('cache/backtest_report.json')); print({k:p[k] for k in ('data_source','run_mode','mock_price_data_used','execution_convention')})"
+make demo
 ```
 
-预期：评测报告明确显示 `evaluation_mode=synthetic_smoke`、`dataset_version=2.0.0`、
-`sample_count=60`、`mock_response_used=true` 和 `human_reviewed_count=0`；这些字段只证明 V2
-fixture 的工程链路，不是模型效果。回测使用本地 CSV，`mock_price_data_used=false` 只表示没有触发
-随机行情生成器，不表示该示例 CSV 是经授权的生产行情。
+命令会启动 PostgreSQL + pgvector、执行 migration、幂等写入固定 synthetic 交易/行情/FX，
+生成估值和风险数据，并建立文档、Prompt、mock Trace、Review 与 Published Report 的完整链路。
+Web 最终以 `READ_ONLY_DEMO=true` 运行，不需要任何 API Key。
+
+数据库、migration、seed 和 smoke 使用 Docker `internal` network；Web 仅通过绑定到
+`127.0.0.1` 的 ingress bridge 供本机浏览器访问。所有外部 Provider 均禁用且不配置凭据，
+运行流程不会调用 yfinance、Tushare、Qwen、OpenAI、FMP 或 Parqet。首次镜像构建仍可能
+需要访问镜像仓库和 Python 包索引；完整命令、provenance、reset 边界与故障排查见
+[确定性 Demo Quick Start](docs/demo-quickstart.md)。
 
 ### B. 完整本地开发
 
@@ -196,6 +177,7 @@ python -m app.workers.run_daily_pipeline --help
 | 文档 | 内容 |
 |---|---|
 | [docs/demo-script.md](docs/demo-script.md) | 5-8 分钟面试演示流程、预期输出与 fallback |
+| [docs/demo-quickstart.md](docs/demo-quickstart.md) | 无 API Key 的确定性一键 Demo、数据披露与 smoke 范围 |
 | [docs/demo-recording-guide.md](docs/demo-recording-guide.md) | 真实截图/GIF 录制、脱敏与验收清单 |
 | [docs/architecture.md](docs/architecture.md) | 当前架构、边界和数据流 |
 | [docs/api.md](docs/api.md) | API 索引与兼容接口 |

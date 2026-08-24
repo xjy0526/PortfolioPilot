@@ -1,0 +1,134 @@
+x-demo-app: &demo-app
+  image: portfoliopilot-demo:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: e2e
+  init: true
+  environment: &demo-environment
+    ENVIRONMENT: development
+    APP_MODE: fund_research
+    CODE_VERSION: ${CODE_VERSION:-deterministic-demo}
+    DATABASE_URL: postgresql+asyncpg://portfoliopilot:portfoliopilot@postgres:5432/portfoliopilot_demo
+    DEMO_FIXTURE_MODE: "true"
+    READ_ONLY_DEMO: "true"
+    ALLOW_DEV_IDENTITY_HEADERS: "false"
+    LOCAL_PRINCIPAL_USER: demo-recruiter
+    LOCAL_PRINCIPAL_TENANT: demo
+    LOCAL_PRINCIPAL_ROLES: platform_admin,operator,market_data_admin,knowledge_admin,research_reviewer
+    LOCAL_PRINCIPAL_GROUPS: public
+    EMBEDDING_PROVIDER: hashing
+    RAG_ALLOW_HASHING_FALLBACK: "true"
+    RAG_VECTOR_BACKEND: pgvector
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    OBJECT_STORAGE_BACKEND: local
+    OBJECT_STORAGE_LOCAL_ROOT: /app/data/object_storage
+    OBJECT_STORAGE_BUCKET: deterministic-demo
+    OBJECT_STORAGE_PREFIX: demo-fixture
+    MARKET_DATA_PROVIDERS: ""
+    PRICE_HISTORY_PROVIDER: csv
+    AI_PROVIDER: demo_fixture_model
+    QWEN_API_KEY: ""
+    OPENAI_COMPATIBLE_API_KEY: ""
+    FMP_API_KEY: ""
+    TUSHARE_TOKEN: ""
+    ENABLE_POLYMARKET: "false"
+    ENABLE_TELEGRAM: "false"
+    ENABLE_PARQET: "false"
+    ENABLE_SHADOW_AGENT: "false"
+  volumes:
+    - demo_object_storage:/app/data/object_storage
+  networks:
+    - demo_internal
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg16
+    environment:
+      POSTGRES_DB: portfoliopilot_demo
+      POSTGRES_USER: portfoliopilot
+      POSTGRES_PASSWORD: portfoliopilot
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+    networks:
+      - demo_internal
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U portfoliopilot -d portfoliopilot_demo
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  migrate:
+    <<: *demo-app
+    profiles: [tools]
+    command: ["alembic", "upgrade", "head"]
+
+  seed:
+    <<: *demo-app
+    profiles: [tools]
+    command: ["python", "-m", "scripts.seed_demo"]
+
+  reset:
+    <<: *demo-app
+    profiles: [tools]
+    command: ["python", "-m", "scripts.demo_reset"]
+
+  web:
+    <<: *demo-app
+    command:
+      - python
+      - -m
+      - uvicorn
+      - main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - demo_internal
+      - demo_ingress
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-8000}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3).read()
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  smoke:
+    <<: *demo-app
+    profiles: [tools]
+    command:
+      - python
+      - -m
+      - scripts.demo_smoke
+      - --base-url
+      - http://web:8080
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  demo_postgres_data:
+  demo_object_storage:
+
+networks:
+  demo_internal:
+    internal: true
+  demo_ingress:

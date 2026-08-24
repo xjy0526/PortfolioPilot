@@ -49,6 +49,14 @@ class UserRepository(BaseRepository[User]):
 class PortfolioRepository(BaseRepository[Portfolio]):
     model = Portfolio
 
+    async def get_for_update(self, portfolio_id: uuid.UUID) -> Portfolio | None:
+        statement = (
+            select(Portfolio)
+            .where(Portfolio.id == portfolio_id)
+            .with_for_update(of=Portfolio)
+        )
+        return await self.session.scalar(statement)
+
     async def get_by_user_and_name(self, user_id: uuid.UUID, name: str) -> Portfolio | None:
         statement = select(Portfolio).where(
             Portfolio.user_id == user_id,

@@ -17,7 +17,7 @@ exclude = [
     "^(tests|analytics|backtest|engine|fetchers|portfolio_optimizer|prompts|rag|routes)/",
     "^evaluation/(?!(adjudicate_human_labels|human_gold_dataset|human_gold_metrics|human_review|prepare_human_review|run_human_gold_eval|validate_human_labels)\\.py$)",
     "^services/(?!llm_client\\.py$|market_data/postgres_provider\\.py$)",
-    "^scripts/(?!(bootstrap_portfolio|build_human_gold_v3_dataset|coverage_quality|postgres_restart_e2e|summarize_test_results)\\.py$)",
+    "^scripts/(?!(bootstrap_portfolio|build_human_gold_v3_dataset|coverage_quality|postgres_restart_e2e|rebuild_stale_legacy_valuations|summarize_test_results)\\.py$)",
     "^(cache_manager|config|database|logging_config|main|models|run_job|state)\\.py$",
 ]
 files = [
@@ -41,6 +41,7 @@ files = [
     "scripts/build_human_gold_v3_dataset.py",
     "scripts/coverage_quality.py",
     "scripts/postgres_restart_e2e.py",
+    "scripts/rebuild_stale_legacy_valuations.py",
     "scripts/summarize_test_results.py",
 ]
 ignore_missing_imports = true

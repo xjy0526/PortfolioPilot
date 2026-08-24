@@ -41,6 +41,7 @@ MAJOR_CLI_MODULES = (
     "scripts.build_evaluation_v2_dataset",
     "scripts.build_human_gold_v3_dataset",
     "scripts.export_api_contract",
+    "scripts.rebuild_stale_legacy_valuations",
 )
 
 

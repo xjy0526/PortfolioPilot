@@ -263,6 +263,7 @@ class FxRateRepository(BaseRepository[FxRate]):
         as_of_date: date,
         *,
         knowledge_as_of: datetime | None = None,
+        source: str | None = None,
     ) -> FxRate | None:
         statement = (
             select(FxRate)
@@ -276,4 +277,6 @@ class FxRateRepository(BaseRepository[FxRate]):
         )
         if knowledge_as_of is not None:
             statement = statement.where(FxRate.data_as_of <= knowledge_as_of)
+        if source is not None:
+            statement = statement.where(FxRate.source == source)
         return await self.session.scalar(statement)

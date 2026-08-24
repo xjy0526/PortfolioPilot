@@ -5,10 +5,12 @@
 ## 1. 核心与研究治理已使用 PostgreSQL
 
 - PostgreSQL `transactions` 已是核心组合持仓和现金的唯一事实源；持仓与估值快照由账本、历史行情和 FX 派生。
+- 用户活动与常规 transaction API 读取的是 **effective portfolio activity**：正式来源全部可见，但 `legacy_dashboard_csv` 只显示 active generation。superseded 快照仍完整保留，只能由 platform admin 或 portfolio admin 通过 **audit transaction history** 接口查看。
 - 知识文档、版本、Chunk、Embedding、Prompt、LLM Trace、Workflow 审批和发布报告使用 PostgreSQL；Embedding 持久化到 pgvector。
 - SQLite 仅供迁移脚本、迁移一致性校验、公共文档召回对比和少量默认关闭的旧扩展读取，核心服务不依赖 `database._get_conn`。
 - `state.portfolio_data` 仍被部分非核心旧模块引用，但当前组合页、DB API、风险汇总、AI 分析、调仓研究和 Workflow 的组合输入已来自 PostgreSQL valuation snapshot。
 - `scripts/migrate_sqlite_to_postgres.py` 迁移旧总览快照和 Shadow 模拟交易；`scripts/migrate_governance_sqlite_to_postgres.py` 显式迁移研究治理数据，随后必须运行一致性与召回对比脚本。
+- 从 generation migration 之前升级的 legacy Dashboard 组合可能只有旧 additive valuation；系统会返回 `409 portfolio_rebuild_required`，必须先运行 `scripts/rebuild_stale_legacy_valuations.py` 扫描和重建，不会自动回退旧估值。脚本的 `--limit` 表示本轮最多选择的 stale candidates 数量；健康或已修复组合不会消耗限额，重复运行会继续处理后续候选。`--dry-run` 不写数据库，`--continue-on-error` 只允许越过单个修复失败项并如实保留失败状态。
 
 ## 2. 当前还不是生产级严格 walk-forward 回测
 
@@ -57,6 +59,7 @@ Polymarket、Telegram、Parqet 和 Shadow Agent 分别由 `ENABLE_POLYMARKET`、
 ## 6. 其他工程限制
 
 - 当前认证仍是可选 Basic Auth；已实现服务端 Principal、tenant、role、permission group 和 portfolio membership 授权，但尚未接入 OIDC/SAML 与完整机构身份生命周期。
+- 活动审计权限依赖现有服务端 Principal 和 portfolio membership；在接入完整机构身份系统前，它不能替代外部审计归档、法定留存或不可抵赖日志。
 - Render Blueprint 当前部署一个只读 Web Service 和一个一次性日流水线 Cron Job；GitHub Actions 的 Cloud Run 路径仍只部署 Web、migration job 和 readiness smoke test，尚未声明 Cloud Scheduler/Cloud Run daily job。
 - Render Web、Cron/Worker 的本地文件系统不共享，Cron 也不能使用 Web Persistent Disk。production write mode 必须使用外部 S3-compatible bucket；仓库不提供托管 bucket、跨区域复制或自动恢复编排。
 - development 可使用 `LOCAL_PRINCIPAL_*` 作为显式本地身份；其他环境未认证请求只具 `anonymous/public` 权限。
