@@ -34,7 +34,12 @@ MAJOR_CLI_MODULES = (
     "evaluation.run_full_eval",
     "evaluation.run_llm_eval",
     "evaluation.run_v2_eval",
+    "evaluation.prepare_human_review",
+    "evaluation.validate_human_labels",
+    "evaluation.adjudicate_human_labels",
+    "evaluation.run_human_gold_eval",
     "scripts.build_evaluation_v2_dataset",
+    "scripts.build_human_gold_v3_dataset",
     "scripts.export_api_contract",
     "scripts.rebuild_stale_legacy_valuations",
 )
