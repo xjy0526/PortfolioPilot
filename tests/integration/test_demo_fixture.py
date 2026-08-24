@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncIterator
+from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -16,8 +18,11 @@ from app.api.dependencies import get_db_session
 from app.core.principal import Principal, get_principal
 from app.db.models import (
     FxRate,
+    IngestionJob,
     LLMCallTrace,
     Portfolio,
+    PortfolioValuationSnapshot,
+    PositionSnapshot,
     PriceBar,
     ProviderSymbol,
     ResearchDocument,
@@ -27,6 +32,7 @@ from app.db.models import (
 )
 from app.providers.embeddings import HashingEmbeddingProvider
 from app.services.demo_fixture import (
+    DEMO_AS_OF,
     DEMO_DOCUMENT_SOURCE,
     DEMO_FLAGS,
     DEMO_FX_SOURCE,
@@ -184,6 +190,12 @@ async def test_demo_reset_preserves_non_demo_data(tmp_path: Path, monkeypatch) -
     _enable_demo_settings(monkeypatch, tmp_path)
     storage = LocalObjectStorage(tmp_path, bucket="deterministic-demo-test")
     sentinel_id = uuid.uuid4()
+    formal_job_id = uuid.uuid4()
+    formal_object = await storage.put_object(
+        "formal/unrelated-research.md",
+        b"Unrelated formal research object",
+        content_type="text/markdown",
+    )
     try:
         async with factory.begin() as session:
             await reset_demo_fixture(session, storage=storage)
@@ -193,6 +205,28 @@ async def test_demo_reset_preserves_non_demo_data(tmp_path: Path, monkeypatch) -
                     email=f"formal-{sentinel_id}@example.invalid",
                     display_name="Formal sentinel",
                     preferences={"is_demo": False},
+                )
+            )
+            session.add(
+                IngestionJob(
+                    id=formal_job_id,
+                    user_id=DEMO_PRINCIPAL_USER,
+                    business_scene="knowledge_ingestion",
+                    idempotency_key=f"formal-unrelated-{formal_job_id}",
+                    filename="unrelated-research.md",
+                    object_key=formal_object.key,
+                    object_version=formal_object.version,
+                    object_owner=DEMO_PRINCIPAL_USER,
+                    object_permission_groups=["public"],
+                    checksum=formal_object.checksum,
+                    content_length=len(b"Unrelated formal research object"),
+                    content_type="text/markdown",
+                    code_version="test",
+                    status="completed",
+                    metadata_json={
+                        "is_demo": False,
+                        "fixture_source": "formal_research",
+                    },
                 )
             )
         async with factory.begin() as session:
@@ -205,11 +239,114 @@ async def test_demo_reset_preserves_non_demo_data(tmp_path: Path, monkeypatch) -
             removed = await reset_demo_fixture(session, storage=storage)
             assert removed["portfolios"] == 1
             assert await session.get(User, sentinel_id) is not None
+            assert await session.get(IngestionJob, formal_job_id) is not None
+            assert await storage.object_exists(
+                formal_object.key,
+                version=formal_object.version,
+            )
             assert all(value == 0 for value in (await demo_record_counts(session)).values())
     finally:
         async with factory.begin() as session:
+            await session.execute(
+                delete(IngestionJob).where(IngestionJob.id == formal_job_id)
+            )
             await session.execute(delete(User).where(User.id == sentinel_id))
             await reset_demo_fixture(session, storage=storage)
+        await storage.delete_object(formal_object.key, version=formal_object.version)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_demo_valuation_ignores_newer_formal_fx_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    engine, factory = await _factory()
+    _enable_demo_settings(monkeypatch, tmp_path)
+    storage = LocalObjectStorage(tmp_path, bucket="deterministic-demo-test")
+    formal_source = f"formal-fx-{uuid.uuid4()}"
+    formal_ids = [uuid.uuid4(), uuid.uuid4()]
+    try:
+        async with factory.begin() as session:
+            await reset_demo_fixture(session, storage=storage)
+            session.add_all(
+                [
+                    FxRate(
+                        id=formal_ids[0],
+                        base_currency="USD",
+                        quote_currency="CNY",
+                        rate_date=date(2026, 7, 3),
+                        source=formal_source,
+                        rate=Decimal("9.9900"),
+                        data_as_of=DEMO_AS_OF - timedelta(hours=2),
+                        raw_payload={"is_demo": False},
+                    ),
+                    FxRate(
+                        id=formal_ids[1],
+                        base_currency="USD",
+                        quote_currency="CNY",
+                        rate_date=date(2026, 8, 21),
+                        source=formal_source,
+                        rate=Decimal("9.9800"),
+                        data_as_of=DEMO_AS_OF - timedelta(hours=1),
+                        raw_payload={"is_demo": False},
+                    ),
+                ]
+            )
+        async with factory.begin() as session:
+            manifest = await seed_demo_fixture(
+                session,
+                storage=storage,
+                embedder=HashingEmbeddingProvider(384),
+            )
+        async with factory.begin() as session:
+            selected_sources = set(
+                await session.scalars(
+                    select(FxRate.source)
+                    .join(PositionSnapshot, PositionSnapshot.fx_rate_id == FxRate.id)
+                    .where(
+                        PositionSnapshot.valuation_snapshot_id
+                        == manifest.valuation_snapshot_id
+                    )
+                )
+            )
+            assert selected_sources == {DEMO_FX_SOURCE}
+
+            valuation = await session.get(
+                PortfolioValuationSnapshot,
+                manifest.valuation_snapshot_id,
+            )
+            assert valuation is not None
+            source_context = valuation.config_snapshot["data_source_context"]
+            assert source_context["required_fx_source"] == DEMO_FX_SOURCE
+            cash_lineage = valuation.config_snapshot["cash_fx_lineage"]
+            assert cash_lineage["USD/CNY"]["source"] == DEMO_FX_SOURCE
+
+            usd_buy = await session.scalar(
+                select(Transaction).where(
+                    Transaction.portfolio_id == DEMO_PORTFOLIO_ID,
+                    Transaction.external_id == "demo-buy-us-tech-1",
+                )
+            )
+            demo_trade_fx = await session.scalar(
+                select(FxRate).where(
+                    FxRate.base_currency == "USD",
+                    FxRate.quote_currency == "CNY",
+                    FxRate.rate_date == date(2026, 7, 3),
+                    FxRate.source == DEMO_FX_SOURCE,
+                )
+            )
+            assert usd_buy is not None
+            assert demo_trade_fx is not None
+            assert usd_buy.fx_rate_to_base == demo_trade_fx.rate
+            assert usd_buy.raw_payload["historical_fx_source"] == DEMO_FX_SOURCE
+            assert usd_buy.raw_payload["historical_fx_rate_id"] == str(demo_trade_fx.id)
+            assert await session.scalar(
+                select(func.count(FxRate.id)).where(FxRate.source == formal_source)
+            ) == 2
+    finally:
+        async with factory.begin() as session:
+            await reset_demo_fixture(session, storage=storage)
+            await session.execute(delete(FxRate).where(FxRate.source == formal_source))
         await engine.dispose()
 
 

@@ -306,6 +306,7 @@ async def seed_demo_fixture(
             "fixture_sources": fixture_sources(),
             "fixture_data_cutoff": DEMO_AS_OF.isoformat(),
         },
+        required_fx_source=DEMO_FX_SOURCE,
     )
     valuation_result.valuation.config_snapshot = {
         **valuation_result.valuation.config_snapshot,
@@ -527,10 +528,18 @@ async def reset_demo_fixture(
     require_demo_fixture_mode(configuration)
     object_storage = storage or build_object_storage(configuration)
     before = await demo_record_counts(session)
+    fixture_document_keys = [item["key"] for item in _DOCUMENT_FIXTURES]
+    fixture_job_filter = (
+        IngestionJob.user_id == DEMO_PRINCIPAL_USER,
+        IngestionJob.business_scene == "knowledge_ingestion",
+        IngestionJob.idempotency_key.in_(fixture_document_keys),
+        IngestionJob.metadata_json["fixture_source"].astext
+        == DEMO_DOCUMENT_SOURCE,
+    )
     jobs = list(
         (
             await session.scalars(
-                select(IngestionJob).where(IngestionJob.user_id == DEMO_PRINCIPAL_USER)
+                select(IngestionJob).where(*fixture_job_filter)
             )
         ).all()
     )
@@ -546,9 +555,7 @@ async def reset_demo_fixture(
     await session.execute(
         delete(PromptTemplate).where(PromptTemplate.prompt_key == DEMO_PROMPT_KEY)
     )
-    await session.execute(
-        delete(IngestionJob).where(IngestionJob.user_id == DEMO_PRINCIPAL_USER)
-    )
+    await session.execute(delete(IngestionJob).where(*fixture_job_filter))
     await session.execute(
         delete(ResearchDocument).where(
             ResearchDocument.document_key.in_([item["key"] for item in _DOCUMENT_FIXTURES])
@@ -775,18 +782,39 @@ async def _seed_transactions(
     for index, fixture in enumerate(_TRANSACTION_FIXTURES, start=1):
         security_key = fixture["security_key"]
         external_id = fixture["external_id"]
+        occurred_at = datetime.fromisoformat(fixture["occurred_at"])
+        currency = fixture["currency"]
+        historical_fx_id: uuid.UUID | None = None
+        if currency == portfolio.base_currency:
+            historical_fx_rate = Decimal("1")
+        else:
+            historical_fx = await FxRateRepository(session).latest_at_or_before(
+                currency,
+                portfolio.base_currency,
+                occurred_at.date(),
+                knowledge_as_of=DEMO_AS_OF,
+                source=DEMO_FX_SOURCE,
+            )
+            if historical_fx is None:
+                raise RuntimeError(
+                    f"Missing deterministic trade-date FX for {currency}/"
+                    f"{portfolio.base_currency} on {occurred_at.date().isoformat()}"
+                )
+            historical_fx_rate = historical_fx.rate
+            historical_fx_id = historical_fx.id
         transaction = Transaction(
             id=uuid.uuid5(DEMO_NAMESPACE, f"transaction:{external_id}"),
             portfolio_id=portfolio.id,
             security_id=securities[security_key].id if security_key else None,
             transaction_type=fixture["transaction_type"],
-            occurred_at=datetime.fromisoformat(fixture["occurred_at"]),
+            occurred_at=occurred_at,
             quantity=Decimal(fixture["quantity"]),
             price=Decimal(fixture["price"]) if fixture["price"] else None,
             gross_amount=Decimal(fixture["gross_amount"]),
             fees=Decimal(fixture["fees"]),
             taxes=Decimal(fixture["taxes"]),
-            currency=fixture["currency"],
+            currency=currency,
+            fx_rate_to_base=historical_fx_rate,
             source=DEMO_TRANSACTION_SOURCE,
             external_id=external_id,
             import_batch_id=batch.id,
@@ -799,11 +827,17 @@ async def _seed_transactions(
                 "fixture_source": DEMO_TRANSACTION_SOURCE,
                 "source_file_sha256": file_sha256,
                 "source_row_number": index,
+                "historical_fx_rate_id": (
+                    str(historical_fx_id) if historical_fx_id is not None else None
+                ),
+                "historical_fx_source": DEMO_FX_SOURCE,
             },
             created_at=DEMO_AS_OF,
             updated_at=DEMO_AS_OF,
         )
-        _, created = await ledger.add_transaction(transaction)
+        stored, created = await ledger.add_transaction(transaction)
+        stored.fx_rate_to_base = historical_fx_rate
+        stored.raw_payload = dict(transaction.raw_payload)
         inserted += int(created)
     batch.status = "completed"
     batch.total_rows = len(_TRANSACTION_FIXTURES)
@@ -1373,6 +1407,26 @@ async def _assert_demo_lineage(
         raise RuntimeError("Demo price lineage is incomplete")
     if not fx_rates or not all(_has_demo_flags(item.raw_payload) for item in fx_rates):
         raise RuntimeError("Demo FX lineage is incomplete")
+    selected_fx_ids = set(
+        await session.scalars(
+            select(PositionSnapshot.fx_rate_id).where(
+                PositionSnapshot.valuation_snapshot_id == valuation.id,
+                PositionSnapshot.fx_rate_id.is_not(None),
+            )
+        )
+    )
+    selected_fx_sources = set(
+        await session.scalars(select(FxRate.source).where(FxRate.id.in_(selected_fx_ids)))
+    )
+    if selected_fx_sources != {DEMO_FX_SOURCE}:
+        raise RuntimeError("Demo valuation selected non-demo FX lineage")
+    cash_fx_lineage = valuation.config_snapshot.get("cash_fx_lineage", {})
+    if not cash_fx_lineage or any(
+        item.get("source") != DEMO_FX_SOURCE
+        for item in cash_fx_lineage.values()
+        if isinstance(item, dict)
+    ):
+        raise RuntimeError("Demo cash valuation selected non-demo FX lineage")
     if not all(
         item.status == "published" and _has_demo_flags(item.metadata_json)
         for item in documents
