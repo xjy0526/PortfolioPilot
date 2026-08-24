@@ -4,18 +4,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PortfolioPilot – Portfolio Dashboard</title>
+    <title>PortfolioPilot - Traceable Portfolio Research</title>
     <meta name="description"
-        content="Intelligent stock portfolio dashboard with Buy/Hold/Sell ratings, rebalancing recommendations and tech stock research.">
+        content="Traceable portfolio research workspace for PostgreSQL ledger, point-in-time valuation, governed evidence and review workflows.">
+    <link rel="icon" href="data:,">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
 </head>
 
-<body>
+<body data-active-tab="overview">
     <!-- Toast Notification Container -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -34,6 +35,9 @@
                 <button class="nav-btn active" data-tab="overview" onclick="switchTab('overview')">
                     <i data-lucide="trending-up"></i> <span data-i18n="overview">Übersicht</span>
                 </button>
+                <button class="nav-btn" data-tab="research" onclick="switchTab('research')">
+                    <i data-lucide="database-zap"></i> <span data-i18n="researchData">研究数据</span>
+                </button>
                 <button class="nav-btn" data-tab="analyse" onclick="switchTab('analyse')">
                     <i data-lucide="pie-chart"></i> <span data-i18n="analysis">Analyse</span>
                 </button>
@@ -46,7 +50,7 @@
                 <button class="nav-btn" data-tab="techpicks" data-personal-only="tech_picks" onclick="switchTab('techpicks')">
                     <i data-lucide="rocket"></i> <span data-i18n="techPicks">Tech Picks</span>
                 </button>
-                <button class="nav-btn" data-tab="advisor" onclick="switchTab('advisor')">
+                <button class="nav-btn" data-tab="advisor" data-personal-only="trade_advisor" onclick="switchTab('advisor')">
                     <i data-lucide="brain"></i> <span data-i18n="aiAdvisor">AI Advisor</span>
                 </button>
                 <button class="nav-btn" data-tab="shadow" data-personal-only="shadow_agent" onclick="switchTab('shadow')">
@@ -81,23 +85,23 @@
                             <i data-lucide="menu"></i> <span data-i18n="actions">Aktionen</span>
                         </button>
                         <div class="action-dropdown-menu" id="actionMenu">
-                            <button class="action-dropdown-item" id="btnUploadCsv" onclick="showCsvUpload()">
+                            <button class="action-dropdown-item" id="btnUploadCsv" data-write-action onclick="showCsvUpload()">
                                 <i data-lucide="upload"></i> <span data-i18n="uploadCsv">CSV Import</span>
                             </button>
-                            <button class="action-dropdown-item" id="btnManageHoldings" onclick="showHoldingsManager()">
+                            <button class="action-dropdown-item" id="btnManageHoldings" data-write-action onclick="showHoldingsManager()">
                                 <i data-lucide="list-plus"></i> <span data-i18n="manageHoldings">Manage Holdings</span>
                             </button>
-                            <button class="action-dropdown-item" id="btnUpdateParqet" onclick="updateParqet()">
+                            <button class="action-dropdown-item" id="btnUpdateParqet" data-feature="parqet" data-write-action onclick="updateParqet()">
                                 <i data-lucide="refresh-cw"></i> <span data-i18n="updateParqet">Update Parqet</span>
                             </button>
                             <button class="action-dropdown-item" id="btnEmailContact" onclick="openEmailContact()">
                                 <i data-lucide="mail"></i> <span data-i18n="emailContact">Email Contact</span>
                             </button>
-                            <button class="action-dropdown-item" id="btnApiSettings" onclick="showApiSettings()">
+                            <button class="action-dropdown-item" id="btnApiSettings" data-write-action onclick="showApiSettings()">
                                 <i data-lucide="key-round"></i> <span data-i18n="apiSettings">API Settings</span>
                             </button>
                             <div class="action-dropdown-divider"></div>
-                            <button class="action-dropdown-item" id="btnRefresh" onclick="refreshData()">
+                            <button class="action-dropdown-item" id="btnRefresh" data-write-action onclick="refreshData()">
                                 <i data-lucide="microscope"></i> <span data-i18n="fullAnalysis">Komplette Analyse</span>
                             </button>
                         </div>
@@ -127,8 +131,17 @@
             </div>
             <div class="cash-info" id="cashInfo"></div>
             <div class="cash-info" id="assetMix"></div>
-            <div class="header-indices" id="headerIndices"></div>
+            <div class="header-indices" id="headerIndices" data-personal-only="legacy_live_analytics"></div>
         </section>
+
+        <div class="portfolio-load-state" id="portfolioLoadState" role="status" aria-live="polite" hidden>
+            <div class="portfolio-load-state-icon"><i data-lucide="info"></i></div>
+            <div class="portfolio-load-state-copy">
+                <strong id="portfolioLoadStateTitle"></strong>
+                <span id="portfolioLoadStateDetail"></span>
+            </div>
+            <button type="button" class="portfolio-load-state-action" onclick="switchTab('research')" data-i18n="inspectDataState">查看数据状态</button>
+        </div>
 
         <!-- Skeleton Loading State -->
         <div id="skeletonOverlay" style="display:none;">
@@ -204,7 +217,7 @@
             </div>
 
             <!-- Movers -->
-            <div class="analyse-row" id="moversSection">
+            <div class="analyse-row" id="moversSection" data-personal-only="legacy_live_analytics">
                 <div class="movers-card winners-card">
                     <h3 class="section-title" data-i18n="dailyWinners">🟢 Tagesgewinner</h3>
                     <div id="winnersContainer"></div>
@@ -216,7 +229,7 @@
             </div>
 
             <!-- Portfolio Heatmap -->
-            <div class="chart-card" style="margin-bottom:1rem;">
+            <div class="chart-card" data-personal-only="legacy_live_analytics" style="margin-bottom:1rem;">
                 <h3 class="chart-title" data-i18n="portfolioHeatmap">🗺️ Portfolio-Heatmap</h3>
                 <div class="treemap-container" id="heatmapContainer"></div>
             </div>
@@ -275,6 +288,38 @@
             </div>
         </section>
 
+        <!-- Tab: PostgreSQL research data and lineage -->
+        <section class="tab-content" id="tab-research">
+            <div class="core-workspace-header">
+                <div>
+                    <p class="core-workspace-eyebrow" data-i18n="coreResearchPath">PostgreSQL Core Path</p>
+                    <h2 data-i18n="researchDataTitle">研究数据与估值血缘</h2>
+                    <p class="section-subtitle" data-i18n="researchDataSubtitle">核对账本、时点估值、数据质量和当前有效活动。</p>
+                </div>
+                <div class="core-workspace-actions">
+                    <label class="core-portfolio-picker" for="corePortfolioSelect">
+                        <span data-i18n="portfolio">组合</span>
+                        <select id="corePortfolioSelect" onchange="PortfolioPilotResearch.selectPortfolio(this.value)">
+                            <option value="" data-i18n="loading">加载中...</option>
+                        </select>
+                    </label>
+                    <button type="button" class="btn btn-secondary" onclick="PortfolioPilotResearch.load(true)" data-i18n-title="refresh" title="刷新">
+                        <i data-lucide="refresh-cw"></i>
+                        <span data-i18n="refresh">刷新</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="core-workspace-disclosure" role="note">
+                <i data-lucide="shield-check"></i>
+                <span data-i18n="researchDisclosure">确定性数据来自 PostgreSQL 快照；模型输出只用于带证据的解释，不构成投资建议。</span>
+            </div>
+
+            <div id="coreResearchWorkspace" class="core-research-workspace" aria-live="polite">
+                <div class="empty-state" data-i18n="loadingResearchData">正在读取研究数据...</div>
+            </div>
+        </section>
+
         <!-- Tab: Analysis -->
         <section class="tab-content" id="tab-analyse">
             <!-- Row 1: Portfolio Performance & Risk Profile -->
@@ -307,7 +352,7 @@
                 <div class="chart-card analyse-wide">
                     <div class="chart-header research-card-header">
                         <h3 class="chart-title" style="margin:0;">组合风险总览</h3>
-                        <button class="filter-btn" onclick="loadStructuredAiAnalysis(true)">生成结构化 AI 分析</button>
+                        <button class="filter-btn" data-write-action onclick="loadStructuredAiAnalysis(true)">生成结构化 AI 分析</button>
                     </div>
                     <div id="portfolioRiskSummaryContainer"></div>
                 </div>
@@ -369,6 +414,7 @@
 
         <!-- Tab: History -->
         <section class="tab-content" id="tab-historie">
+            <div id="coreHistoryWorkspace" class="core-history-workspace" hidden></div>
             <!-- Performance KPI Cards -->
             <div class="performance-kpis" id="performanceKpis" style="display:none;">
                 <div class="kpi-grid">
@@ -860,7 +906,7 @@
 
     <!-- Modal: Stock Details -->
     <div class="slide-panel-overlay" id="stockPanelOverlay" onclick="closeStockPanel()"></div>
-    <div class="slide-panel" id="stockPanel">
+    <div class="slide-panel" id="stockPanel" aria-hidden="true">
         <button class="modal-close" onclick="closeStockPanel()">✕</button>
         <div class="modal-header" id="modalHeader">
             <h2 class="modal-title" id="modalTitle">–</h2>
@@ -1041,27 +1087,36 @@
                 <i data-lucide="pie-chart"></i>
                 <span data-i18n="analysis">Analyse</span>
             </button>
+            <button class="bottom-nav-item" data-tab="research" onclick="switchTab('research'); updateBottomNav(this);">
+                <i data-lucide="database-zap"></i>
+                <span data-i18n="researchShort">数据</span>
+            </button>
+            <button class="bottom-nav-item" data-tab="historie" onclick="switchTab('historie'); updateBottomNav(this);">
+                <i data-lucide="history"></i>
+                <span data-i18n="history">历史</span>
+            </button>
             <button class="bottom-nav-item" data-tab="rebalancing" onclick="switchTab('rebalancing'); updateBottomNav(this);">
                 <i data-lucide="scale"></i>
                 <span data-i18n="rebalance">Rebalance</span>
+            </button>
+            <button class="bottom-nav-item" data-tab="evaluation" onclick="switchTab('evaluation'); updateBottomNav(this);">
+                <i data-lucide="activity"></i>
+                <span data-i18n="evalTrace">评测</span>
             </button>
             <button class="bottom-nav-item" data-tab="techpicks" data-personal-only="tech_picks" onclick="switchTab('techpicks'); updateBottomNav(this);">
                 <i data-lucide="rocket"></i>
                 <span data-i18n="picks">Picks</span>
             </button>
-            <button class="bottom-nav-item" data-tab="advisor" onclick="switchTab('advisor'); updateBottomNav(this);">
+            <button class="bottom-nav-item" data-tab="advisor" data-personal-only="trade_advisor" onclick="switchTab('advisor'); updateBottomNav(this);">
                 <i data-lucide="brain"></i>
                 <span data-i18n="ai">AI</span>
-            </button>
-            <button class="bottom-nav-item" data-tab="shadow" data-personal-only="shadow_agent" onclick="switchTab('shadow'); updateBottomNav(this);">
-                <i data-lucide="bot"></i>
-                <span data-i18n="shadowShort">Shadow</span>
             </button>
         </div>
     </nav>
 
     <script src="/static/translations.js"></script>
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=4"></script>
+    <script src="/static/research-workspace.js?v=2"></script>
     <script>
         // Initialize Lucide icons and translations after DOM is ready
         document.addEventListener('DOMContentLoaded', () => {

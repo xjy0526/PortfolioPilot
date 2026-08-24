@@ -74,6 +74,7 @@ def _public_settings() -> dict[str, Any]:
     return {
         "app_name": settings.APP_NAME,
         "app_mode": settings.APP_MODE,
+        "read_only_demo": settings.read_only_demo,
         "feature_flags": {
             "tech_picks": not settings.fund_research_mode,
             "shadow_agent": settings.shadow_agent_enabled,

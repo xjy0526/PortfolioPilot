@@ -40,6 +40,7 @@ def test_app_settings_endpoint_updates_memory_without_persisting_secret(
     assert payload["settings"]["qwen_configured"] is True
     assert payload["settings"]["contact_email"] == "team@example.com"
     assert payload["settings"]["runtime_configuration_persisted"] is False
+    assert payload["settings"]["read_only_demo"] is False
     assert "secret-qwen-key" not in response.text
     assert not (tmp_path / ".env").exists()
 

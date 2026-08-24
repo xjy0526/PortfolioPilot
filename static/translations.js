@@ -26,6 +26,7 @@ const i18n = {
         cancel: '取消',
         personalMode: '个人模式',
         fundResearchMode: '机构投研',
+        readOnly: '只读',
         fundResearchFocus: '研究关注',
         fundMaintainWatch: '维持观察',
         fundReduceRisk: '降低风险暴露',
@@ -38,6 +39,16 @@ const i18n = {
         rebalancing: '调仓建议',
         techPicks: '科技精选',
         aiAdvisor: 'AI 顾问',
+        researchData: '研究数据',
+        researchShort: '数据',
+        coreResearchPath: 'PostgreSQL 核心路径',
+        researchDataTitle: '研究数据与估值血缘',
+        researchDataSubtitle: '核对账本、时点估值、数据质量和当前有效活动。',
+        researchDisclosure: '确定性数据来自 PostgreSQL 快照；模型输出只用于带证据的解释，不构成投资建议。',
+        loadingResearchData: '正在读取研究数据...',
+        inspectDataState: '查看数据状态',
+        portfolio: '组合',
+        refresh: '刷新',
         evalTrace: '评测与 Trace',
         evalTraceSubtitle: 'Prompt、质量、延迟、成本和人工审核指标',
 
@@ -323,6 +334,7 @@ const i18n = {
         cancel: 'Cancel',
         personalMode: 'Personal',
         fundResearchMode: 'Fund Research',
+        readOnly: 'Read only',
         fundResearchFocus: 'Research Focus',
         fundMaintainWatch: 'Maintain Watch',
         fundReduceRisk: 'Reduce Risk Exposure',
@@ -335,6 +347,16 @@ const i18n = {
         rebalancing: 'Rebalancing',
         techPicks: 'Tech Picks',
         aiAdvisor: 'AI Advisor',
+        researchData: 'Research Data',
+        researchShort: 'Data',
+        coreResearchPath: 'PostgreSQL Core Path',
+        researchDataTitle: 'Research Data and Valuation Lineage',
+        researchDataSubtitle: 'Inspect the ledger, point-in-time valuation, data quality, and effective activity.',
+        researchDisclosure: 'Deterministic data comes from PostgreSQL snapshots; model output only explains cited evidence and is not investment advice.',
+        loadingResearchData: 'Loading research data...',
+        inspectDataState: 'Inspect data state',
+        portfolio: 'Portfolio',
+        refresh: 'Refresh',
         evalTrace: 'Eval & Trace',
         evalTraceSubtitle: 'Prompt quality, latency, cost and human-review metrics',
 
@@ -625,6 +647,9 @@ function switchLanguage(lang) {
     // Re-render dynamic content
     if (typeof renderDashboard === 'function') {
         renderDashboard();
+    }
+    if (window.PortfolioPilotResearch && document.getElementById('tab-research')?.classList.contains('active')) {
+        window.PortfolioPilotResearch.load(true);
     }
 }
 
