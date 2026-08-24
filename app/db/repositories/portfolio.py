@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import String, and_, case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.models import (
     ImportBatch,
@@ -16,6 +18,15 @@ from app.db.models import (
 )
 from app.db.repositories.base import BaseRepository
 from time_utils import utc_now
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAuditRecord:
+    """A ledger row with its optional legacy generation lineage."""
+
+    transaction: Transaction
+    generation: LegacySnapshotGeneration | None
+    effective: bool
 
 
 class TransactionRepository(BaseRepository[Transaction]):
@@ -96,16 +107,11 @@ class TransactionRepository(BaseRepository[Transaction]):
         legacy_snapshot_source: str = "legacy_dashboard_csv",
     ) -> list[Transaction]:
         """Return formal ledger rows plus only the active dashboard generation."""
-        active_batch_ids = select(LegacySnapshotGeneration.import_batch_id).where(
-            LegacySnapshotGeneration.portfolio_id == portfolio_id,
-            LegacySnapshotGeneration.source == legacy_snapshot_source,
-            LegacySnapshotGeneration.status == "active",
-        )
         statement = select(Transaction).where(
             Transaction.portfolio_id == portfolio_id,
-            or_(
-                Transaction.source != legacy_snapshot_source,
-                Transaction.import_batch_id.in_(active_batch_ids),
+            self._effective_condition(
+                portfolio_id,
+                legacy_snapshot_source=legacy_snapshot_source,
             ),
         )
         if as_of is not None:
@@ -116,6 +122,65 @@ class TransactionRepository(BaseRepository[Transaction]):
             Transaction.id,
         )
         return list((await self.session.scalars(statement)).all())
+
+    async def list_audit_for_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        as_of: datetime | None = None,
+        legacy_snapshot_source: str = "legacy_dashboard_csv",
+    ) -> list[TransactionAuditRecord]:
+        """Return every ledger row with legacy generation and effective status."""
+        generation_join = and_(
+            LegacySnapshotGeneration.portfolio_id == Transaction.portfolio_id,
+            LegacySnapshotGeneration.source == Transaction.source,
+            LegacySnapshotGeneration.import_batch_id == Transaction.import_batch_id,
+        )
+        effective = self._effective_condition(
+            portfolio_id,
+            legacy_snapshot_source=legacy_snapshot_source,
+        )
+        statement = (
+            select(
+                Transaction,
+                LegacySnapshotGeneration,
+                effective.label("effective"),
+            )
+            .outerjoin(LegacySnapshotGeneration, generation_join)
+            .where(Transaction.portfolio_id == portfolio_id)
+        )
+        if as_of is not None:
+            statement = statement.where(Transaction.occurred_at <= as_of)
+        statement = statement.order_by(
+            Transaction.occurred_at,
+            Transaction.created_at,
+            Transaction.id,
+        )
+        rows = (await self.session.execute(statement)).all()
+        return [
+            TransactionAuditRecord(
+                transaction=row[0],
+                generation=row[1],
+                effective=bool(row[2]),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _effective_condition(
+        portfolio_id: uuid.UUID,
+        *,
+        legacy_snapshot_source: str,
+    ) -> ColumnElement[bool]:
+        active_batch_ids = select(LegacySnapshotGeneration.import_batch_id).where(
+            LegacySnapshotGeneration.portfolio_id == portfolio_id,
+            LegacySnapshotGeneration.source == legacy_snapshot_source,
+            LegacySnapshotGeneration.status == "active",
+        )
+        return or_(
+            Transaction.source != legacy_snapshot_source,
+            Transaction.import_batch_id.in_(active_batch_ids),
+        )
 
     async def list_for_import_batch(self, import_batch_id: uuid.UUID) -> list[Transaction]:
         statement = (
@@ -263,6 +328,26 @@ class LegacySnapshotGenerationRepository(BaseRepository[LegacySnapshotGeneration
                 LegacySnapshotGeneration.source == source,
             )
             .order_by(LegacySnapshotGeneration.generation_number)
+        )
+        return list((await self.session.scalars(statement)).all())
+
+    async def list_active(
+        self,
+        *,
+        portfolio_id: uuid.UUID | None = None,
+        source: str = "legacy_dashboard_csv",
+    ) -> list[LegacySnapshotGeneration]:
+        statement = select(LegacySnapshotGeneration).where(
+            LegacySnapshotGeneration.source == source,
+            LegacySnapshotGeneration.status == "active",
+        )
+        if portfolio_id is not None:
+            statement = statement.where(
+                LegacySnapshotGeneration.portfolio_id == portfolio_id
+            )
+        statement = statement.order_by(
+            LegacySnapshotGeneration.portfolio_id,
+            LegacySnapshotGeneration.generation_number,
         )
         return list((await self.session.scalars(statement)).all())
 
@@ -425,6 +510,56 @@ class PortfolioValuationRepository(BaseRepository[PortfolioValuationSnapshot]):
             PortfolioValuationSnapshot.as_of.desc(),
             PortfolioValuationSnapshot.updated_at.desc(),
         ).limit(1)
+        return await self.session.scalar(statement)
+
+    async def latest_for_legacy_generation(
+        self,
+        portfolio_id: uuid.UUID,
+        generation_id: uuid.UUID,
+        as_of: datetime,
+        *,
+        valuation_source: str = "ledger_rebuild",
+        legacy_source: str = "legacy_dashboard_csv",
+    ) -> PortfolioValuationSnapshot | None:
+        """Return only a complete valuation linked to one active generation."""
+        generation_context = func.jsonb_extract_path_text(
+            PortfolioValuationSnapshot.config_snapshot,
+            "data_source_context",
+            "legacy_snapshot_generation_id",
+        )
+        import_batch_context = func.jsonb_extract_path_text(
+            PortfolioValuationSnapshot.config_snapshot,
+            "data_source_context",
+            "legacy_snapshot_import_batch_id",
+        )
+        statement = (
+            select(PortfolioValuationSnapshot)
+            .join(
+                LegacySnapshotGeneration,
+                LegacySnapshotGeneration.id == generation_id,
+            )
+            .where(
+                PortfolioValuationSnapshot.portfolio_id == portfolio_id,
+                PortfolioValuationSnapshot.source == valuation_source,
+                PortfolioValuationSnapshot.valuation_status == "complete",
+                PortfolioValuationSnapshot.total_market_value.is_not(None),
+                PortfolioValuationSnapshot.unpriced_asset_count == 0,
+                PortfolioValuationSnapshot.coverage_ratio == 1,
+                PortfolioValuationSnapshot.input_hash != "",
+                PortfolioValuationSnapshot.as_of <= as_of,
+                LegacySnapshotGeneration.portfolio_id == portfolio_id,
+                LegacySnapshotGeneration.source == legacy_source,
+                LegacySnapshotGeneration.status == "active",
+                generation_context == str(generation_id),
+                import_batch_context
+                == func.cast(LegacySnapshotGeneration.import_batch_id, String),
+            )
+            .order_by(
+                PortfolioValuationSnapshot.as_of.desc(),
+                PortfolioValuationSnapshot.updated_at.desc(),
+            )
+            .limit(1)
+        )
         return await self.session.scalar(statement)
 
     async def list_for_portfolio(

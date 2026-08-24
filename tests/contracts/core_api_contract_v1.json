@@ -1053,6 +1053,51 @@
         ]
       }
     },
+    "/api/portfolios/{portfolio_id}/transactions/audit": {
+      "get": {
+        "description": "Return the complete ledger history for authorized portfolio auditors.",
+        "operationId": "audit_transactions_api_portfolios__portfolio_id__transactions_audit_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "portfolio_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Portfolio Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Audit Transactions Api Portfolios  Portfolio Id  Transactions Audit Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audit Transactions",
+        "tags": [
+          "portfolio-ledger"
+        ]
+      }
+    },
     "/api/portfolios/{portfolio_id}/valuation": {
       "get": {
         "operationId": "get_valuation_api_portfolios__portfolio_id__valuation_get",
