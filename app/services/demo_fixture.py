@@ -86,6 +86,7 @@ DEMO_FLAGS: dict[str, bool] = {
     "synthetic_data_used": True,
     "mock_response_used": True,
     "real_model_used": False,
+    "human_label_used": False,
     "production_data_used": False,
 }
 

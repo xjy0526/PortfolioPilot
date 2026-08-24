@@ -169,6 +169,7 @@ async def test_demo_seed_is_idempotent_and_has_complete_lineage(
             assert trace.model == "synthetic-no-network-v1"
             assert trace.response_payload["mock_response_used"] is True
             assert trace.response_payload["real_model_used"] is False
+            assert trace.response_payload["human_label_used"] is False
             assert trace.response_payload["production_data_used"] is False
             assert trace.evidence_ids
     finally:
@@ -266,6 +267,7 @@ async def test_demo_smoke_exercises_read_only_http_chain(
         assert result["status"] == "passed"
         assert result["mock_response_used"] is True
         assert result["real_model_used"] is False
+        assert result["human_label_used"] is False
     finally:
         main.app.dependency_overrides.clear()
         async with factory.begin() as session:
