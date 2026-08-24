@@ -91,6 +91,8 @@ Dashboard 兼容写入采用 replace-snapshot 语义。`legacy_snapshot_generati
 
 Dashboard 读取同样受 generation lineage 约束。`PortfolioValuationRepository.latest_for_legacy_generation()` 在 PostgreSQL 内核对 active generation、import batch、`ledger_rebuild` 来源、完整估值状态、覆盖率和 `as_of`；`LegacyPortfolioAdapter` 不加载全量快照做 Python 过滤，也不回退到旧累计估值。升级后若 active generation 尚无匹配估值，API 返回 `409 portfolio_rebuild_required`，由显式 repair Service 重建后才能恢复流量。
 
+持仓重建、普通 transaction API 与 Dashboard activities 共用同一个 effective transaction Repository 条件，形成 **effective portfolio activity**：正式来源不受影响，legacy dashboard 来源只读取 active generation。完整 **audit transaction history** 通过独立管理员接口读取全部交易，并关联 generation number、状态、supersede 时间与前后代 ID；普通用户响应不暴露这些内部审计字段。
+
 ## 交易账本
 
 `TransactionLedgerService` 使用以下语义：
@@ -183,6 +185,7 @@ python -m pytest -q tests/unit/test_api_contracts.py
 GET  /api/portfolios
 GET  /api/portfolios/{id}
 GET  /api/portfolios/{id}/transactions
+GET  /api/portfolios/{id}/transactions/audit  # platform/portfolio admin only
 POST /api/portfolios/{id}/imports/transactions
 GET  /api/portfolios/{id}/positions?as_of=
 GET  /api/portfolios/{id}/valuation?as_of=

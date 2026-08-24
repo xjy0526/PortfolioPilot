@@ -19,6 +19,7 @@ CORE_API_PATHS = (
     "/api/portfolios",
     "/api/portfolios/{portfolio_id}",
     "/api/portfolios/{portfolio_id}/transactions",
+    "/api/portfolios/{portfolio_id}/transactions/audit",
     "/api/portfolios/{portfolio_id}/imports/transactions",
     "/api/import-batches/{batch_id}/errors",
     "/api/portfolios/{portfolio_id}/positions",

@@ -69,7 +69,7 @@ async def list_transactions(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict[str, object]]:
     await require_portfolio_access(session, principal, portfolio_id, "read")
-    rows = await TransactionRepository(session).list_for_portfolio(
+    rows = await TransactionLedgerService(session).list_transactions(
         portfolio_id,
         as_of=_as_utc(as_of) if as_of else None,
     )
@@ -97,6 +97,71 @@ async def list_transactions(
             }
         )
     return output
+
+
+@router.get("/portfolios/{portfolio_id}/transactions/audit")
+async def audit_transactions(
+    portfolio_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, object]:
+    """Return the complete ledger history for authorized portfolio auditors."""
+    await require_portfolio_access(session, principal, portfolio_id, "admin")
+    rows = await TransactionRepository(session).list_audit_for_portfolio(portfolio_id)
+    transactions: list[dict[str, object]] = []
+    for audit_row in rows:
+        row = audit_row.transaction
+        generation = audit_row.generation
+        security = await session.get(Security, row.security_id) if row.security_id else None
+        transactions.append(
+            {
+                "id": str(row.id),
+                "external_id": row.external_id,
+                "transaction_type": row.transaction_type,
+                "ticker": security.canonical_symbol if security else None,
+                "security_id": str(row.security_id) if row.security_id else None,
+                "occurred_at": _as_utc(row.occurred_at).isoformat(),
+                "settled_at": (
+                    _as_utc(row.settled_at).isoformat() if row.settled_at else None
+                ),
+                "quantity": row.quantity,
+                "price": row.price,
+                "gross_amount": row.gross_amount,
+                "fees": row.fees,
+                "taxes": row.taxes,
+                "currency": row.currency,
+                "source": row.source,
+                "note": row.note,
+                "import_batch_id": (
+                    str(row.import_batch_id) if row.import_batch_id else None
+                ),
+                "generation_id": str(generation.id) if generation else None,
+                "generation_number": (
+                    generation.generation_number if generation else None
+                ),
+                "generation_status": generation.status if generation else None,
+                "superseded_at": (
+                    _as_utc(generation.superseded_at).isoformat()
+                    if generation and generation.superseded_at
+                    else None
+                ),
+                "superseded_by_id": (
+                    str(generation.superseded_by_id)
+                    if generation and generation.superseded_by_id
+                    else None
+                ),
+                "effective": audit_row.effective,
+            }
+        )
+    return {
+        "portfolio_id": str(portfolio_id),
+        "scope": "audit_transaction_history",
+        "description": (
+            "Administrative audit history; superseded legacy snapshot rows are "
+            "not part of normal portfolio activity."
+        ),
+        "transactions": transactions,
+    }
 
 
 @router.get("/portfolios/{portfolio_id}/positions")
