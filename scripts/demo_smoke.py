@@ -151,6 +151,27 @@ async def _verify_http(
         if workflow.get("report_id") != manifest["report_id"]:
             raise AssertionError("Demo workflow is not linked to its published report")
 
+        showcase = await _response_json(
+            client,
+            "GET",
+            f"/api/portfolios/{portfolio_id}/research-run",
+        )
+        if showcase.get("run", {}).get("run_id") != manifest["workflow_id"]:
+            raise AssertionError("Showcase did not resolve the portfolio's persisted workflow")
+        truth_labels = showcase.get("truth_labels", {})
+        if truth_labels.get("mock_response_used") is not True:
+            raise AssertionError("Showcase lost the mock-response disclosure")
+        if truth_labels.get("real_model_used") is not False:
+            raise AssertionError("Showcase misrepresented the deterministic model as real")
+        if showcase.get("evidence", {}).get("status") != "available":
+            raise AssertionError("Showcase evidence is unavailable or permission-filtered")
+        if not showcase.get("prompt") or not showcase.get("trace"):
+            raise AssertionError("Showcase prompt or LLM trace lineage is missing")
+        if not showcase.get("validation") or not showcase.get("review_timeline"):
+            raise AssertionError("Showcase validation or review timeline is missing")
+        if showcase.get("published_report", {}).get("report_id") != manifest["report_id"]:
+            raise AssertionError("Showcase report provenance is missing")
+
         traces = await _response_json(client, "GET", "/api/evaluation/traces")
         trace = next(
             (item for item in traces.get("traces", []) if item.get("trace_id") == DEMO_TRACE_KEY),

@@ -1,8 +1,8 @@
 {
   "api_title": "PortfolioPilot",
   "api_version": "2.0.0",
-  "operation_count": 80,
-  "path_count": 75,
+  "operation_count": 81,
+  "path_count": 76,
   "routes": [
     {
       "deprecated": false,
@@ -353,6 +353,13 @@
       "tags": [
         "portfolio-ledger"
       ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operation_id": "get_research_run_showcase_api_portfolios__portfolio_id__research_run_get",
+      "path": "/api/portfolios/{portfolio_id}/research-run",
+      "tags": []
     },
     {
       "deprecated": false,

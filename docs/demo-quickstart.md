@@ -40,6 +40,8 @@ make demo
 - Liveness：<http://localhost:8000/health/live>
 - Readiness：<http://localhost:8000/health/ready>
 
+Dashboard 中打开“研究运行”，可从 Portfolio Snapshot 顺序查看 Risk、Evidence、Prompt/Trace、Validation、Review Timeline 和 Published Report。页面只读取真实 API，并直接显示 `Synthetic Demo`、`Mock Model`、fallback 与 evidence 状态。
+
 端口冲突时可改用：
 
 ```bash
@@ -83,6 +85,16 @@ make demo-reset    # 只删除 demo namespace，不删除其他来源的数据
 make demo-down     # 停止容器，保留 Demo volumes
 ```
 
+可选的真实浏览器截图仅用于文档展示，不进入生产镜像：
+
+```bash
+python -m pip install -r requirements-demo-capture.txt
+python -m scripts.capture_demo --dry-run
+python -m scripts.capture_demo
+```
+
+捕获脚本只接受本机 Demo URL，并在页面缺少真实性披露、出现浏览器错误、响应式横向溢出或敏感标记时失败。
+
 `make demo-reset` 只匹配固定 UUID、业务场景、文档 key 和专用 source；它不会删除
 `standard_csv`、`manual`、真实 Provider 或其他租户的数据。
 
@@ -93,7 +105,7 @@ make demo-down     # 停止容器，保留 Demo volumes
 - `/health/live` 与 `/health/ready` 返回 `200`；
 - Demo portfolio、重建持仓、完整 valuation 和 risk summary 可读取；
 - 已发布文档、chunk、pgvector embedding 和 RAG citation 存在；
-- Prompt Version、Workflow、mock Trace、Review 和 Published Report 相互关联；
+- Showcase API 中的 Prompt Version、Workflow、mock Trace、权限过滤 Evidence、Validation、Review 和 Published Report 相互关联；
 - Trace 和 Report 保留 synthetic/mock 披露；
 - 任意 HTTP mutation 在只读模式返回 `403`；
 - 重复 seed 后各表记录数和稳定身份不变。

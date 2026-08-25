@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,9 +16,36 @@ from app.core.principal import (
     require_tenant_access,
     require_writable,
 )
+from app.services.research_run_showcase import ResearchRunShowcaseService
 from workflows import ResearchReportWorkflow
 
 router = APIRouter()
+
+
+@router.get("/api/portfolios/{portfolio_id}/research-run")
+async def get_research_run_showcase(
+    portfolio_id: uuid.UUID,
+    run_id: uuid.UUID | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    session: AsyncSession = Depends(get_db_session),
+):
+    portfolio = await require_portfolio_access(session, principal, portfolio_id, "read")
+    result = await ResearchRunShowcaseService(session).load(
+        portfolio_id=portfolio_id,
+        tenant_id=portfolio.tenant_id,
+        principal=principal,
+        run_id=run_id,
+    )
+    if result is None:
+        return JSONResponse(
+            {
+                "error": "research_run_not_found",
+                "portfolio_id": str(portfolio_id),
+                "reason": "No accessible research workflow is linked to this portfolio",
+            },
+            status_code=404,
+        )
+    return result
 
 
 @router.post("/api/workflows/research-report")

@@ -29,6 +29,7 @@ CORE_API_PATHS = (
     "/api/portfolios/{portfolio_id}/positions",
     "/api/portfolios/{portfolio_id}/valuation",
     "/api/portfolios/{portfolio_id}/rebuild",
+    "/api/portfolios/{portfolio_id}/research-run",
     "/api/market-data/sync",
     "/api/portfolio/risk-summary",
     "/api/ai/analyze-portfolio",

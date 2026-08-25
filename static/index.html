@@ -36,7 +36,7 @@
                     <i data-lucide="trending-up"></i> <span data-i18n="overview">Übersicht</span>
                 </button>
                 <button class="nav-btn" data-tab="research" onclick="switchTab('research')">
-                    <i data-lucide="database-zap"></i> <span data-i18n="researchData">研究数据</span>
+                    <i data-lucide="file-search-2"></i> <span data-i18n="researchData">研究运行</span>
                 </button>
                 <button class="nav-btn" data-tab="analyse" onclick="switchTab('analyse')">
                     <i data-lucide="pie-chart"></i> <span data-i18n="analysis">Analyse</span>
@@ -292,9 +292,9 @@
         <section class="tab-content" id="tab-research">
             <div class="core-workspace-header">
                 <div>
-                    <p class="core-workspace-eyebrow" data-i18n="coreResearchPath">PostgreSQL Core Path</p>
-                    <h2 data-i18n="researchDataTitle">研究数据与估值血缘</h2>
-                    <p class="section-subtitle" data-i18n="researchDataSubtitle">核对账本、时点估值、数据质量和当前有效活动。</p>
+                    <p class="core-workspace-eyebrow" data-i18n="coreResearchPath">Traceable Research Run</p>
+                    <h2 data-i18n="researchDataTitle">可追溯研究运行详情</h2>
+                    <p class="section-subtitle" data-i18n="researchDataSubtitle">从组合估值一路核对证据、模型 Trace、规则校验、人工审核与发布报告。</p>
                 </div>
                 <div class="core-workspace-actions">
                     <label class="core-portfolio-picker" for="corePortfolioSelect">
@@ -312,7 +312,7 @@
 
             <div class="core-workspace-disclosure" role="note">
                 <i data-lucide="shield-check"></i>
-                <span data-i18n="researchDisclosure">确定性数据来自 PostgreSQL 快照；模型输出只用于带证据的解释，不构成投资建议。</span>
+                <span data-i18n="researchDisclosure">数据来自 PostgreSQL 与 pgvector；Synthetic、Mock、fallback 和证据不足状态不会被隐藏，不构成投资建议。</span>
             </div>
 
             <div id="coreResearchWorkspace" class="core-research-workspace" aria-live="polite">
@@ -1089,7 +1089,7 @@
             </button>
             <button class="bottom-nav-item" data-tab="research" onclick="switchTab('research'); updateBottomNav(this);">
                 <i data-lucide="database-zap"></i>
-                <span data-i18n="researchShort">数据</span>
+                <span data-i18n="researchShort">运行</span>
             </button>
             <button class="bottom-nav-item" data-tab="historie" onclick="switchTab('historie'); updateBottomNav(this);">
                 <i data-lucide="history"></i>

@@ -28,12 +28,58 @@ def test_workspace_reads_postgres_core_endpoints_and_effective_activity() -> Non
         "/api/portfolios/${id}/positions",
         "/api/portfolios/${id}/transactions",
         "/api/portfolio/risk-summary?portfolio_id=${id}",
+        "/api/portfolios/${id}/research-run",
     )
     for path in expected_paths:
         assert path in WORKSPACE_JS
 
     assert "/transactions/audit" not in WORKSPACE_JS
     assert "superseded legacy generations" in WORKSPACE_JS
+
+
+def test_showcase_renders_the_complete_governed_research_chain() -> None:
+    required_sections = (
+        "Portfolio Snapshot",
+        "Risk Analytics",
+        "Sector exposure",
+        "Asset-type exposure",
+        "Evidence & Citation",
+        "Prompt & LLM Trace",
+        "Deterministic Validation",
+        "Human Review Timeline",
+        "Published Report",
+    )
+    for section in required_sections:
+        assert section in WORKSPACE_JS
+
+    for disclosure in (
+        "Synthetic Demo",
+        "Mock Model",
+        "Not Investment Advice",
+        "mock_response_used",
+        "evidence_insufficient",
+        "fallback",
+        "item.reason",
+    ):
+        assert disclosure in WORKSPACE_JS
+
+
+def test_showcase_has_accessible_empty_error_and_status_states() -> None:
+    assert 'role="alert"' in WORKSPACE_JS
+    assert 'role="status"' in WORKSPACE_JS
+    assert 'aria-labelledby="showcaseEvidenceTitle"' in WORKSPACE_JS
+    assert 'aria-labelledby="showcaseTraceTitle"' in WORKSPACE_JS
+    assert 'aria-labelledby="showcaseReviewTitle"' in WORKSPACE_JS
+    assert "research_run_not_found" not in WORKSPACE_JS
+    assert "No linked research run" in WORKSPACE_JS
+    assert "Research run unavailable" in WORKSPACE_JS
+
+
+def test_showcase_does_not_hardcode_demo_database_identifiers() -> None:
+    assert "DEMO_WORKFLOW_ID" not in WORKSPACE_JS
+    assert "DEMO_TRACE_ID" not in WORKSPACE_JS
+    assert "DEMO_REPORT_ID" not in WORKSPACE_JS
+    assert "load_demo_manifest" not in WORKSPACE_JS
 
 
 def test_snapshot_base_currency_is_not_reinterpreted_as_eur() -> None:
@@ -156,7 +202,11 @@ console.log(JSON.stringify({
   cny: workspace.formatMoney(100, 'CNY', 'zh-CN'),
   ok: workspace.statusTone('complete'),
   warn: workspace.statusTone('stale'),
-  error: workspace.statusTone('rebuild_required')
+  error: workspace.statusTone('rebuild_required'),
+  published: workspace.statusTone('PUBLISHED'),
+  mock: workspace.recordedBoolean(true),
+  real: workspace.recordedBoolean(false),
+  unknown: workspace.recordedBoolean(null)
 }));
 """
     result = subprocess.run(
@@ -176,3 +226,7 @@ console.log(JSON.stringify({
     assert payload["ok"] == "ok"
     assert payload["warn"] == "warn"
     assert payload["error"] == "error"
+    assert payload["published"] == "ok"
+    assert payload["mock"] == "true"
+    assert payload["real"] == "false"
+    assert payload["unknown"] == "not_recorded"

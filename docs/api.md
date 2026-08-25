@@ -220,10 +220,13 @@ validation, trigger one retry and then use the safe fallback.
 |---|---|---|
 | POST | `/api/workflows/research-report` | Allowlisted research-report workflow starten |
 | GET | `/api/workflows/{run_id}` | Run, Steps und Review-Status lesen |
+| GET | `/api/portfolios/{portfolio_id}/research-run?run_id=` | 读取一个组合最新或指定研究运行的 Evidence、Prompt、Trace、Validation、Review 与 Report 展示模型 |
 | POST | `/api/reviews/{review_id}/approve` | Bericht nach menschlicher Prüfung freigeben |
 | POST | `/api/reviews/{review_id}/reject` | Bericht ablehnen |
 | POST | `/api/reviews/{review_id}/request-changes` | Änderungen mit Feedback anfordern |
 | GET | `/api/reports/{report_id}` | Ausschließlich freigegebenen Bericht lesen |
+
+研究运行展示接口先校验 portfolio read access，再按 tenant、portfolio lineage 和现有 Workflow 可见性规则选择运行。Evidence 会再次执行文档发布时间、有效期和 permission group 过滤；无权或失效 Chunk 不会泄露。没有记录的检索分数、数字一致性检查或合规规则会返回 `unavailable` 与机器可读原因，不会补造分数。响应中的 `synthetic_data_used`、`mock_response_used`、`real_model_used`、`human_label_used` 和 `production_data_used` 只来自持久化 Trace/Workflow 标记。
 
 ## Evaluation & Trace (`routes/evaluation.py`)
 
