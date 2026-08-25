@@ -182,8 +182,9 @@ Render Web、Cron 和 Background Worker 的文件系统彼此独立，Cron 不�
 health、governed RAG/Prompt/Trace/Workflow；Compatibility 保留旧 URL，并通过 adapter 读取 Core；
 Experimental 在对应 feature flag 为 `true` 前不会 import Router。
 
-`ENABLE_LEGACY_SQLITE_COMPAT=false` 是默认边界。它只控制旧 SQLite 初始化、JSON-to-SQLite
-迁移和旧 in-memory Demo，不关闭 PostgreSQL-backed 兼容 URL。显式开启后初始化错误会中止启动；
+`ENABLE_LEGACY_SQLITE_COMPAT=false` 是默认边界。它控制旧 SQLite 初始化、JSON-to-SQLite
+迁移、旧 in-memory Demo 和基于 SQLite 的历史分析读取，不关闭 PostgreSQL-backed 兼容 URL。
+关闭时历史分析 URL 返回空/不可用语义而不触发 SQLite import；显式开启后初始化错误会中止启动；
 production 配置会直接拒绝该模式。`routes/evaluation.py` 仍只是 import shim，不复制 endpoint 逻辑。
 详细清单见 [module-boundaries.md](module-boundaries.md) 和
 [legacy-migration-map.md](legacy-migration-map.md)。

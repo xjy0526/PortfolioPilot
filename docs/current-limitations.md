@@ -11,6 +11,7 @@
 - `state.portfolio_data` 仍被部分非核心旧模块引用，但当前组合页、DB API、风险汇总、AI 分析、调仓研究和 Workflow 的组合输入已来自 PostgreSQL valuation snapshot。
 - `scripts/migrate_sqlite_to_postgres.py` 迁移旧总览快照和 Shadow 模拟交易；`scripts/migrate_governance_sqlite_to_postgres.py` 显式迁移研究治理数据，随后必须运行一致性与召回对比脚本。
 - 默认 `ENABLE_LEGACY_SQLITE_COMPAT=false`。development/test 只能为迁移验证显式开启；production 开启会使配置校验和 readiness 失败。开启后初始化失败会中止启动，不会被静默忽略。
+- 旧分析历史、Score trend 和 legacy score backtest 仍依赖 SQLite；compat 关闭时保留其 URL 契约，但返回明确的空/不可用结果且不会读取或创建 SQLite。正式风险和策略回测走 PostgreSQL-backed Core API。
 - 从 generation migration 之前升级的 legacy Dashboard 组合可能只有旧 additive valuation；系统会返回 `409 portfolio_rebuild_required`，必须先运行 `scripts/rebuild_stale_legacy_valuations.py` 扫描和重建，不会自动回退旧估值。脚本的 `--limit` 表示本轮最多选择的 stale candidates 数量；健康或已修复组合不会消耗限额，重复运行会继续处理后续候选。`--dry-run` 不写数据库，`--continue-on-error` 只允许越过单个修复失败项并如实保留失败状态。
 
 ## 2. 当前还不是生产级严格 walk-forward 回测
@@ -60,6 +61,7 @@ Polymarket、Telegram、Parqet、Shadow Agent、Tech Radar 和 Trade Advisor 分
 `ENABLE_TECH_RADAR`、`ENABLE_TRADE_ADVISOR` 控制，默认均为 `false`。其 Router 在 flag 开启前
 不会注册；Telegram、Parqet、Shadow 等模块也不会被默认启动导入。这些扩展不是 A 股/美股风险
 分析主链路的依赖。完整分类见 [module-boundaries.md](module-boundaries.md)。
+Dashboard 会根据同一组服务端 flag 隐藏 Trade Advisor 和 Parqet 等入口；flag 缺失或设置读取失败时按关闭处理，避免前端调用未注册端点。
 
 ## 6. 其他工程限制
 

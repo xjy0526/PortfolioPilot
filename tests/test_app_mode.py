@@ -91,10 +91,22 @@ def test_frontend_marks_personal_only_entries_and_neutral_labels():
     assert 'data-personal-only="tech_picks"' in html
     assert 'data-personal-only="shadow_agent"' in html
     assert 'data-personal-only="trade_advisor"' in html
+    assert 'data-tab="advisor" data-feature="trade_advisor"' in html
+    assert 'id="tab-advisor" data-feature="trade_advisor"' in html
+    assert 'id="btnUpdateParqet" data-feature="parqet"' in html
     assert "研究关注" in js
     assert "维持观察" in js
     assert "降低风险暴露" in js
     assert "人工复核" in js
+
+
+def test_frontend_feature_controls_fail_closed_without_server_flags():
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "document.querySelectorAll('[data-feature]')" in js
+    assert "Boolean(feature && flags[feature])" in js
+    assert "appSettingsCache?.feature_flags?.parqet" in js
 
 
 def test_fund_research_mode_blocks_shadow_mutation(monkeypatch):

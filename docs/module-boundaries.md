@@ -54,7 +54,7 @@ Compatibility 用于保持旧 Dashboard 和迁移工具可用，不得复制一�
 | `database.py` 与 SQLite migration scripts | 旧缓存读取、迁移和一致性校验 | 仅显式兼容模式/CLI |
 | `routes/evaluation.py` 等 shim | 保留旧 import 路径 | 只转发，不复制业务逻辑 |
 
-`register_compat_routes(app)` 保持已承诺 URL。HTTP compatibility 与 SQLite storage compatibility 是两个不同概念：PostgreSQL-backed 旧 URL 可以在 `ENABLE_LEGACY_SQLITE_COMPAT=false` 时继续工作；只有旧 in-memory Demo、SQLite 初始化和 `migrate_json_to_sqlite` 受该开关控制。
+`register_compat_routes(app)` 保持已承诺 URL。HTTP compatibility 与 SQLite storage compatibility 是两个不同概念：PostgreSQL-backed 旧 URL 可以在 `ENABLE_LEGACY_SQLITE_COMPAT=false` 时继续工作；旧 in-memory Demo、SQLite 初始化、`migrate_json_to_sqlite` 和旧历史分析读取受该开关控制。关闭时仍注册的历史 URL 返回稳定的空/不可用响应，不会延迟导入或查询未初始化的 `database.py`。
 
 development/test 如需验证旧库，必须显式设置：
 
@@ -78,6 +78,7 @@ Experimental 不是正式 A 股/美股研究链路依赖，默认不注册 Route
 | Polymarket | `ENABLE_POLYMARKET` | 可选导入/展示语义；当前无独立 Router |
 
 `register_experimental_routes(app)` 在对应 flag 为 `true` 时才执行局部 import。禁用 Telegram、Parqet 或 Shadow 时，默认进程不会 import 它们的 Router；Trade Advisor 和 Tech Radar 的业务模块只在端点实际执行时加载。
+Dashboard 同样消费 `/api/app-settings` 的 feature flags；Trade Advisor 导航/内容和 Parqet 操作在 flag 未显式开启或设置读取失败时 fail closed，不会留下指向未注册 Router 的入口。
 
 ## 新代码约束
 

@@ -211,8 +211,9 @@ ENABLE_LEGACY_SQLITE_COMPAT=false
 ```
 
 关闭这些扩展不影响 PostgreSQL 账本、风险分析、Hybrid RAG、Prompt/Trace、人工审核和回测。
-`ENABLE_LEGACY_SQLITE_COMPAT` 只控制旧 SQLite 初始化与旧 in-memory Demo，不控制
-PostgreSQL-backed `/api/portfolio` adapter；production 会拒绝该开关为 `true`。
+`ENABLE_LEGACY_SQLITE_COMPAT` 控制旧 SQLite 初始化、旧 in-memory Demo 和基于该库的历史分析读取，
+但不控制 PostgreSQL-backed `/api/portfolio` adapter；关闭时历史读取返回明确的空/不可用结果，
+不会访问未初始化的 SQLite，production 会拒绝该开关为 `true`。
 `APP_MODE=fund_research` 会进一步隐藏个人化和交易式表达入口。
 
 ## 深入配置与模块说明

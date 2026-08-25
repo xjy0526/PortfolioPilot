@@ -103,6 +103,100 @@ print(json.dumps({
     assert not EXPERIMENTAL_PATHS.intersection(payload["paths"])
 
 
+def test_disabled_sqlite_compat_reads_do_not_import_uninitialized_storage() -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ENVIRONMENT": "test",
+            "EMBEDDING_PROVIDER": "hashing",
+            "RAG_ALLOW_HASHING_FALLBACK": "true",
+            "ENABLE_LEGACY_SQLITE_COMPAT": "false",
+        }
+    )
+    script = """
+import json
+import sys
+import types
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.api.router_registry import register_compat_routes
+from config import Settings
+
+class EmptyHistory:
+    empty = True
+
+class FakeTicker:
+    def __init__(self, _symbol):
+        pass
+
+    def history(self, **_kwargs):
+        return EmptyHistory()
+
+sys.modules["yfinance"] = types.SimpleNamespace(Ticker=FakeTicker)
+
+application = FastAPI()
+register_compat_routes(
+    application,
+    configuration=Settings(
+        _env_file=None,
+        ENVIRONMENT="test",
+        EMBEDDING_PROVIDER="hashing",
+        RAG_ALLOW_HASHING_FALLBACK=True,
+        ENABLE_LEGACY_SQLITE_COMPAT=False,
+    ),
+)
+client = TestClient(application)
+
+responses = {
+    "latest": client.get("/api/analysis/latest"),
+    "history": client.get("/api/analysis/history"),
+    "trend": client.get("/api/analysis/trend/AAPL"),
+    "backtest": client.get("/api/backtest"),
+    "score_history": client.get("/api/stock/AAPL/score-history"),
+    "benchmark": client.get("/api/benchmark?symbol=SPY&period=1month"),
+}
+
+payload = {
+    "status_codes": {key: response.status_code for key, response in responses.items()},
+    "latest": responses["latest"].json(),
+    "history": responses["history"].json(),
+    "trend": responses["trend"].json(),
+    "backtest": responses["backtest"].json(),
+    "score_history": responses["score_history"].json(),
+    "benchmark": responses["benchmark"].json(),
+    "database_loaded": "database" in sys.modules,
+}
+print(json.dumps(payload))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload["database_loaded"] is False
+    assert set(payload["status_codes"].values()) == {200}
+    assert payload["latest"]["data_source"] == "legacy_sqlite_disabled"
+    assert payload["history"] == {
+        "status": "ok",
+        "count": 0,
+        "history": [],
+        "data_source": "legacy_sqlite_disabled",
+    }
+    assert payload["trend"]["data_source"] == "legacy_sqlite_disabled"
+    assert payload["backtest"]["data_source"] == "legacy_sqlite_disabled"
+    assert payload["score_history"] == []
+    assert payload["benchmark"]["error"] == "Keine Daten für SPY"
+
+
 def test_compat_routes_keep_legacy_urls_and_explicit_sqlite_demo() -> None:
     application = FastAPI()
     configuration = _test_settings(ENABLE_LEGACY_SQLITE_COMPAT=True)
