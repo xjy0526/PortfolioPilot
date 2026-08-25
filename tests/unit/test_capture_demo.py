@@ -268,6 +268,7 @@ def test_capture_pipeline_requires_local_browser_and_ffmpeg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _install_fake_playwright(monkeypatch, _FakePage())
     args = _capture_args(tmp_path)
     args.chrome_path = tmp_path / "missing-chrome"
     with pytest.raises(RuntimeError, match="Chrome executable not found"):
