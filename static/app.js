@@ -1453,6 +1453,14 @@ function updateDemoUI() {
 
 // ==================== Refresh ====================
 async function updateParqet() {
+    if (!appSettingsCache?.feature_flags?.parqet) {
+        showToast(
+            isZh() ? 'Parqet 扩展未启用。' : 'The Parqet extension is disabled.',
+            'warning'
+        );
+        return;
+    }
+
     const btn = document.getElementById('btnUpdateParqet');
     const btnFull = document.getElementById('btnRefresh');
     const lastUpdate = document.getElementById('lastUpdate');
@@ -1506,6 +1514,13 @@ function applyAppMode(data = appSettingsCache || {}) {
     document.body.classList.toggle('read-only-mode', readOnly);
 
     const flags = data.feature_flags || {};
+    document.querySelectorAll('[data-feature]').forEach(el => {
+        const feature = el.dataset.feature;
+        const enabled = Boolean(feature && flags[feature]);
+        el.style.display = enabled ? '' : 'none';
+        el.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    });
+
     document.querySelectorAll('[data-personal-only]').forEach(el => {
         const feature = el.dataset.personalOnly;
         const enabled = Object.prototype.hasOwnProperty.call(flags, feature)
@@ -1556,6 +1571,11 @@ function applyAppMode(data = appSettingsCache || {}) {
         switchAdvisorMode('holdings');
     }
     syncFmpUsagePolling();
+
+    const hiddenActiveFeature = document.querySelector(
+        '.tab-content.active[data-feature][aria-hidden="true"]'
+    );
+    if (hiddenActiveFeature) switchTab('overview');
 }
 
 function formatApiSettingsStatus(data) {

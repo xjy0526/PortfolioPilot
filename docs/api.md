@@ -2,6 +2,22 @@
 
 Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), sofern nicht anders angegeben.
 
+## Runtime route groups
+
+路由按运行边界显式注册：PostgreSQL 账本、估值、治理式 RAG、Prompt/Trace 和 Workflow 属于 Core；旧 Dashboard URL 属于 Compatibility adapter；实验端点仅在对应 feature flag 为 `true` 时加载。默认配置不会导入或注册 Telegram、Shadow Portfolio、Parqet OAuth、Tech Radar、Trade Advisor 或 Polymarket 扩展。
+
+| 可选端点组 | 配置 |
+|---|---|
+| Legacy SQLite demo endpoints | `ENABLE_LEGACY_SQLITE_COMPAT=true`（仅 development/test；production 禁止） |
+| Telegram webhook/report triggers | `ENABLE_TELEGRAM=true` |
+| Shadow Portfolio Agent | `ENABLE_SHADOW_AGENT=true` |
+| Parqet OAuth/refresh | `ENABLE_PARQET=true` |
+| Tech picks/sector rotation | `ENABLE_TECH_RADAR=true` |
+| Trade Advisor | `ENABLE_TRADE_ADVISOR=true` |
+| Polymarket optional import/display | `ENABLE_POLYMARKET=true` |
+
+禁用的实验组不会进入 OpenAPI 路由表；完整分类与依赖方向见 [模块边界](module-boundaries.md)。旧 URL 的保留不表示 SQLite 或 `state.portfolio_data` 是正式事实源。
+
 ## Health (`app/api/health.py`)
 
 | Methode | Pfad | Beschreibung |
@@ -58,6 +74,19 @@ Dashboard 兼容入口接受原有 JSON `positions` 数组，并保留 `status=o
 `/api/portfolios/{portfolio_id}/transactions/audit` 是显式的 **audit transaction history**，不是用户正常活动流水。它要求 `platform_admin` 或该组合的 admin membership，返回正式交易和所有 active/superseded legacy transactions；legacy 行包含 `generation_id`、`generation_number`、`generation_status`、`superseded_at`、`superseded_by_id` 和 `effective`。无权限时按组合资源隔离规则返回 404，避免泄露其他 tenant 的组合是否存在。
 
 CSV 中的 `current_price` 会以带 import batch 后缀的 `legacy_csv_user_supplied:<batch_id>` 明确标记；缺失时使用 `buy_price` 的估值回退会标记为 `legacy_csv_cost_basis_fallback:<batch_id>`。估值只允许读取 active generation 对应 batch 的这类用户价格，两者都不是权威行情源。
+
+当组合存在 active `legacy_dashboard_csv` generation 时，所有通过 `LegacyPortfolioAdapter` 读取 Dashboard 组合的接口只接受 `source=ledger_rebuild`、`valuation_status=complete`、覆盖完整，且 `config_snapshot.data_source_context` 同时关联当前 generation ID 与 import batch ID 的估值。旧累计估值、superseded generation 估值和缺少 lineage 的估值不会被静默返回。没有匹配快照时统一返回 HTTP `409`：
+
+```json
+{
+  "error": "portfolio_rebuild_required",
+  "portfolio_id": "<uuid>",
+  "active_generation_id": "<uuid>",
+  "reason": "valuation_generation_mismatch"
+}
+```
+
+运维人员应运行 `python -m scripts.rebuild_stale_legacy_valuations --dry-run` 扫描，再使用同一命令去掉 `--dry-run` 重建。没有 legacy generation 的正式交易组合继续读取正常 `ledger_rebuild` 估值，不会被标记为需要 legacy repair。
 
 ## Market Data (`app/api/market_data.py`)
 

@@ -46,22 +46,28 @@ def test_legacy_evaluation_module_is_a_pure_router_shim() -> None:
 
     assert "Deprecated import shim" in (ast.get_docstring(tree) or "")
     assert not definitions
-    assert main.evaluation_router is evaluation_api.router
     assert legacy_evaluation.router is evaluation_api.router
     assert legacy_evaluation.get_evaluation_dashboard is evaluation_api.get_evaluation_dashboard
     assert legacy_evaluation.get_evaluation_traces is evaluation_api.get_evaluation_traces
+    assert "/api/evaluation/dashboard" in main.app.openapi()["paths"]
+    assert "/api/evaluation/traces" in main.app.openapi()["paths"]
 
 
 def test_main_registers_evaluation_from_app_api() -> None:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+    main_tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
     imported_modules = {
         node.module
-        for node in tree.body
+        for node in main_tree.body
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
+    registry_source = (ROOT / "app" / "api" / "router_registry.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert "app.api.evaluation" in imported_modules
+    assert "app.api.router_registry" in imported_modules
     assert "routes.evaluation" not in imported_modules
+    assert '"app.api.evaluation"' in registry_source
+    assert '"routes.evaluation"' not in registry_source
 
 
 @pytest.mark.asyncio

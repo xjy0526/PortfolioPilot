@@ -46,6 +46,20 @@ scripts/                    初始化与兼容迁移工具
 tests/contracts/            全量 route 与核心 OpenAPI contract 快照
 ```
 
+目录只是迁移位置，运行类别由显式注册器决定：
+
+```mermaid
+flowchart LR
+    MAIN[main.py] --> CORE[Core routes]
+    CORE --> PG[(PostgreSQL + pgvector)]
+    MAIN --> COMPAT[Compatibility adapters]
+    COMPAT --> PG
+    COMPAT -. explicit flag .-> SQLITE[(Legacy SQLite)]
+    MAIN -. feature flags .-> EXP[Experimental extensions]
+```
+
+逐模块分类和依赖方向见 [module-boundaries.md](module-boundaries.md)。
+
 ## 数据主链路
 
 ```mermaid
@@ -88,6 +102,8 @@ flowchart LR
 旧持仓 CSV 不会被描述成完整交易历史。证券行转换为 `opening_balance`，现金行转换为 opening cash `deposit`，导入响应返回 `history_completeness=opening_balance_only`。
 
 Dashboard 兼容写入采用 replace-snapshot 语义。`legacy_snapshot_generations` 保留每个 `ImportBatch` 的激活与 supersede 血缘；组合行锁串行化并发更新，部分唯一索引保证每个组合和 source 最多一个 active generation。重建查询保留所有正式交易，但只合并 active `legacy_dashboard_csv` generation。替换、重建和估值位于同一请求事务内，任何下游失败都不会切换 active generation。
+
+Dashboard 读取同样受 generation lineage 约束。`PortfolioValuationRepository.latest_for_legacy_generation()` 在 PostgreSQL 内核对 active generation、import batch、`ledger_rebuild` 来源、完整估值状态、覆盖率和 `as_of`；`LegacyPortfolioAdapter` 不加载全量快照做 Python 过滤，也不回退到旧累计估值。升级后若 active generation 尚无匹配估值，API 返回 `409 portfolio_rebuild_required`，由显式 repair Service 重建后才能恢复流量。
 
 持仓重建、普通 transaction API 与 Dashboard activities 共用同一个 effective transaction Repository 条件，形成 **effective portfolio activity**：正式来源不受影响，legacy dashboard 来源只读取 active generation。完整 **audit transaction history** 通过独立管理员接口读取全部交易，并关联 generation number、状态、supersede 时间与前后代 ID；普通用户响应不暴露这些内部审计字段。
 
@@ -161,10 +177,17 @@ Render Web、Cron 和 Background Worker 的文件系统彼此独立，Cron 不�
 
 ## API 与兼容层
 
-`main.py` 直接从 `app.api` 注册 health、portfolio、market-data 和 evaluation router。
-`routes/evaluation.py` 只保留到 v3 compatibility boundary 的 import shim，不复制 endpoint 逻辑，
-也不会在正常请求中输出 deprecation 日志。其余根 `routes` 仍按
-[legacy-migration-map.md](legacy-migration-map.md) 渐进迁移。
+`main.py` 只组装应用生命周期、中间件和三个显式入口：`register_core_routes`、
+`register_compat_routes`、`register_experimental_routes`。Core 注册 PostgreSQL ledger、market data、
+health、governed RAG/Prompt/Trace/Workflow；Compatibility 保留旧 URL，并通过 adapter 读取 Core；
+Experimental 在对应 feature flag 为 `true` 前不会 import Router。
+
+`ENABLE_LEGACY_SQLITE_COMPAT=false` 是默认边界。它控制旧 SQLite 初始化、JSON-to-SQLite
+迁移、旧 in-memory Demo 和基于 SQLite 的历史分析读取，不关闭 PostgreSQL-backed 兼容 URL。
+关闭时历史分析 URL 返回空/不可用语义而不触发 SQLite import；显式开启后初始化错误会中止启动；
+production 配置会直接拒绝该模式。`routes/evaluation.py` 仍只是 import shim，不复制 endpoint 逻辑。
+详细清单见 [module-boundaries.md](module-boundaries.md) 和
+[legacy-migration-map.md](legacy-migration-map.md)。
 
 删除或移动 route 前必须先运行：
 
@@ -203,7 +226,9 @@ Qwen/OpenAI-Compatible HTTP client 与 Embedder 在应用 lifespan 内复用。�
 
 Workflow 的 POST 入口只创建 `PENDING` run 并返回 202。独立 Worker 以 `FOR UPDATE SKIP LOCKED` 领取任务，使用 `lease_owner/heartbeat_at/lease_expires_at` 处理进程崩溃；每个节点单独提交 checkpoint。节点唯一键、稳定 LLM Trace key、ReviewTask iteration 唯一键和 PublishedReport run 唯一键共同保证恢复幂等。
 
-SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。完整边界见 [current-limitations.md](current-limitations.md)。
+SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。`/health/live` 与
+Core readiness 不读取 SQLite；production 开启兼容开关会 fail closed。完整边界见
+[current-limitations.md](current-limitations.md)。
 
 ## 回测与 LLM 分工
 

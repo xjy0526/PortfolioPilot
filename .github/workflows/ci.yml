@@ -317,5 +317,7 @@ jobs:
       - security-audit
     steps:
       - uses: actions/checkout@v4
+      - name: Validate deterministic demo Compose
+        run: docker compose -f docker-compose.demo.yml config --quiet
       - name: Docker build
         run: docker build --target production -t portfolio-pilot:ci .

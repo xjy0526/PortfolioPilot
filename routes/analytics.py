@@ -317,9 +317,11 @@ def _benchmark_name(symbol: str) -> str:
 
 def _portfolio_return_series(days: int, summary) -> list[dict]:
     """Return local portfolio return series, with CSV estimate fallback."""
-    from database import load_snapshots as load_history
+    portfolio_history: list[dict] = []
+    if settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        from database import load_snapshots as load_history
 
-    portfolio_history = load_history(days=days)
+        portfolio_history = load_history(days=days)
     if (not portfolio_history or len(portfolio_history) < 2) and summary and portfolio_data.get("source") in {"csv", "sample_csv"}:
         from services.portfolio_history_fallback import build_estimated_portfolio_history
 
@@ -573,6 +575,9 @@ async def get_score_history(ticker: str, days: int = 30):
     if summary and summary.is_demo:
         from fetchers.demo_data import get_demo_score_history
         return get_demo_score_history(ticker.upper(), days)
+
+    if not settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        return []
 
     from engine.analysis import get_score_trend
     trend = get_score_trend(ticker.upper(), days=days)

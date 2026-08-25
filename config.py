@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     ENABLE_TELEGRAM: bool = False
     ENABLE_PARQET: bool = False
     ENABLE_SHADOW_AGENT: bool = False
+    ENABLE_TECH_RADAR: bool = False
+    ENABLE_TRADE_ADVISOR: bool = False
+
+    # Explicit storage compatibility bridge. PostgreSQL-backed legacy URL
+    # adapters do not require this flag; it controls only the old SQLite
+    # initialization and JSON-to-SQLite migration path.
+    ENABLE_LEGACY_SQLITE_COMPAT: bool = False
 
     # Financial Modeling Prep
     FMP_API_KEY: str = ""
@@ -64,6 +71,9 @@ class Settings(BaseSettings):
     # Production safety. READ_ONLY_DEMO defaults to True in production and
     # False elsewhere when it is not explicitly configured.
     READ_ONLY_DEMO: bool | None = None
+    # Enables deterministic fixture seeding for the local showcase only. This
+    # mode is deliberately rejected by production preflight.
+    DEMO_FIXTURE_MODE: bool = False
     ALLOW_RUNTIME_SECRET_CONFIGURATION: bool = False
     ALLOW_DEV_IDENTITY_HEADERS: bool = False
 
@@ -400,10 +410,14 @@ class Settings(BaseSettings):
 
     def validate_runtime_configuration(self) -> None:
         """Fail closed when a production deployment has an unsafe identity mode."""
+        if self.ENVIRONMENT == "production" and self.DEMO_FIXTURE_MODE:
+            raise RuntimeError("DEMO_FIXTURE_MODE is forbidden in production")
         if self.ENVIRONMENT != "production":
             return
         if self.ALLOW_DEV_IDENTITY_HEADERS:
             raise RuntimeError("Development identity headers are forbidden in production")
+        if self.ENABLE_LEGACY_SQLITE_COMPAT:
+            raise RuntimeError("Legacy SQLite compatibility is forbidden in production")
         if not self.read_only_demo and not self.auth_configured:
             raise RuntimeError(
                 "Production must enable READ_ONLY_DEMO or configure authentication"

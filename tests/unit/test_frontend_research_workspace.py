@@ -120,7 +120,7 @@ def test_mobile_navigation_exposes_the_current_core_workflow() -> None:
 
 
 def test_experimental_advisor_navigation_follows_the_feature_flag() -> None:
-    assert INDEX.count('data-tab="advisor" data-personal-only="trade_advisor"') == 2
+    assert INDEX.count('data-tab="advisor" data-feature="trade_advisor"') == 2
     assert "fundMode && flags.trade_advisor" in APP_JS
 
 

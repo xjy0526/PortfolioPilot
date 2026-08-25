@@ -34,6 +34,25 @@ def test_production_defaults_to_read_only_and_rejects_dev_identity_headers():
         unsafe.validate_runtime_configuration()
 
 
+def test_production_rejects_legacy_sqlite_compatibility():
+    unsafe = _production_settings(ENABLE_LEGACY_SQLITE_COMPAT=True)
+
+    with pytest.raises(RuntimeError, match="SQLite compatibility is forbidden"):
+        unsafe.validate_runtime_configuration()
+
+
+def test_preflight_reports_legacy_sqlite_as_invalid_in_production():
+    from app.core.preflight import _configuration_check
+
+    ready, payload = _configuration_check(
+        _production_settings(ENABLE_LEGACY_SQLITE_COMPAT=True)
+    )
+
+    assert ready is False
+    assert payload["status"] == "invalid"
+    assert "SQLite compatibility is forbidden" in str(payload["reason"])
+
+
 def test_writable_production_requires_authentication_and_shared_storage():
     unauthenticated = _production_settings(READ_ONLY_DEMO=False)
     with pytest.raises(RuntimeError, match="configure authentication"):
@@ -142,8 +161,16 @@ async def test_read_only_demo_lifespan_can_start_without_s3(monkeypatch):
     monkeypatch.setattr(main_module, "dispose_async_engine", no_op_async)
     monkeypatch.setattr(main_module.CacheManager, "clear_volatile_caches", lambda: None)
     monkeypatch.setattr(main_module.CacheManager, "cleanup_stale_files", lambda: None)
-    monkeypatch.setattr(legacy_database, "init_db", lambda: None)
-    monkeypatch.setattr(legacy_database, "migrate_json_to_sqlite", lambda: None)
+    monkeypatch.setattr(
+        legacy_database,
+        "init_db",
+        lambda: pytest.fail("core lifespan must not initialize SQLite"),
+    )
+    monkeypatch.setattr(
+        legacy_database,
+        "migrate_json_to_sqlite",
+        lambda: pytest.fail("core lifespan must not run JSON-to-SQLite migration"),
+    )
 
     async with main_module.lifespan(main_module.app):
         pass

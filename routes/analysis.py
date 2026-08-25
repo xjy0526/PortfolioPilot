@@ -11,12 +11,14 @@ import logging
 
 from fastapi import APIRouter
 
+from config import settings
 from state import portfolio_data
-from services.refresh import _refresh_data
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+tech_radar_router = APIRouter()
+trade_advisor_router = APIRouter()
 
 
 @router.post("/api/analysis/run")
@@ -69,6 +71,13 @@ async def get_latest_analysis():
             return {"status": "ok", "report": hist[-1]}
         return {"status": "no_data", "message": "Noch keine Analyse durchgeführt."}
 
+    if not settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        return {
+            "status": "no_data",
+            "message": "Legacy analysis history is disabled.",
+            "data_source": "legacy_sqlite_disabled",
+        }
+
     from engine.analysis import get_analysis_history
 
     history = get_analysis_history(days=7)
@@ -88,6 +97,14 @@ async def get_analysis_history_endpoint(days: int = 30):
         history = get_demo_analysis_history(days=min(days, 7))
         return {"status": "ok", "count": len(history), "history": history}
 
+    if not settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        return {
+            "status": "ok",
+            "count": 0,
+            "history": [],
+            "data_source": "legacy_sqlite_disabled",
+        }
+
     from engine.analysis import get_analysis_history
 
     history = get_analysis_history(days=days)
@@ -101,6 +118,14 @@ async def get_analysis_history_endpoint(days: int = 30):
 @router.get("/api/analysis/trend/{ticker}")
 async def get_score_trend(ticker: str, days: int = 7):
     """Gibt den Score-Trend für einen einzelnen Ticker zurück."""
+    if not settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        return {
+            "status": "no_data",
+            "ticker": ticker.upper(),
+            "message": "Legacy score history is disabled.",
+            "data_source": "legacy_sqlite_disabled",
+        }
+
     from engine.analysis import get_score_trend as _get_trend
 
     trend = _get_trend(ticker.upper(), days=days)
@@ -117,6 +142,8 @@ async def get_score_trend(ticker: str, days: int = 7):
 
 async def _run_full_analysis():
     """Volle Analyse: Refresh aller Daten + Report generieren."""
+    from services.refresh import _refresh_data
+
     # _refresh_data erstellt bereits Scores → wir generieren danach den Report
     await _refresh_data()
 
@@ -248,6 +275,13 @@ async def get_backtest(lookback_days: int = 30, forward_days: int = 14):
         from fetchers.demo_data import get_demo_backtest
         return get_demo_backtest()
 
+    if not settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        return {
+            "error": "Legacy score history is disabled.",
+            "entries": 0,
+            "data_source": "legacy_sqlite_disabled",
+        }
+
     from engine.backtest import run_backtest
     return run_backtest(lookback_days=lookback_days, forward_days=forward_days)
 
@@ -256,7 +290,7 @@ async def get_backtest(lookback_days: int = 30, forward_days: int = 14):
 # A3: Sektor-Rotation-Endpoint
 # ─────────────────────────────────────────────────────────────
 
-@router.get("/api/sectors/rotation")
+@tech_radar_router.get("/api/sectors/rotation")
 async def get_sector_rotation():
     """Sektor-Rotation-Analyse: Relative Sektor-Performance vs. S&P 500."""
     # Demo-Modus
@@ -282,7 +316,7 @@ async def get_sector_rotation():
 # AI Trade Advisor Endpoint
 # ─────────────────────────────────────────────────────────────
 
-@router.post("/api/advisor/evaluate")
+@trade_advisor_router.post("/api/advisor/evaluate")
 async def evaluate_trade_endpoint(data: dict):
     """AI Trade Advisor: Evaluiert Kauf/Verkauf-Entscheidungen.
 
@@ -321,7 +355,7 @@ async def evaluate_trade_endpoint(data: dict):
     return result
 
 
-@router.post("/api/advisor/chat")
+@trade_advisor_router.post("/api/advisor/chat")
 async def advisor_chat_endpoint(data: dict):
     """AI Advisor Chat: Freie Konversation mit Portfolio-Kontext.
 
@@ -348,7 +382,7 @@ async def advisor_chat_endpoint(data: dict):
     return result
 
 
-@router.get("/api/advisor/holding-recommendations")
+@trade_advisor_router.get("/api/advisor/holding-recommendations")
 async def holding_recommendations_endpoint(lang: str = "zh"):
     """AI Holding Advisor: Gibt Empfehlungen fuer alle aktuellen Positionen."""
     if lang not in ("zh", "en"):

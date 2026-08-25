@@ -9,7 +9,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 
+from app.api.router_registry import (
+    register_compat_routes,
+    register_core_routes,
+    register_experimental_routes,
+)
+from config import Settings
 from main import app
 from scripts.export_api_contract import (
     CORE_API_PATHS,
@@ -34,8 +41,14 @@ MAJOR_CLI_MODULES = (
     "evaluation.run_full_eval",
     "evaluation.run_llm_eval",
     "evaluation.run_v2_eval",
+    "evaluation.prepare_human_review",
+    "evaluation.validate_human_labels",
+    "evaluation.adjudicate_human_labels",
+    "evaluation.run_human_gold_eval",
     "scripts.build_evaluation_v2_dataset",
+    "scripts.build_human_gold_v3_dataset",
     "scripts.export_api_contract",
+    "scripts.rebuild_stale_legacy_valuations",
 )
 
 
@@ -68,7 +81,27 @@ def test_every_frontend_api_path_is_registered() -> None:
         match.group("url").split("?", maxsplit=1)[0]
         for match in API_STRING_PATTERN.finditer(frontend_source)
     }
-    registered_paths = set(app.openapi()["paths"])
+    compatibility_app = FastAPI()
+    compatibility_settings = Settings(
+        _env_file=None,
+        ENVIRONMENT="test",
+        ENABLE_LEGACY_SQLITE_COMPAT=True,
+        ENABLE_TELEGRAM=True,
+        ENABLE_PARQET=True,
+        ENABLE_SHADOW_AGENT=True,
+        ENABLE_TECH_RADAR=True,
+        ENABLE_TRADE_ADVISOR=True,
+    )
+    register_core_routes(compatibility_app)
+    register_compat_routes(
+        compatibility_app,
+        configuration=compatibility_settings,
+    )
+    register_experimental_routes(
+        compatibility_app,
+        configuration=compatibility_settings,
+    )
+    registered_paths = set(compatibility_app.openapi()["paths"])
     missing = sorted(
         path
         for path in frontend_paths
@@ -112,3 +145,37 @@ def test_major_cli_help_is_executable(module: str) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout.lower()
+
+
+def test_api_contract_export_script_is_directly_executable(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ENVIRONMENT": "test",
+            "EMBEDDING_PROVIDER": "hashing",
+            "RAG_ALLOW_HASHING_FALLBACK": "true",
+        }
+    )
+    routes_output = tmp_path / "routes.json"
+    contract_output = tmp_path / "core.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "export_api_contract.py"),
+            "--routes-output",
+            str(routes_output),
+            "--contract-output",
+            str(contract_output),
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(routes_output.read_text(encoding="utf-8"))["path_count"] > 0
+    assert json.loads(contract_output.read_text(encoding="utf-8"))["paths"]

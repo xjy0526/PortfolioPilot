@@ -77,12 +77,14 @@ async def test_portfolio_history_route_does_not_use_csv_state_as_fact_source(mon
 
 
 def test_portfolio_return_series_uses_csv_estimate_when_snapshots_missing(monkeypatch):
+    from config import settings
     from routes.analytics import _portfolio_return_series
 
     portfolio_data.clear()
     portfolio_data["summary"] = _summary()
     portfolio_data["source"] = "csv"
 
+    monkeypatch.setattr(settings, "ENABLE_LEGACY_SQLITE_COMPAT", True)
     monkeypatch.setattr("database.load_snapshots", lambda days=30: [])
 
     series = _portfolio_return_series(30, _summary())

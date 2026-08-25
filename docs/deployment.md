@@ -47,6 +47,12 @@ READ_ONLY_DEMO=true
 EMBEDDING_PROVIDER=sentence_transformers
 RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 RAG_ALLOW_HASHING_FALLBACK=false
+ENABLE_LEGACY_SQLITE_COMPAT=false
+ENABLE_TELEGRAM=false
+ENABLE_PARQET=false
+ENABLE_SHADOW_AGENT=false
+ENABLE_TECH_RADAR=false
+ENABLE_TRADE_ADVISOR=false
 ```
 
 生产可写模式额外要求：
@@ -78,12 +84,16 @@ Secret 不得写入 `render.yaml`、Dockerfile、GitHub Actions 日志或仓库�
 
 ## 5. 上线顺序与 Preflight
 
-推荐顺序：
+推荐顺序。`20260821_0007` 保留旧 import batch 的审计记录，但不会把缺少 generation lineage 的旧累计 valuation 伪装成可用快照，因此从该版本之前升级时必须执行显式扫描与修复：
 
 ```bash
 alembic upgrade head
+python -m scripts.rebuild_stale_legacy_valuations --dry-run
+python -m scripts.rebuild_stale_legacy_valuations --continue-on-error
 python -m app.core.preflight
 ```
+
+确认 `/health/ready` 为 200 后再切换生产流量。可用 `--portfolio-id <uuid>` 只修复一个组合；`--limit <n>` 限制本轮报告或修复的 stale valuation candidates 数量，而不是限制最先读取的 active portfolios。命令按稳定顺序扫描，健康或已修复组合不会消耗候选限额，因此重复运行 `--limit <n>` 会继续推进到后续 stale portfolios。脚本通过正式 `PortfolioValuationService` 重建，每个组合使用独立事务并重新锁定 portfolio、复核当前 active generation；成功后重放为幂等 no-op。`--dry-run` 只报告候选、不写数据库；`--continue-on-error` 会逐组合记录失败并继续，最终只要存在失败就返回非零退出码，不会报告全量成功。不要修改已发布的 `20260821_0007` migration，也不要直接更新 valuation JSONB 来绕过 Service。
 
 Preflight 使用与 `/health/ready` 相同的规则：
 
@@ -93,8 +103,14 @@ Preflight 使用与 `/health/ready` 相同的规则：
 4. Embedding provider 可加载；
 5. 模式要求的 object storage bucket 可访问；
 6. production auth 与 read-only/write-mode 配置一致。
+7. legacy SQLite compatibility 未启用，实验 Router 只按已审批的 feature flag 注册。
 
 任一必要检查失败时 CLI 返回非零，`/health/ready` 返回 HTTP 503。`/health/live` 始终只检查进程，不代表数据库、模型或 bucket 可用。
+
+production 不允许 `ENABLE_LEGACY_SQLITE_COMPAT=true`。该开关只用于 development/test 的旧库
+迁移验证；它会执行旧 SQLite 初始化和 JSON-to-SQLite migration，任何失败都会阻止启动。Core
+模式的 liveness/readiness 不依赖 SQLite。模块与 Router 分类见
+[module-boundaries.md](module-boundaries.md)。
 
 ## 6. 对象权限与数据记录
 

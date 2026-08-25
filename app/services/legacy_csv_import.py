@@ -375,20 +375,14 @@ class LegacyCsvPortfolioImportService:
         generation: LegacySnapshotGeneration,
         cutoff: datetime,
     ) -> tuple[PortfolioValuationSnapshot, int] | None:
-        valuation = await self.valuations.latest_for_source(
+        valuation = await self.valuations.latest_for_legacy_generation(
             portfolio_id,
-            source=LEGACY_VALUATION_SOURCE,
-            as_of=cutoff,
+            generation.id,
+            cutoff,
+            valuation_source=LEGACY_VALUATION_SOURCE,
+            legacy_source=LEGACY_IMPORT_SOURCE,
         )
         if valuation is None:
-            return None
-        context = valuation.config_snapshot.get("data_source_context", {})
-        if not isinstance(context, dict):
-            return None
-        generation_id = context.get("legacy_snapshot_generation_id") or context.get(
-            "snapshot_generation_id"
-        )
-        if str(generation_id or "") != str(generation.id):
             return None
         rows = await self.position_snapshots.list_at(valuation.id)
         return valuation, len(rows)
