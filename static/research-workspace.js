@@ -8,6 +8,7 @@
         loaded: false,
         loading: false,
         inputHash: '',
+        requestGeneration: 0,
     };
 
     function zh() {
@@ -142,8 +143,8 @@
             }
             syncDashboardPortfolio();
             populatePortfolioSelect();
-            await loadSelectedPortfolio();
-            state.loaded = true;
+            const rendered = await loadSelectedPortfolio();
+            if (rendered) state.loaded = true;
         } finally {
             state.loading = false;
         }
@@ -157,10 +158,10 @@
         state.loading = true;
         renderLoading();
         try {
-            await loadSelectedPortfolio();
-            state.loaded = true;
+            const rendered = await loadSelectedPortfolio();
+            if (rendered) state.loaded = true;
         } finally {
-            state.loading = false;
+            if (state.selectedPortfolioId === portfolioId) state.loading = false;
         }
     }
 
@@ -171,7 +172,9 @@
     }
 
     async function loadSelectedPortfolio() {
-        const id = encodeURIComponent(state.selectedPortfolioId);
+        const selectedPortfolioId = state.selectedPortfolioId;
+        const requestGeneration = ++state.requestGeneration;
+        const id = encodeURIComponent(selectedPortfolioId);
         const [valuation, positions, transactions, risk, governance] = await Promise.all([
             request(`/api/portfolios/${id}/valuation`),
             request(`/api/portfolios/${id}/positions`),
@@ -179,8 +182,15 @@
             request(`/api/portfolio/risk-summary?portfolio_id=${id}`),
             request(`/api/portfolios/${id}/research-run`),
         ]);
-        const portfolio = state.portfolios.find(item => item.id === state.selectedPortfolioId);
+        if (
+            requestGeneration !== state.requestGeneration
+            || selectedPortfolioId !== state.selectedPortfolioId
+        ) {
+            return false;
+        }
+        const portfolio = state.portfolios.find(item => item.id === selectedPortfolioId);
         renderWorkspace({ portfolio, valuation, positions, transactions, risk, governance });
+        return true;
     }
 
     function errorMessage(result, fallback) {

@@ -181,6 +181,34 @@ function setActivePortfolioId(portfolioId) {
     loadPortfolio();
 }
 
+function clearActivePortfolioId() {
+    activePortfolioId = '';
+    localStorage.removeItem('portfoliopilot-active-portfolio');
+}
+
+async function validateActivePortfolioSelection() {
+    const storedPortfolioId = activePortfolioId;
+    if (!storedPortfolioId) return;
+
+    // A browser-local UUID is not an authorization source. Clear it while the
+    // server resolves current portfolio access, then restore only a visible ID.
+    activePortfolioId = '';
+    try {
+        const response = await fetch('/api/portfolios', {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+        });
+        const portfolios = response.ok ? await response.json() : [];
+        if (Array.isArray(portfolios) && portfolios.some(item => item.id === storedPortfolioId)) {
+            activePortfolioId = storedPortfolioId;
+            return;
+        }
+    } catch (error) {
+        console.warn('Stored portfolio selection could not be validated:', error);
+    }
+    clearActivePortfolioId();
+}
+
 function getAssetLabel(pos) {
     if (!pos) return 'Equity';
     if (pos.asset_type === 'prediction_market') return 'Polymarket';
@@ -215,6 +243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.warn('App mode could not be loaded; using personal mode:', err);
         applyAppMode({ app_mode: 'personal' });
     }
+    await validateActivePortfolioSelection();
     await loadPortfolio();
     if (!isFundResearchMode()) startPriceStream();
     initScrollHeader();

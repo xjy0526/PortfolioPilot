@@ -103,6 +103,92 @@ def test_research_tab_uses_one_portfolio_context_and_avoids_duplicate_hero() -> 
     assert 'body[data-active-tab="research"] .v2-balance-card' in STYLES
 
 
+def test_workspace_discards_responses_for_a_stale_portfolio_selection() -> None:
+    script = r"""
+const elements = {
+  coreResearchWorkspace: { innerHTML: '' },
+  corePortfolioSelect: { innerHTML: '' },
+};
+global.document = { getElementById: id => elements[id] || null };
+global.isZh = () => false;
+global.setActivePortfolioId = () => {};
+
+function response(data, ok = true, status = 200) {
+  return { ok, status, json: async () => data };
+}
+function endpointResponse(path) {
+  if (path.includes('/valuation')) {
+    return response({
+      base_currency: 'USD', total_market_value: 1, valuation_status: 'complete',
+      coverage_ratio: 1, positions: [], warnings: [], unpriced_assets: [],
+    });
+  }
+  if (path.includes('/positions')) return response({ positions: [], warnings: [] });
+  if (path.includes('/transactions')) return response([]);
+  if (path.includes('/risk-summary')) return response({});
+  if (path.includes('/research-run')) return response({}, false, 404);
+  throw new Error(`Unexpected endpoint: ${path}`);
+}
+
+global.fetch = async path => {
+  if (path === '/api/portfolios') {
+    return response([
+      { id: 'A', name: 'Portfolio A', base_currency: 'USD' },
+      { id: 'B', name: 'Portfolio B', base_currency: 'USD' },
+    ]);
+  }
+  return endpointResponse(path);
+};
+
+const workspace = require('./static/research-workspace.js');
+(async () => {
+  await workspace.load(true);
+  const pending = { A: [], B: [] };
+  global.fetch = path => new Promise(resolve => {
+    const parsed = new URL(path, 'http://localhost');
+    const portfolioId = parsed.searchParams.get('portfolio_id') || parsed.pathname.split('/')[3];
+    pending[portfolioId].push(() => resolve(endpointResponse(path)));
+  });
+
+  const requestA = workspace.selectPortfolio('A');
+  const requestB = workspace.selectPortfolio('B');
+  pending.B.forEach(resolve => resolve());
+  await requestB;
+  pending.A.forEach(resolve => resolve());
+  await requestA;
+
+  console.log(JSON.stringify({
+    hasB: elements.coreResearchWorkspace.innerHTML.includes('Portfolio B'),
+    hasA: elements.coreResearchWorkspace.innerHTML.includes('Portfolio A'),
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"hasB": True, "hasA": False}
+
+
+def test_startup_validates_stored_portfolio_access_before_scoped_loading() -> None:
+    startup = APP_JS[APP_JS.index("document.addEventListener('DOMContentLoaded'") :]
+
+    assert "async function validateActivePortfolioSelection()" in APP_JS
+    assert "await validateActivePortfolioSelection();\n    await loadPortfolio();" in startup
+    assert "fetch('/api/portfolios'" in APP_JS
+    assert "portfolios.some(item => item.id === storedPortfolioId)" in APP_JS
+    assert "localStorage.removeItem('portfoliopilot-active-portfolio')" in APP_JS
+
+
 def test_analysis_and_legacy_writes_follow_the_selected_portfolio() -> None:
     scoped_paths = (
         "portfolioScopedUrl('/api/portfolio/risk-summary')",

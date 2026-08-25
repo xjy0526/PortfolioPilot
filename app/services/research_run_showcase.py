@@ -41,6 +41,11 @@ class ResearchRunShowcaseService:
             else await self.workflows.latest_for_portfolio(
                 portfolio_id,
                 tenant_id=tenant_id,
+                user_id=principal.user_id,
+                allow_tenant_wide=(
+                    principal.is_platform_admin
+                    or principal.has_role("research_reviewer")
+                ),
             )
         )
         if run is None or not _run_matches_portfolio(run, portfolio_id, tenant_id):

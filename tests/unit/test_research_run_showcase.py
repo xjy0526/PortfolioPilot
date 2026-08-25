@@ -249,3 +249,47 @@ async def test_load_fails_closed_for_missing_or_inaccessible_run() -> None:
     ) is None
     assert _can_read_run(_principal(roles={"research_reviewer"}), cast(Any, run)) is True
     assert _can_read_run(_principal(user_id="viewer"), cast(Any, run)) is False
+
+
+@pytest.mark.asyncio
+async def test_latest_run_selection_is_scoped_before_the_service_reads_it() -> None:
+    portfolio_id = uuid.uuid4()
+    service = ResearchRunShowcaseService.__new__(ResearchRunShowcaseService)
+    latest_for_portfolio = AsyncMock(return_value=None)
+    workflows = SimpleNamespace(
+        latest_for_portfolio=latest_for_portfolio,
+        run_steps=AsyncMock(return_value=[]),
+        run_reviews=AsyncMock(return_value=[]),
+        run_review_decisions=AsyncMock(return_value=[]),
+        report_for_run=AsyncMock(return_value=None),
+    )
+    service_any = cast(Any, service)
+    service_any.workflows = workflows
+    service_any.traces = SimpleNamespace(latest_for_run=AsyncMock(return_value=None))
+    service_any.prompts = SimpleNamespace()
+    service_any.research = SimpleNamespace(cited_chunks=AsyncMock(return_value=[]))
+
+    await service.load(
+        portfolio_id=portfolio_id,
+        tenant_id="tenant-a",
+        principal=_principal(),
+    )
+    latest_for_portfolio.assert_awaited_once_with(
+        portfolio_id,
+        tenant_id="tenant-a",
+        user_id="showcase-owner",
+        allow_tenant_wide=False,
+    )
+
+    latest_for_portfolio.reset_mock()
+    await service.load(
+        portfolio_id=portfolio_id,
+        tenant_id="tenant-a",
+        principal=_principal(user_id="reviewer", roles={"research_reviewer"}),
+    )
+    latest_for_portfolio.assert_awaited_once_with(
+        portfolio_id,
+        tenant_id="tenant-a",
+        user_id="reviewer",
+        allow_tenant_wide=True,
+    )
