@@ -197,6 +197,41 @@ print(json.dumps(payload))
     assert payload["benchmark"]["error"] == "Keine Daten für SPY"
 
 
+@pytest.mark.asyncio
+async def test_disabled_sqlite_compat_handlers_return_stable_empty_contracts(
+    monkeypatch,
+) -> None:
+    from routes import analysis as analysis_routes
+    from routes import analytics as analytics_routes
+    from state import portfolio_data
+
+    previous_state = dict(portfolio_data)
+    portfolio_data.clear()
+    monkeypatch.setattr(
+        analysis_routes.settings,
+        "ENABLE_LEGACY_SQLITE_COMPAT",
+        False,
+    )
+    try:
+        latest = await analysis_routes.get_latest_analysis()
+        history = await analysis_routes.get_analysis_history_endpoint()
+        trend = await analysis_routes.get_score_trend("aapl")
+        backtest = await analysis_routes.get_backtest()
+        score_history = await analytics_routes.get_score_history("AAPL")
+
+        assert latest["data_source"] == "legacy_sqlite_disabled"
+        assert history["history"] == []
+        assert history["data_source"] == "legacy_sqlite_disabled"
+        assert trend["ticker"] == "AAPL"
+        assert trend["data_source"] == "legacy_sqlite_disabled"
+        assert backtest["entries"] == 0
+        assert backtest["data_source"] == "legacy_sqlite_disabled"
+        assert score_history == []
+    finally:
+        portfolio_data.clear()
+        portfolio_data.update(previous_state)
+
+
 def test_compat_routes_keep_legacy_urls_and_explicit_sqlite_demo() -> None:
     application = FastAPI()
     configuration = _test_settings(ENABLE_LEGACY_SQLITE_COMPAT=True)
