@@ -8,6 +8,7 @@ from prompts.financial_analysis_models import (
     FINANCIAL_ANALYSIS_JSON_SCHEMA,
     validate_financial_analysis_output,
 )
+from prompts.financial_analysis_prompt import build_financial_analysis_prompt
 from services.llm import MockProvider
 from services.llm import providers as provider_module
 from prompts.registry import PromptRegistry
@@ -36,6 +37,11 @@ def _prompt_payload(prompt_id="test-prompt"):
         "temperature": 0.1,
         "owner": "Risk Team",
     }
+
+
+def test_financial_prompt_requires_a_published_registry_version() -> None:
+    with pytest.raises(ValueError, match="prompt_version is required"):
+        build_financial_analysis_prompt({"risk_score": 5})
 
 
 def test_invalid_prompt_schema_is_rejected():
