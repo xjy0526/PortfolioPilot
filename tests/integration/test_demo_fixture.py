@@ -405,6 +405,58 @@ async def test_demo_smoke_exercises_read_only_http_chain(
         assert result["mock_response_used"] is True
         assert result["real_model_used"] is False
         assert result["human_label_used"] is False
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app),
+            base_url="http://test",
+        ) as client:
+            showcase = await client.get(
+                f"/api/portfolios/{DEMO_PORTFOLIO_ID}/research-run"
+            )
+            assert showcase.status_code == 200
+            payload = showcase.json()
+            assert payload["truth_labels"] == {
+                "is_demo": True,
+                "synthetic_data_used": True,
+                "mock_response_used": True,
+                "real_model_used": False,
+                "human_label_used": False,
+                "production_data_used": False,
+            }
+            assert payload["evidence"]["status"] == "available"
+            assert payload["evidence"]["items"]
+            assert all(
+                item["permission_status"] == "allowed"
+                and item["validity_status"] == "valid"
+                for item in payload["evidence"]["items"]
+            )
+            assert payload["prompt"]["version_id"]
+            assert payload["trace"]["fallback_used"] is False
+            assert payload["trace"]["output_schema_valid"] is True
+            validation = {item["key"]: item for item in payload["validation"]}
+            assert validation["schema"]["status"] == "passed"
+            assert validation["numeric_consistency"] == {
+                "key": "numeric_consistency",
+                "status": "unavailable",
+                "reason": "not_recorded_by_workflow",
+            }
+            assert payload["review_timeline"][0]["identity_source"] == "synthetic_fixture"
+            assert payload["published_report"]["report_id"]
+
+            async def inaccessible_principal() -> Principal:
+                return Principal(
+                    user_id="other-tenant-viewer",
+                    permission_groups=frozenset({"public"}),
+                    authenticated=True,
+                    tenant_id="other-tenant",
+                    roles=frozenset(),
+                )
+
+            main.app.dependency_overrides[get_principal] = inaccessible_principal
+            inaccessible = await client.get(
+                f"/api/portfolios/{DEMO_PORTFOLIO_ID}/research-run"
+            )
+            assert inaccessible.status_code == 404
     finally:
         main.app.dependency_overrides.clear()
         async with factory.begin() as session:

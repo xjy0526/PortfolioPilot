@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from app.core.principal import Principal
 from app.db.models import (
     ChunkEmbedding,
     DocumentChunk,
+    DocumentVersion,
     LLMCallTrace,
     PromptDeployment,
     PromptTemplate,
@@ -28,7 +30,7 @@ from app.db.models import (
     WorkflowStep,
     WorkflowRun,
 )
-from app.db.repositories.governance import WorkflowRepository
+from app.db.repositories.governance import ResearchRepository, WorkflowRepository
 from app.services.research_knowledge import PostgresKnowledgeService
 from app.storage.local import LocalObjectStorage
 from config import settings
@@ -95,6 +97,151 @@ async def _factory() -> tuple[object, async_sessionmaker[AsyncSession]]:
         _url(), connect_args={"server_settings": {"timezone": "UTC"}}
     )
     return engine, async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+
+@pytest.mark.asyncio
+async def test_latest_portfolio_run_is_filtered_by_reader_before_limiting() -> None:
+    engine, factory = await _factory()
+    portfolio_id = uuid.uuid4()
+    suffix = uuid.uuid4().hex
+    now = datetime.now(UTC)
+    owner_run = WorkflowRun(
+        user_id=f"owner-{suffix}",
+        tenant_id=f"tenant-{suffix}",
+        business_scene="portfolio_research",
+        idempotency_key=f"owner-{suffix}",
+        status="PUBLISHED",
+        cost_budget=Decimal("1"),
+        context_json={"portfolio_id": str(portfolio_id)},
+        created_at=now - timedelta(minutes=2),
+        updated_at=now - timedelta(minutes=2),
+    )
+    newer_other_member_run = WorkflowRun(
+        user_id=f"other-{suffix}",
+        tenant_id=f"tenant-{suffix}",
+        business_scene="portfolio_research",
+        idempotency_key=f"other-{suffix}",
+        status="PUBLISHED",
+        cost_budget=Decimal("1"),
+        context_json={"request": {"portfolio_id": str(portfolio_id)}},
+        created_at=now,
+        updated_at=now,
+    )
+    try:
+        async with factory() as session:
+            transaction = await session.begin()
+            try:
+                session.add_all([owner_run, newer_other_member_run])
+                await session.flush()
+                repository = WorkflowRepository(session)
+
+                owner_latest = await repository.latest_for_portfolio(
+                    portfolio_id,
+                    tenant_id=f"tenant-{suffix}",
+                    user_id=f"owner-{suffix}",
+                    allow_tenant_wide=False,
+                )
+                reviewer_latest = await repository.latest_for_portfolio(
+                    portfolio_id,
+                    tenant_id=f"tenant-{suffix}",
+                    user_id=f"reviewer-{suffix}",
+                    allow_tenant_wide=True,
+                )
+
+                assert owner_latest is not None and owner_latest.id == owner_run.id
+                assert reviewer_latest is not None
+                assert reviewer_latest.id == newer_other_member_run.id
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_trace_citation_keeps_historically_published_version_visible(
+    tmp_path: Path,
+) -> None:
+    engine, factory = await _factory()
+    suffix = uuid.uuid4().hex
+    embedder = RecordingEmbedder()
+    admin = Principal(
+        f"history-admin-{suffix}",
+        frozenset({"public"}),
+        roles=frozenset({"knowledge_admin"}),
+    )
+    storage = LocalObjectStorage(tmp_path, bucket=f"history-{suffix}")
+    try:
+        async with factory() as session:
+            transaction = await session.begin()
+            try:
+                service = PostgresKnowledgeService(
+                    session,
+                    embedder=embedder,
+                    storage=storage,
+                )
+                document_key = f"historical-{suffix}"
+                first_job, _ = await service.queue_upload(
+                    content=b"# Historical Alpha\n\nHistoricalalpha evidence used by the trace.",
+                    filename="historical-v1.md",
+                    metadata={
+                        "document_id": document_key,
+                        "title": "Historical version one",
+                        "confidentiality": "public",
+                        "permission_groups": ["public"],
+                    },
+                    principal=admin,
+                    idempotency_key=f"historical-v1-{suffix}",
+                )
+                await service.process_job(first_job)
+                assert first_job.document_id is not None
+                assert first_job.version_id is not None
+                await service.repository.set_published(first_job.document_id)
+                historical_chunk = await session.scalar(
+                    select(DocumentChunk).where(
+                        DocumentChunk.version_id == first_job.version_id
+                    )
+                )
+                assert historical_chunk is not None
+
+                second_job, _ = await service.queue_upload(
+                    content=b"# Current Beta\n\nCurrentbeta evidence replaces version one.",
+                    filename="historical-v2.md",
+                    metadata={
+                        "document_id": document_key,
+                        "title": "Current version two",
+                        "confidentiality": "public",
+                        "permission_groups": ["public"],
+                    },
+                    principal=admin,
+                    idempotency_key=f"historical-v2-{suffix}",
+                )
+                await service.process_job(second_job)
+                await service.repository.set_published(first_job.document_id)
+                await session.refresh(historical_chunk)
+                historical_version = await session.get(DocumentVersion, first_job.version_id)
+
+                assert historical_version is not None
+                assert historical_version.status == "completed"
+                assert historical_chunk.published_version is False
+
+                cited = await ResearchRepository(session).cited_chunks(
+                    [historical_chunk.id],
+                    groups=frozenset({"public"}),
+                    as_of=datetime.now(UTC).date(),
+                )
+                live_results = await ResearchRepository(session).full_text_search(
+                    "historicalalpha",
+                    groups=frozenset({"public"}),
+                    as_of=datetime.now(UTC).date(),
+                    limit=5,
+                )
+
+                assert [item["chunk_id"] for item in cited] == [str(historical_chunk.id)]
+                assert live_results == []
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

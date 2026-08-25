@@ -52,6 +52,15 @@ def test_fund_research_mode_hides_personal_features(monkeypatch):
     }
 
 
+def test_public_settings_expose_read_only_state_without_secrets(monkeypatch):
+    monkeypatch.setattr(settings, "READ_ONLY_DEMO", True)
+
+    payload = app_settings._public_settings()
+
+    assert payload["read_only_demo"] is True
+    assert "api_key" not in payload
+
+
 def test_settings_accepts_both_app_modes():
     personal = Settings(_env_file=None, APP_MODE="personal")
     fund = Settings(_env_file=None, APP_MODE="fund_research")

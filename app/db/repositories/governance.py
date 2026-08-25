@@ -27,16 +27,37 @@ from app.db.models.governance import (
 from app.db.repositories.base import BaseRepository
 
 
-def _chunk_acl(groups: frozenset[str], as_of: date) -> Any:
+def _chunk_access_acl(groups: frozenset[str], as_of: date) -> Any:
     group_values = sorted(groups or {"public"})
     return and_(
-        DocumentChunk.published_version.is_(True),
         or_(DocumentChunk.effective_from.is_(None), DocumentChunk.effective_from <= as_of),
         or_(DocumentChunk.effective_to.is_(None), DocumentChunk.effective_to >= as_of),
         or_(
             DocumentChunk.confidentiality == "public",
             DocumentChunk.permission_groups.overlap(group_values),
         ),
+    )
+
+
+def _chunk_acl(groups: frozenset[str], as_of: date) -> Any:
+    """Restrict live retrieval to the document's currently published version."""
+    return and_(
+        DocumentChunk.published_version.is_(True),
+        _chunk_access_acl(groups, as_of),
+    )
+
+
+def _historical_citation_acl(groups: frozenset[str], as_of: date) -> Any:
+    """Validate a trace-recorded citation without applying current-version state.
+
+    Inclusion in an immutable LLM trace records that the chunk was selected when
+    the run executed. A later document publication clears ``published_version``
+    on the old chunk, so historical display must only reapply content readiness,
+    effective-date, and caller permission constraints.
+    """
+    return and_(
+        DocumentVersion.status == "completed",
+        _chunk_access_acl(groups, as_of),
     )
 
 
@@ -279,6 +300,32 @@ class ResearchRepository:
             for chunk, document, version, distance_value in rows
         ]
 
+    async def cited_chunks(
+        self,
+        chunk_ids: list[uuid.UUID],
+        *,
+        groups: frozenset[str],
+        as_of: date,
+    ) -> list[dict[str, Any]]:
+        """Return trace-recorded chunks in order after historical ACL filtering."""
+        if not chunk_ids:
+            return []
+        statement = (
+            select(DocumentChunk, ResearchDocument, DocumentVersion)
+            .join(ResearchDocument, ResearchDocument.id == DocumentChunk.document_id)
+            .join(DocumentVersion, DocumentVersion.id == DocumentChunk.version_id)
+            .where(
+                DocumentChunk.id.in_(chunk_ids),
+                _historical_citation_acl(groups, as_of),
+            )
+        )
+        rows = (await self.session.execute(statement)).all()
+        visible = {
+            chunk.id: _citation_row(chunk, document, version)
+            for chunk, document, version in rows
+        }
+        return [visible[chunk_id] for chunk_id in chunk_ids if chunk_id in visible]
+
 
 class PromptRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -292,6 +339,18 @@ class PromptRepository:
 
     async def get_version(self, prompt_id: uuid.UUID, version: int) -> PromptVersion | None:
         return await self.session.scalar(select(PromptVersion).where(PromptVersion.prompt_id == prompt_id, PromptVersion.version == version))
+
+    async def get_version_with_template(
+        self, version_id: uuid.UUID
+    ) -> tuple[PromptTemplate, PromptVersion] | None:
+        row = (
+            await self.session.execute(
+                select(PromptTemplate, PromptVersion)
+                .join(PromptVersion, PromptVersion.prompt_id == PromptTemplate.id)
+                .where(PromptVersion.id == version_id)
+            )
+        ).first()
+        return (row[0], row[1]) if row else None
 
     async def published_for_scene(self, business_scene: str) -> tuple[PromptTemplate, PromptVersion] | None:
         row = (
@@ -317,6 +376,14 @@ class LLMTraceRepository(BaseRepository[LLMCallTrace]):
     async def list_recent(self, limit: int = 100) -> list[LLMCallTrace]:
         return list((await self.session.scalars(select(LLMCallTrace).order_by(LLMCallTrace.created_at.desc()).limit(limit))).all())
 
+    async def latest_for_run(self, run_id: uuid.UUID) -> LLMCallTrace | None:
+        return await self.session.scalar(
+            select(LLMCallTrace)
+            .where(LLMCallTrace.workflow_run_id == run_id)
+            .order_by(LLMCallTrace.created_at.desc(), LLMCallTrace.id.desc())
+            .limit(1)
+        )
+
 
 class WorkflowRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -332,6 +399,32 @@ class WorkflowRepository:
         if for_update:
             statement = statement.with_for_update()
         return await self.session.scalar(statement)
+
+    async def latest_for_portfolio(
+        self,
+        portfolio_id: uuid.UUID,
+        *,
+        tenant_id: str,
+        user_id: str,
+        allow_tenant_wide: bool,
+    ) -> WorkflowRun | None:
+        portfolio_key = str(portfolio_id)
+        statement = select(WorkflowRun).where(
+            WorkflowRun.tenant_id == tenant_id,
+            or_(
+                WorkflowRun.context_json["portfolio_id"].as_string()
+                == portfolio_key,
+                WorkflowRun.context_json["request"]["portfolio_id"].as_string()
+                == portfolio_key,
+            ),
+        )
+        if not allow_tenant_wide:
+            statement = statement.where(WorkflowRun.user_id == user_id)
+        return await self.session.scalar(
+            statement
+            .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
+            .limit(1)
+        )
 
     async def claim_next_run(
         self,
@@ -401,6 +494,17 @@ class WorkflowRepository:
     async def run_reviews(self, run_id: uuid.UUID) -> list[ReviewTask]:
         return list((await self.session.scalars(select(ReviewTask).where(ReviewTask.workflow_run_id == run_id).order_by(ReviewTask.created_at))).all())
 
+    async def run_review_decisions(self, run_id: uuid.UUID) -> list[ReviewDecision]:
+        return list(
+            (
+                await self.session.scalars(
+                    select(ReviewDecision)
+                    .where(ReviewDecision.workflow_run_id == run_id)
+                    .order_by(ReviewDecision.created_at, ReviewDecision.id)
+                )
+            ).all()
+        )
+
     async def report_for_run(self, run_id: uuid.UUID) -> PublishedReport | None:
         return await self.session.scalar(select(PublishedReport).where(PublishedReport.workflow_run_id == run_id))
 
@@ -432,4 +536,30 @@ def _retrieval_row(
         "permission_groups": chunk.permission_groups,
         "score": score,
         f"{channel}_score": score,
+    }
+
+
+def _citation_row(
+    chunk: DocumentChunk,
+    document: ResearchDocument,
+    version: DocumentVersion,
+) -> dict[str, Any]:
+    return {
+        "chunk_id": str(chunk.id),
+        "document_id": str(document.id),
+        "document_key": document.document_key,
+        "version_id": str(version.id),
+        "version": version.version,
+        "source_filename": version.source_filename,
+        "source_type": document.source_type,
+        "title": chunk.title,
+        "section": chunk.section,
+        "page_number": chunk.page,
+        "quote": chunk.text_content,
+        "publish_date": chunk.publish_date.isoformat() if chunk.publish_date else None,
+        "confidentiality": chunk.confidentiality,
+        "retrieval_score": None,
+        "score_status": "not_recorded_in_trace",
+        "validity_status": "valid",
+        "permission_status": "allowed",
     }

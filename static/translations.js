@@ -26,6 +26,7 @@ const i18n = {
         cancel: '取消',
         personalMode: '个人模式',
         fundResearchMode: '机构投研',
+        readOnly: '只读',
         fundResearchFocus: '研究关注',
         fundMaintainWatch: '维持观察',
         fundReduceRisk: '降低风险暴露',
@@ -38,6 +39,16 @@ const i18n = {
         rebalancing: '调仓建议',
         techPicks: '科技精选',
         aiAdvisor: 'AI 顾问',
+        researchData: '研究运行',
+        researchShort: '运行',
+        coreResearchPath: '可追溯研究运行',
+        researchDataTitle: '可追溯研究运行详情',
+        researchDataSubtitle: '从组合估值一路核对证据、模型 Trace、规则校验、人工审核与发布报告。',
+        researchDisclosure: '数据来自 PostgreSQL 与 pgvector；Synthetic、Mock、fallback 和证据不足状态不会被隐藏，不构成投资建议。',
+        loadingResearchData: '正在读取研究数据...',
+        inspectDataState: '查看数据状态',
+        portfolio: '组合',
+        refresh: '刷新',
         evalTrace: '评测与 Trace',
         evalTraceSubtitle: 'Prompt、质量、延迟、成本和人工审核指标',
 
@@ -323,6 +334,7 @@ const i18n = {
         cancel: 'Cancel',
         personalMode: 'Personal',
         fundResearchMode: 'Fund Research',
+        readOnly: 'Read only',
         fundResearchFocus: 'Research Focus',
         fundMaintainWatch: 'Maintain Watch',
         fundReduceRisk: 'Reduce Risk Exposure',
@@ -335,6 +347,16 @@ const i18n = {
         rebalancing: 'Rebalancing',
         techPicks: 'Tech Picks',
         aiAdvisor: 'AI Advisor',
+        researchData: 'Research Run',
+        researchShort: 'Run',
+        coreResearchPath: 'Traceable Research Run',
+        researchDataTitle: 'Traceable Research Run Details',
+        researchDataSubtitle: 'Follow portfolio valuation through evidence, model trace, validation, human review, and publication.',
+        researchDisclosure: 'Data comes from PostgreSQL and pgvector; synthetic, mock, fallback, and insufficient-evidence states remain visible. Not investment advice.',
+        loadingResearchData: 'Loading research data...',
+        inspectDataState: 'Inspect data state',
+        portfolio: 'Portfolio',
+        refresh: 'Refresh',
         evalTrace: 'Eval & Trace',
         evalTraceSubtitle: 'Prompt quality, latency, cost and human-review metrics',
 
@@ -625,6 +647,9 @@ function switchLanguage(lang) {
     // Re-render dynamic content
     if (typeof renderDashboard === 'function') {
         renderDashboard();
+    }
+    if (window.PortfolioPilotResearch && document.getElementById('tab-research')?.classList.contains('active')) {
+        window.PortfolioPilotResearch.load(true);
     }
 }
 

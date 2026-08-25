@@ -989,6 +989,61 @@
         ]
       }
     },
+    "/api/portfolios/{portfolio_id}/research-run": {
+      "get": {
+        "operationId": "get_research_run_showcase_api_portfolios__portfolio_id__research_run_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "portfolio_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Portfolio Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Research Run Showcase"
+      }
+    },
     "/api/portfolios/{portfolio_id}/transactions": {
       "get": {
         "operationId": "list_transactions_api_portfolios__portfolio_id__transactions_get",

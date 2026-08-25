@@ -10,11 +10,15 @@ let scoreChart = null;
 let currentFilter = 'all';
 let currentSort = 'score-desc';
 const savedDisplayCurrency = localStorage.getItem('portfoliopilot-currency');
-let displayCurrency = savedDisplayCurrency === 'CNY' ? 'CNY' : 'USD'; // USD or CNY
+let displayCurrency = /^[A-Z]{3}$/.test(savedDisplayCurrency || '') ? savedDisplayCurrency : 'USD';
 let priceEventSource = null;
 let wsConnected = false;
 let appSettingsCache = null;
 let currentAppMode = 'personal';
+let portfolioLoadAttempts = 0;
+let portfolioRetryTimer = null;
+let activePortfolioId = localStorage.getItem('portfoliopilot-active-portfolio') || '';
+let coreHistoryLoadedPortfolioId = null;
 
 function isZh() {
     return currentLang === 'zh';
@@ -129,13 +133,13 @@ function getCnyRate() {
 }
 
 function getDisplayRate() {
+    if (portfolioData?.display_currency) return 1;
     return displayCurrency === 'CNY' ? getCnyRate() : getUsdRate();
 }
 
-function toDisplay(eurValue) {
-    if (eurValue == null) return null;
-    // Backend values remain EUR-based; the UI only shows USD/CNY.
-    return eurValue * getDisplayRate();
+function toDisplay(baseValue) {
+    if (baseValue == null) return null;
+    return baseValue * getDisplayRate();
 }
 
 function fromDisplay(displayValue) {
@@ -145,7 +149,64 @@ function fromDisplay(displayValue) {
 
 function visibleCurrencyCode(code) {
     const normalized = String(code || '').toUpperCase();
-    return normalized === 'EUR' || !normalized ? displayCurrency : normalized;
+    return normalized || displayCurrency;
+}
+
+function syncPortfolioDisplayCurrency(summary) {
+    const baseCurrency = String(summary?.display_currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(baseCurrency)) return;
+    displayCurrency = baseCurrency;
+    localStorage.setItem('portfoliopilot-currency', displayCurrency);
+    updateDynamicCurrencyLabels();
+}
+
+function portfolioScopedUrl(path) {
+    if (!activePortfolioId) return path;
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}portfolio_id=${encodeURIComponent(activePortfolioId)}`;
+}
+
+function getActivePortfolioId() {
+    return activePortfolioId;
+}
+
+function setActivePortfolioId(portfolioId) {
+    const normalized = String(portfolioId || '').trim();
+    if (!normalized || normalized === activePortfolioId) return;
+    activePortfolioId = normalized;
+    localStorage.setItem('portfoliopilot-active-portfolio', normalized);
+    portfolioLoadAttempts = 0;
+    coreHistoryLoadedPortfolioId = null;
+    _performanceData = null;
+    loadPortfolio();
+}
+
+function clearActivePortfolioId() {
+    activePortfolioId = '';
+    localStorage.removeItem('portfoliopilot-active-portfolio');
+}
+
+async function validateActivePortfolioSelection() {
+    const storedPortfolioId = activePortfolioId;
+    if (!storedPortfolioId) return;
+
+    // A browser-local UUID is not an authorization source. Clear it while the
+    // server resolves current portfolio access, then restore only a visible ID.
+    activePortfolioId = '';
+    try {
+        const response = await fetch('/api/portfolios', {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+        });
+        const portfolios = response.ok ? await response.json() : [];
+        if (Array.isArray(portfolios) && portfolios.some(item => item.id === storedPortfolioId)) {
+            activePortfolioId = storedPortfolioId;
+            return;
+        }
+    } catch (error) {
+        console.warn('Stored portfolio selection could not be validated:', error);
+    }
+    clearActivePortfolioId();
 }
 
 function getAssetLabel(pos) {
@@ -182,8 +243,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.warn('App mode could not be loaded; using personal mode:', err);
         applyAppMode({ app_mode: 'personal' });
     }
-    loadPortfolio();
-    startPriceStream();
+    await validateActivePortfolioSelection();
+    await loadPortfolio();
+    if (!isFundResearchMode()) startPriceStream();
     initScrollHeader();
 });
 
@@ -193,21 +255,31 @@ async function loadPortfolio() {
     if (isFirstLoad) showSkeleton(true);
 
     try {
-        const res = await fetch('/api/portfolio');
-        if (res.status === 503) {
-            // Data still loading, retry after delay
-            setTimeout(loadPortfolio, 2000);
+        const res = await fetch(portfolioScopedUrl('/api/portfolio'));
+        if (res.status === 503 || res.status === 409) {
+            const payload = await res.json().catch(() => ({}));
+            portfolioLoadAttempts += 1;
+            showSkeleton(false);
+            renderPortfolioUnavailable(payload, res.status);
+            if (res.status === 503 && portfolioLoadAttempts < 3) {
+                clearTimeout(portfolioRetryTimer);
+                portfolioRetryTimer = setTimeout(loadPortfolio, 2000 * portfolioLoadAttempts);
+            }
             return;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
         // Fetch sectors in parallel for the new V2 Dashboard Sector Chart
-        fetch('/api/sectors')
+        fetch(portfolioScopedUrl('/api/sectors'))
             .then(r => r.ok ? r.json() : null)
             .then(sectors => { if (sectors) renderSectorChart(sectors); })
             .catch(e => console.log('Sector data error:', e));
 
         const nextPortfolioData = await res.json();
+        portfolioLoadAttempts = 0;
+        clearTimeout(portfolioRetryTimer);
+        clearPortfolioLoadState();
+        syncPortfolioDisplayCurrency(nextPortfolioData);
         const nextSignature = getPortfolioDataSignature(nextPortfolioData);
         if (nextSignature !== portfolioDataSignature) {
             portfolioDataSignature = nextSignature;
@@ -217,9 +289,55 @@ async function loadPortfolio() {
         renderDashboard();
     } catch (err) {
         console.error('Portfolio load failed:', err);
-        setTimeout(loadPortfolio, 3000); // Retry
-        if (isFirstLoad) showSkeleton(false);
+        portfolioLoadAttempts += 1;
+        showSkeleton(false);
+        setPortfolioLoadState(
+            'error',
+            isZh() ? '组合数据加载失败' : 'Portfolio data failed to load',
+            isZh() ? '请检查 API 与数据库 readiness，再从“研究数据”页查看详情。' : 'Check API and database readiness, then inspect the Research Data view.'
+        );
+        if (portfolioLoadAttempts < 3) {
+            clearTimeout(portfolioRetryTimer);
+            portfolioRetryTimer = setTimeout(loadPortfolio, 3000 * portfolioLoadAttempts);
+        }
     }
+}
+
+function renderPortfolioUnavailable(payload = {}, statusCode = 503) {
+    const rebuildRequired = payload.error === 'portfolio_rebuild_required'
+        || payload.detail?.error === 'portfolio_rebuild_required';
+    const title = rebuildRequired
+        ? (isZh() ? '组合估值需要重建' : 'Portfolio valuation requires rebuild')
+        : (isZh() ? '暂无可用估值快照' : 'No valuation snapshot is available');
+    const detail = rebuildRequired
+        ? (isZh() ? '当前 Legacy generation 与估值血缘不一致，系统已拒绝展示旧快照。' : 'The active legacy generation does not match valuation lineage, so the stale snapshot was rejected.')
+        : (isZh() ? '持仓可以存在，但页面只会展示已完成且可追溯的 PostgreSQL 估值快照。' : 'Holdings may exist, but the dashboard only displays completed, traceable PostgreSQL valuation snapshots.');
+    setPortfolioLoadState(statusCode === 409 ? 'error' : 'warning', title, detail);
+    const totalValue = document.getElementById('totalValue');
+    const lastUpdate = document.getElementById('lastUpdate');
+    if (totalValue) totalValue.textContent = '—';
+    if (lastUpdate) lastUpdate.textContent = isZh() ? '数据状态待处理' : 'Data state requires attention';
+    const tbody = document.getElementById('portfolioTableBody');
+    if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state">${detail}</div></td></tr>`;
+    }
+    const cards = document.getElementById('stockCards');
+    if (cards) cards.innerHTML = `<div class="empty-state">${detail}</div>`;
+}
+
+function setPortfolioLoadState(kind, title, detail) {
+    const banner = document.getElementById('portfolioLoadState');
+    if (!banner) return;
+    banner.hidden = false;
+    banner.dataset.state = kind;
+    document.getElementById('portfolioLoadStateTitle').textContent = title;
+    document.getElementById('portfolioLoadStateDetail').textContent = detail;
+    if (window.lucide) lucide.createIcons();
+}
+
+function clearPortfolioLoadState() {
+    const banner = document.getElementById('portfolioLoadState');
+    if (banner) banner.hidden = true;
 }
 
 // ==================== Render ====================
@@ -231,9 +349,11 @@ function renderDashboard() {
         try {
             renderHeader();
             renderStats();
-            renderMarketIndices();
-            renderMovers();
-            renderHeatmap();
+            if (!isFundResearchMode()) {
+                renderMarketIndices();
+                renderMovers();
+                renderHeatmap();
+            }
             renderTable();
             renderRebalancing();
             renderTechPicks();
@@ -307,10 +427,12 @@ function renderHeader() {
     const toggleEl = document.getElementById('currencyToggle');
     if (toggleEl) {
         toggleEl.textContent = displayCurrency;
-        const usdCny = getUsdRate() > 0 ? getCnyRate() / getUsdRate() : 0;
-        toggleEl.title = isZh()
-            ? `点击切换 USD/CNY，参考汇率: 1 USD = ${usdCny.toFixed(4)} CNY`
-            : `Switch USD/CNY, reference: 1 USD = ${usdCny.toFixed(4)} CNY`;
+        const snapshotCurrencyLocked = Boolean(d.display_currency);
+        toggleEl.disabled = snapshotCurrencyLocked;
+        toggleEl.classList.toggle('currency-locked', snapshotCurrencyLocked);
+        toggleEl.title = snapshotCurrencyLocked
+            ? (isZh() ? `金额遵循估值快照基准币种 ${displayCurrency}` : `Amounts follow snapshot base currency ${displayCurrency}`)
+            : (isZh() ? '切换显示币种' : 'Switch display currency');
     }
 
     // Last update
@@ -1025,6 +1147,7 @@ async function openStockDetail(ticker) {
 
     // Open slide-over panel
     document.getElementById('stockPanelOverlay').classList.add('active');
+    document.getElementById('stockPanel').setAttribute('aria-hidden', 'false');
     setTimeout(() => {
         document.getElementById('stockPanel').classList.add('open');
     }, 10);
@@ -1050,6 +1173,7 @@ function metricItem(label, value) {
 
 function closeStockPanel() {
     document.getElementById('stockPanel').classList.remove('open');
+    document.getElementById('stockPanel').setAttribute('aria-hidden', 'true');
     document.getElementById('stockPanelOverlay').classList.remove('active');
 }
 
@@ -1072,8 +1196,11 @@ function switchTab(tab) {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
     const tabBtn = document.querySelector(`.sidebar-nav [data-tab="${tab}"]`);
+    const tabContent = document.getElementById(`tab-${tab}`);
+    if (!tabContent) return;
     if (tabBtn) tabBtn.classList.add('active');
-    document.getElementById(`tab-${tab}`).classList.add('active');
+    tabContent.classList.add('active');
+    document.body.dataset.activeTab = tab;
 
     // Sync bottom nav
     document.querySelectorAll('.bottom-nav-item').forEach(b => {
@@ -1097,6 +1224,9 @@ function switchTab(tab) {
     }
     if (tab === 'evaluation') {
         loadEvaluationDashboard();
+    }
+    if (tab === 'research' && window.PortfolioPilotResearch) {
+        window.PortfolioPilotResearch.load();
     }
 
     // Fix Chart.js hidden tab rendering bug
@@ -1405,9 +1535,12 @@ async function loadAppSettings() {
 }
 
 function applyAppMode(data = appSettingsCache || {}) {
+    data = data || {};
     currentAppMode = data.app_mode === 'fund_research' ? 'fund_research' : 'personal';
     const fundMode = isFundResearchMode();
+    const readOnly = Boolean(data.read_only_demo);
     document.body.classList.toggle('fund-research-mode', fundMode);
+    document.body.classList.toggle('read-only-mode', readOnly);
 
     const flags = data.feature_flags || {};
     document.querySelectorAll('[data-feature]').forEach(el => {
@@ -1426,9 +1559,32 @@ function applyAppMode(data = appSettingsCache || {}) {
         el.setAttribute('aria-hidden', enabled ? 'false' : 'true');
     });
 
-    document.querySelectorAll('.app-mode-badge').forEach(badge => {
-        badge.textContent = fundMode ? t('fundResearchMode') : t('personalMode');
+    document.querySelectorAll('[data-feature]').forEach(el => {
+        const feature = el.dataset.feature;
+        const enabled = Boolean(flags[feature]);
+        el.style.display = enabled ? '' : 'none';
+        el.setAttribute('aria-hidden', enabled ? 'false' : 'true');
     });
+
+    document.querySelectorAll('.app-mode-badge').forEach(badge => {
+        const modeLabel = fundMode ? t('fundResearchMode') : t('personalMode');
+        badge.textContent = readOnly ? `${modeLabel} · ${t('readOnly')}` : modeLabel;
+    });
+
+    document.querySelectorAll('[data-write-action]').forEach(el => {
+        const feature = el.dataset.feature;
+        const featureEnabled = !feature || Boolean(flags[feature]);
+        const enabled = !readOnly && featureEnabled;
+        el.style.display = enabled ? '' : 'none';
+        el.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    });
+
+    const coreHistory = document.getElementById('coreHistoryWorkspace');
+    const legacyHoldings = document.getElementById('holdingsSection');
+    const legacyPerformance = document.getElementById('performanceKpis');
+    if (coreHistory) coreHistory.hidden = !fundMode;
+    if (legacyHoldings) legacyHoldings.style.display = fundMode ? 'none' : '';
+    if (fundMode && legacyPerformance) legacyPerformance.style.display = 'none';
 
     const labelKeys = fundMode
         ? { buyRating: 'fundResearchFocus', holdRating: 'fundMaintainWatch', sellRating: 'fundReduceRisk', buy: 'fundResearchFocus', hold: 'fundMaintainWatch', sell: 'fundReduceRisk' }
@@ -1440,9 +1596,10 @@ function applyAppMode(data = appSettingsCache || {}) {
         });
     });
 
-    if (fundMode && document.getElementById('advisorAnalyseMode')?.classList.contains('active')) {
+    if (fundMode && flags.trade_advisor && document.getElementById('advisorAnalyseMode')?.classList.contains('active')) {
         switchAdvisorMode('holdings');
     }
+    syncFmpUsagePolling();
 
     const hiddenActiveFeature = document.querySelector(
         '.tab-content.active[data-feature][aria-hidden="true"]'
@@ -1629,6 +1786,15 @@ function formatBaseCurrency(eurValue) {
 }
 
 function toggleCurrency() {
+    if (portfolioData?.display_currency) {
+        showToast(
+            isZh()
+                ? `当前金额固定使用可追溯估值快照的基准币种 ${displayCurrency}`
+                : `Amounts are fixed to the traceable snapshot base currency ${displayCurrency}`,
+            'info'
+        );
+        return;
+    }
     displayCurrency = displayCurrency === 'USD' ? 'CNY' : 'USD';
     localStorage.setItem('portfoliopilot-currency', displayCurrency);
     updateDynamicCurrencyLabels();
@@ -1637,11 +1803,12 @@ function toggleCurrency() {
 
 function formatLargeNumber(val) {
     const displayVal = toDisplay(val);
-    const sym = displayCurrency === 'CNY' ? '¥' : '$';
-    if (displayVal >= 1e12) return `${sym}${(displayVal / 1e12).toFixed(1)}T`;
-    if (displayVal >= 1e9) return `${sym}${(displayVal / 1e9).toFixed(1)}B`;
-    if (displayVal >= 1e6) return `${sym}${(displayVal / 1e6).toFixed(1)}M`;
-    return formatCurrency(displayVal);
+    return new Intl.NumberFormat(getUiLocale(), {
+        style: 'currency',
+        currency: displayCurrency,
+        notation: Math.abs(displayVal) >= 1e6 ? 'compact' : 'standard',
+        maximumFractionDigits: 1,
+    }).format(displayVal);
 }
 
 function updateDynamicCurrencyLabels() {
@@ -1830,6 +1997,12 @@ let benchmarkChartInstance = null;
 let portfolioRiskSummaryData = null;
 let structuredAiAnalysisData = null;
 
+function setAsyncCardState(containerId, message, kind = 'loading') {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = `<div class="empty-state async-card-state ${kind}">${_escapeHtml(message)}</div>`;
+}
+
 async function renderAnalyseTab(force = false) {
     if (analyseLoadInFlight) return;
     if (analyseLoaded && !force) return;
@@ -1839,8 +2012,27 @@ async function renderAnalyseTab(force = false) {
     }
     analyseLoadInFlight = true;
 
+    [
+        'riskContainer',
+        'portfolioRiskSummaryContainer',
+        'ragEvidenceContainer',
+        'assetRiskCommentsContainer',
+        'backtestReportContainer',
+        'dividendContainer',
+        'correlationContainer',
+        'earningsContainer',
+    ].forEach(containerId => {
+        const container = document.getElementById(containerId);
+        if (container && !container.textContent.trim()) {
+            setAsyncCardState(
+                containerId,
+                isZh() ? '正在核对当前组合数据...' : 'Checking data for the active portfolio...'
+            );
+        }
+    });
+
     try {
-        const sectorRes = await fetch('/api/sectors');
+        const sectorRes = await fetch(portfolioScopedUrl('/api/sectors'));
         if (sectorRes.ok) {
             const sectors = await sectorRes.json();
             renderSectorChart(sectors);
@@ -1972,12 +2164,27 @@ async function renderHeatmap() {
 }
 
 async function renderRisk() {
+    const container = document.getElementById('riskContainer');
+    if (!container) return;
     try {
-        const res = await fetch('/api/risk');
-        if (!res.ok) return;
+        const endpoint = isFundResearchMode()
+            ? '/api/portfolio/risk-summary'
+            : '/api/risk';
+        const res = await fetch(portfolioScopedUrl(endpoint));
+        if (!res.ok) {
+            setAsyncCardState(
+                'riskContainer',
+                isZh() ? '当前组合暂无可追溯风险画像。' : 'No traceable risk profile is available for this portfolio.',
+                'unavailable'
+            );
+            return;
+        }
         const data = await res.json();
-        const container = document.getElementById('riskContainer');
-        if (!container) return;
+
+        if (isFundResearchMode()) {
+            renderDeterministicRiskProfile(data);
+            return;
+        }
 
         const riskScore = clampNumber(
             firstFinite(data.risk_score, data.score, riskScoreFromLabel(data.risk_level), 5),
@@ -2024,7 +2231,57 @@ async function renderRisk() {
                 </div>
             </div>
         `;
-    } catch (e) { console.log(isZh() ? '风险数据不可用' : 'Risk data unavailable'); }
+    } catch (e) {
+        setAsyncCardState(
+            'riskContainer',
+            isZh() ? '风险画像读取失败。' : 'Risk profile could not be loaded.',
+            'unavailable'
+        );
+    }
+}
+
+function renderDeterministicRiskProfile(data) {
+    const container = document.getElementById('riskContainer');
+    if (!container) return;
+    const metrics = data.portfolio_metrics || {};
+    const statuses = data.metric_status || {};
+    const quality = data.data_quality || {};
+    const riskScore = clampNumber(firstFinite(data.risk_score, 5), 1, 10);
+    const riskLevel = String(data.risk_level || riskLevelFromScore(riskScore));
+    const localizedLevel = riskLevelLabel(riskLevel);
+    const riskColor = riskScore <= 3 ? '#22c55e' : riskScore <= 6 ? '#eab308' : '#ef4444';
+    const coverage = Number(quality.coverage_ratio);
+
+    container.innerHTML = `
+        <div class="risk-gauge">
+            <div class="risk-gauge-label">${isZh() ? '确定性风险分' : 'Deterministic Risk Score'}</div>
+            <div class="risk-gauge-bar">
+                <div class="risk-gauge-fill" style="width:${riskScore * 10}%;background:${riskColor}"></div>
+            </div>
+            <div class="risk-gauge-value" style="color:${riskColor}">${riskScore.toFixed(1)}/10 — ${_escapeHtml(localizedLevel)}</div>
+        </div>
+        <div class="risk-metrics">
+            <div class="risk-metric">
+                <span class="risk-metric-label">${t('volatilityPa')}<small>${riskMetricStatusLabel(statuses.annual_volatility)}</small></span>
+                <span class="risk-metric-value">${formatUnsignedPercentDecimal(metrics.annual_volatility)}</span>
+            </div>
+            <div class="risk-metric">
+                <span class="risk-metric-label">${isZh() ? '最大回撤' : 'Max Drawdown'}<small>${riskMetricStatusLabel(statuses.max_drawdown)}</small></span>
+                <span class="risk-metric-value">${formatPercentDecimal(metrics.max_drawdown)}</span>
+            </div>
+            <div class="risk-metric">
+                <span class="risk-metric-label">Sharpe<small>${riskMetricStatusLabel(statuses.sharpe_ratio)}</small></span>
+                <span class="risk-metric-value">${formatNullableNumber(metrics.sharpe_ratio, 2)}</span>
+            </div>
+            <div class="risk-metric">
+                <span class="risk-metric-label">${isZh() ? '价格历史' : 'Price History'}</span>
+                <span class="risk-metric-value">${Number(quality.price_history_points || 0)}</span>
+            </div>
+            <div class="risk-metric">
+                <span class="risk-metric-label">${isZh() ? '行情覆盖率' : 'Market-data Coverage'}</span>
+                <span class="risk-metric-value">${Number.isFinite(coverage) ? `${(coverage * 100).toFixed(1)}%` : 'N/A'}</span>
+            </div>
+        </div>`;
 }
 
 async function renderPortfolioRiskSummary() {
@@ -2034,24 +2291,25 @@ async function renderPortfolioRiskSummary() {
     container.innerHTML = `<div class="empty-state">${isZh() ? '风险汇总加载中...' : 'Loading risk summary...'}</div>`;
 
     try {
-        const res = await fetch('/api/portfolio/risk-summary');
+        const res = await fetch(portfolioScopedUrl('/api/portfolio/risk-summary'));
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
         portfolioRiskSummaryData = data;
 
         const m = data.portfolio_metrics || {};
+        const metricStatus = data.metric_status || {};
         const riskColor = data.risk_level === 'high' ? '#ef4444' : data.risk_level === 'medium' ? '#eab308' : '#22c55e';
         container.innerHTML = `
             <div class="research-kpi-grid">
                 <div class="research-kpi"><span>${isZh() ? '风险分' : 'Risk'}</span><strong style="color:${riskColor}">${Number(data.risk_score || 0).toFixed(1)}/10</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '年化收益' : 'Ann. Return'}</span><strong>${formatPercentDecimal(m.annual_return)}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '年化波动' : 'Ann. Vol'}</span><strong>${formatPercentDecimal(m.annual_volatility)}</strong></div>
-                <div class="research-kpi"><span>${isZh() ? '最大回撤' : 'Max DD'}</span><strong>${formatPercentDecimal(m.max_drawdown)}</strong></div>
-                <div class="research-kpi"><span>Sharpe</span><strong>${formatNullableNumber(m.sharpe_ratio, 2)}</strong></div>
+                <div class="research-kpi"><span>${isZh() ? '年化收益' : 'Ann. Return'}</span><strong>${formatPercentDecimal(m.annual_return)}</strong><small>${riskMetricStatusLabel(metricStatus.annual_return)}</small></div>
+                <div class="research-kpi"><span>${isZh() ? '年化波动' : 'Ann. Vol'}</span><strong>${formatUnsignedPercentDecimal(m.annual_volatility)}</strong><small>${riskMetricStatusLabel(metricStatus.annual_volatility)}</small></div>
+                <div class="research-kpi"><span>${isZh() ? '最大回撤' : 'Max DD'}</span><strong>${formatPercentDecimal(m.max_drawdown)}</strong><small>${riskMetricStatusLabel(metricStatus.max_drawdown)}</small></div>
+                <div class="research-kpi"><span>Sharpe</span><strong>${formatNullableNumber(m.sharpe_ratio, 2)}</strong><small>${riskMetricStatusLabel(metricStatus.sharpe_ratio)}</small></div>
                 <div class="research-kpi"><span>${isZh() ? '价格历史' : 'History'}</span><strong>${data.data_quality?.price_history_points || 0}</strong></div>
             </div>
             <div class="research-chip-list">
-                ${(data.concentration_flags || []).map(flag => `<span class="research-chip warn">${_escapeHtml(flag)}</span>`).join('') || `<span class="research-chip">${isZh() ? '暂无集中度警报' : 'No concentration flags'}</span>`}
+                ${(data.concentration_flags || []).map(flag => `<span class="research-chip warn">${_escapeHtml(concentrationFlagLabel(flag))}</span>`).join('') || `<span class="research-chip">${isZh() ? '暂无集中度警报' : 'No concentration flags'}</span>`}
             </div>
         `;
         renderAssetRiskComments(data);
@@ -2073,16 +2331,17 @@ function renderAssetRiskComments(riskSummary, aiAnalysis = null) {
     const rows = Object.entries(metrics).map(([ticker, item]) => {
         const ai = aiByTicker[ticker];
         const level = ai?.risk_level || item.risk_level || 'medium';
+        const levelLabel = riskLevelLabel(level);
         const cls = level === 'high' ? 'risk-high' : level === 'low' ? 'risk-low' : 'risk-medium';
         const comment = ai?.comment || (
             isZh()
-                ? `${ticker} 权重 ${formatPercentDecimal(item.weight)}，年化波动 ${formatPercentDecimal(item.annual_volatility)}，风险等级 ${level}。`
-                : `${ticker} weight ${formatPercentDecimal(item.weight)}, annual volatility ${formatPercentDecimal(item.annual_volatility)}, risk level ${level}.`
+                ? `${ticker} 权重 ${formatPercentDecimal(item.weight)}，年化波动 ${formatPercentDecimal(item.annual_volatility)}，风险等级 ${levelLabel}。`
+                : `${ticker} weight ${formatPercentDecimal(item.weight)}, annual volatility ${formatPercentDecimal(item.annual_volatility)}, risk level ${levelLabel}.`
         );
         return `
             <div class="asset-risk-row">
                 <div><strong>${_escapeHtml(ticker)}</strong><span>${_escapeHtml(item.sector || '')} · ${_escapeHtml(item.asset_type || '')}</span></div>
-                <span class="research-chip ${cls}">${_escapeHtml(level)}</span>
+                <span class="research-chip ${cls}">${_escapeHtml(levelLabel)}</span>
                 <p>${_escapeHtml(comment)}</p>
             </div>
         `;
@@ -2101,7 +2360,11 @@ async function loadStructuredAiAnalysis(force = false) {
         const res = await fetch('/api/ai/analyze-portfolio', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lang: currentLang, top_k: 5 }),
+            body: JSON.stringify({
+                lang: currentLang,
+                top_k: 5,
+                portfolio_id: activePortfolioId || null,
+            }),
         });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -2127,6 +2390,16 @@ async function loadStructuredAiAnalysis(force = false) {
 async function renderRagEvidence(preloaded = null) {
     const container = document.getElementById('ragEvidenceContainer');
     if (!container) return;
+    if (!preloaded && appSettingsCache?.read_only_demo) {
+        setAsyncCardState(
+            'ragEvidenceContainer',
+            isZh()
+                ? '只读演示不会执行交互式 POST 检索；已发布证据请在评测与 Trace 页面核对。'
+                : 'Read-only demo mode does not run interactive POST retrieval; inspect published evidence in Eval & Trace.',
+            'unavailable'
+        );
+        return;
+    }
     try {
         let evidence = preloaded;
         if (!evidence) {
@@ -2137,6 +2410,7 @@ async function renderRagEvidence(preloaded = null) {
                 body: JSON.stringify({ query, top_k: 5 }),
             });
             const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
             evidence = data.evidence || [];
         }
         container.innerHTML = (evidence || []).map(item => `
@@ -2147,7 +2421,11 @@ async function renderRagEvidence(preloaded = null) {
             </div>
         `).join('') || `<div class="empty-state">${isZh() ? '暂无本地证据。可把 txt/md/csv 放入 rag_documents/。' : 'No local evidence. Add txt/md/csv files to rag_documents/.'}</div>`;
     } catch (e) {
-        container.innerHTML = `<div class="empty-state">${isZh() ? 'RAG 暂不可用' : 'RAG unavailable'}</div>`;
+        setAsyncCardState(
+            'ragEvidenceContainer',
+            isZh() ? 'RAG 证据暂不可用。' : 'RAG evidence is unavailable.',
+            'unavailable'
+        );
     }
 }
 
@@ -2158,6 +2436,26 @@ async function renderBacktestReport() {
         const res = await fetch('/api/backtest/report');
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+        if (isFundResearchMode()) {
+            let currentSnapshotId = null;
+            if (activePortfolioId) {
+                const snapshotRes = await fetch(`/api/portfolios/${encodeURIComponent(activePortfolioId)}/valuation`);
+                if (snapshotRes.ok) {
+                    const snapshot = await snapshotRes.json();
+                    currentSnapshotId = snapshot.id || null;
+                }
+            }
+            if (!currentSnapshotId || data.portfolio_snapshot_id !== currentSnapshotId) {
+                setAsyncCardState(
+                    'backtestReportContainer',
+                    isZh()
+                        ? '现有回测报告未绑定当前估值快照，因此不会作为本组合结果展示。'
+                        : 'The available backtest is not bound to the active valuation snapshot and is not shown as this portfolio\'s result.',
+                    'unavailable'
+                );
+                return;
+            }
+        }
         const rows = data.strategies || [];
         container.innerHTML = `
             ${data.mock_price_data_used ? `<div class="holding-rec-note">${isZh() ? '使用可复现 mock 行情数据' : 'Using reproducible mock price data'}</div>` : ''}
@@ -2186,7 +2484,7 @@ async function renderAiRebalance() {
     if (!container) return;
     container.innerHTML = `<div class="empty-state">${isZh() ? '调仓建议加载中...' : 'Loading rebalance suggestions...'}</div>`;
     try {
-        const res = await fetch('/api/portfolio/rebalance');
+        const res = await fetch(portfolioScopedUrl('/api/portfolio/rebalance'));
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
         const suggestions = data.rebalance?.suggestions || [];
@@ -2229,6 +2527,56 @@ function formatPercentDecimal(value) {
     return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`;
 }
 
+function formatUnsignedPercentDecimal(value) {
+    if (value == null || value === '') return 'N/A';
+    const num = Number(value) * 100;
+    return Number.isFinite(num) ? `${Math.abs(num).toFixed(1)}%` : 'N/A';
+}
+
+function riskMetricStatusLabel(status) {
+    const normalized = String(status || '').toLowerCase();
+    const labels = {
+        valid: isZh() ? '有效' : 'valid',
+        stale: isZh() ? '行情过期' : 'stale data',
+        insufficient_data: isZh() ? '样本不足' : 'insufficient data',
+        unavailable: isZh() ? '不可用' : 'unavailable',
+    };
+    return labels[normalized] || (normalized ? normalized.replaceAll('_', ' ') : '—');
+}
+
+function riskLevelLabel(level) {
+    const normalized = String(level || '').toLowerCase();
+    const labels = {
+        low: isZh() ? '低' : 'Low',
+        medium: isZh() ? '中' : 'Medium',
+        high: isZh() ? '高' : 'High',
+    };
+    return labels[normalized] || level || '—';
+}
+
+function concentrationFlagLabel(flag) {
+    const value = String(flag || '');
+    const singleAsset = value.match(/^single_asset:([^:]+):(.+)$/);
+    if (singleAsset) {
+        return isZh()
+            ? `单资产集中：${singleAsset[1]} ${singleAsset[2]}`
+            : `Single-asset concentration: ${singleAsset[1]} ${singleAsset[2]}`;
+    }
+    const sector = value.match(/^sector:([^:]+):(.+)$/);
+    if (sector) {
+        return isZh()
+            ? `行业集中：${sector[1]} ${sector[2]}`
+            : `Sector concentration: ${sector[1]} ${sector[2]}`;
+    }
+    const predictionMarket = value.match(/^prediction_market:(.+)$/);
+    if (predictionMarket) {
+        return isZh()
+            ? `预测市场暴露：${predictionMarket[1]}`
+            : `Prediction-market exposure: ${predictionMarket[1]}`;
+    }
+    return value.replaceAll('_', ' ');
+}
+
 function formatNullableNumber(value, digits = 2) {
     if (value == null || value === '') return 'N/A';
     const numeric = Number(value);
@@ -2264,6 +2612,22 @@ function riskLevelFromScore(score) {
 }
 
 async function loadBenchmark() {
+    const canvas = document.getElementById('benchmarkChart');
+    const chartHost = canvas?.parentElement;
+    if (isFundResearchMode()) {
+        if (canvas) canvas.style.display = 'none';
+        if (chartHost && !document.getElementById('benchmarkBoundaryState')) {
+            chartHost.insertAdjacentHTML(
+                'beforeend',
+                `<div id="benchmarkBoundaryState" class="empty-state async-card-state unavailable">${isZh()
+                    ? '旧 Benchmark 接口尚未绑定当前 PostgreSQL 估值快照，暂不展示。'
+                    : 'The legacy benchmark endpoint is not bound to the active PostgreSQL valuation snapshot.'}</div>`
+            );
+        }
+        return;
+    }
+    if (canvas) canvas.style.display = '';
+    document.getElementById('benchmarkBoundaryState')?.remove();
     try {
         const symbol = document.getElementById('benchmarkSymbol')?.value || 'SPY';
         const period = document.getElementById('benchmarkPeriod')?.value || '6month';
@@ -2325,6 +2689,14 @@ async function loadBenchmark() {
 }
 
 async function renderDividends() {
+    if (isFundResearchMode()) {
+        setAsyncCardState(
+            'dividendContainer',
+            isZh() ? '分红指标尚未迁移到 PostgreSQL 当前组合。' : 'Dividend metrics are not yet PostgreSQL-backed for the active portfolio.',
+            'unavailable'
+        );
+        return;
+    }
     try {
         const res = await fetch('/api/dividends');
         if (!res.ok) return;
@@ -2369,6 +2741,14 @@ async function renderDividends() {
 }
 
 async function renderCorrelation() {
+    if (isFundResearchMode()) {
+        setAsyncCardState(
+            'correlationContainer',
+            isZh() ? '相关性矩阵需要更多可追溯价格历史。' : 'The correlation matrix requires more traceable price history.',
+            'unavailable'
+        );
+        return;
+    }
     try {
         const res = await fetch('/api/correlation');
         if (!res.ok) return;
@@ -2417,6 +2797,14 @@ function corrColor(val) {
 }
 
 async function renderEarnings() {
+    if (isFundResearchMode()) {
+        setAsyncCardState(
+            'earningsContainer',
+            isZh() ? '财报日历尚未迁移到 PostgreSQL 当前组合。' : 'The earnings calendar is not yet PostgreSQL-backed for the active portfolio.',
+            'unavailable'
+        );
+        return;
+    }
     try {
         const res = await fetch('/api/earnings-calendar');
         if (!res.ok) return;
@@ -2540,7 +2928,7 @@ async function loadPerformanceChart(days, btn) {
     }
 
     try {
-        const res = await fetch(`/api/portfolio/history?days=${days}`);
+        const res = await fetch(portfolioScopedUrl(`/api/portfolio/history?days=${days}`));
         if (!res.ok) {
             renderPerformanceChartEmpty();
             return;
@@ -2651,8 +3039,10 @@ function renderPerformanceChartEmpty() {
 
 // ==================== DA4: FMP Usage Display ====================
 let fmpUsageInterval = null;
+let fmpUsageTimeout = null;
 
 async function pollFmpUsage() {
+    if (isFundResearchMode() || !appSettingsCache?.fmp_configured) return;
     try {
         const res = await fetch('/api/status');
         if (!res.ok) return;
@@ -2682,11 +3072,19 @@ async function pollFmpUsage() {
     }
 }
 
-// Poll FMP usage every 60 seconds
-if (!fmpUsageInterval) {
+function syncFmpUsagePolling() {
+    const enabled = !isFundResearchMode() && Boolean(appSettingsCache?.fmp_configured);
+    if (!enabled) {
+        clearInterval(fmpUsageInterval);
+        clearTimeout(fmpUsageTimeout);
+        fmpUsageInterval = null;
+        fmpUsageTimeout = null;
+        document.getElementById('fmpUsage')?.remove();
+        return;
+    }
+    if (fmpUsageInterval) return;
     fmpUsageInterval = setInterval(pollFmpUsage, 60000);
-    // Initial poll after 3 seconds (let app load first)
-    setTimeout(pollFmpUsage, 3000);
+    fmpUsageTimeout = setTimeout(pollFmpUsage, 3000);
 }
 
 // ==================== D3: Score Sparklines ====================
@@ -3251,7 +3649,126 @@ function formatEur(val) {
     });
 }
 
+function formatActivityMoney(value, currency) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return '—';
+    const normalizedCurrency = /^[A-Z]{3}$/.test(String(currency || '').toUpperCase())
+        ? String(currency).toUpperCase()
+        : displayCurrency;
+    return amount.toLocaleString(getUiLocale(), {
+        style: 'currency',
+        currency: normalizedCurrency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+}
+
+function formatCoverageRatio(value) {
+    const ratio = Number(value);
+    return Number.isFinite(ratio) ? `${(ratio * 100).toFixed(1)}%` : '—';
+}
+
+function renderCoreHistory(snapshots, activities) {
+    const container = document.getElementById('coreHistoryWorkspace');
+    if (!container) return;
+
+    const orderedSnapshots = [...(Array.isArray(snapshots) ? snapshots : [])]
+        .sort((a, b) => String(b.as_of || '').localeCompare(String(a.as_of || '')));
+    const orderedActivities = [...(Array.isArray(activities) ? activities : [])]
+        .sort((a, b) => {
+            const byDate = String(b.date || '').localeCompare(String(a.date || ''));
+            return byDate || String(b.id || '').localeCompare(String(a.id || ''));
+        });
+    const snapshotRows = orderedSnapshots.map(item => `
+        <tr>
+            <td><strong>${_escapeHtml(item.date || '—')}</strong><small>${_escapeHtml(item.as_of || '')}</small></td>
+            <td class="numeric">${formatActivityMoney(item.total_value, displayCurrency)}</td>
+            <td class="numeric">${formatCoverageRatio(item.coverage_ratio)}</td>
+            <td><span class="core-status-badge ${item.valuation_status === 'complete' ? 'ok' : 'warn'}"><span></span>${_escapeHtml(item.valuation_status || 'unknown')}</span></td>
+            <td><code title="${_escapeHtml(item.input_hash || '')}">${_escapeHtml(item.input_hash || '—')}</code></td>
+        </tr>
+    `).join('');
+    const activityRows = orderedActivities.map(item => `
+        <tr>
+            <td><strong>${_escapeHtml(item.date || '—')}</strong><small>${_escapeHtml(item.id || '')}</small></td>
+            <td>${_escapeHtml(item.type || '—')}</td>
+            <td><strong>${_escapeHtml(item.ticker || '—')}</strong><small>${_escapeHtml(item.source || '')}</small></td>
+            <td class="numeric">${formatLocalizedNumber(item.quantity, 4)}</td>
+            <td class="numeric">${formatActivityMoney(item.amount, item.currency)}</td>
+            <td><span class="core-status-badge ok"><span></span>${isZh() ? '有效' : 'Effective'}</span></td>
+        </tr>
+    `).join('');
+
+    container.innerHTML = `
+        <section class="core-band">
+            <div class="core-band-header">
+                <div>
+                    <p class="core-band-kicker">PostgreSQL Valuation Lineage</p>
+                    <h3>${isZh() ? '可追溯估值快照' : 'Traceable valuation snapshots'}</h3>
+                    <p>${isZh() ? '每条记录保留时点、覆盖率、状态与输入哈希。' : 'Each row preserves its cutoff, coverage, status, and input hash.'}</p>
+                </div>
+                <span class="core-count">${orderedSnapshots.length} ${isZh() ? '条快照' : 'snapshots'}</span>
+            </div>
+            ${orderedSnapshots.length < 2 ? `<div class="core-inline-alert"><i data-lucide="info"></i><div><strong>${isZh() ? '历史样本不足' : 'Limited history'}</strong><p>${isZh() ? '当前快照少于 2 个，不展示伪造的收益曲线或绩效指标。' : 'Fewer than two snapshots are available, so no synthetic return curve or performance metric is shown.'}</p></div></div>` : ''}
+            <div class="core-table-wrap">
+                <table class="core-table core-history-table">
+                    <thead><tr><th>${isZh() ? '估值日' : 'Valuation date'}</th><th class="numeric">${isZh() ? '总市值' : 'Total value'}</th><th class="numeric">${isZh() ? '覆盖率' : 'Coverage'}</th><th>${isZh() ? '状态' : 'Status'}</th><th>Input hash</th></tr></thead>
+                    <tbody>${snapshotRows || `<tr><td colspan="5">${isZh() ? '暂无可追溯估值快照。' : 'No traceable valuation snapshots yet.'}</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+        <section class="core-band">
+            <div class="core-band-header">
+                <div>
+                    <p class="core-band-kicker">Effective Portfolio Activity</p>
+                    <h3>${isZh() ? '当前有效交易活动' : 'Current effective activity'}</h3>
+                    <p>${isZh() ? '普通活动排除已被取代的 Legacy 快照代次；完整历史仅保留在管理员审计接口。' : 'Ordinary activity excludes superseded legacy generations; complete lineage remains in the administrator audit API.'}</p>
+                </div>
+                <span class="core-count">${orderedActivities.length} ${isZh() ? '条有效记录' : 'effective records'}</span>
+            </div>
+            <div class="core-table-wrap">
+                <table class="core-table core-history-table">
+                    <thead><tr><th>${isZh() ? '日期' : 'Date'}</th><th>${isZh() ? '类型' : 'Type'}</th><th>${isZh() ? '证券 / 来源' : 'Security / source'}</th><th class="numeric">${isZh() ? '数量' : 'Quantity'}</th><th class="numeric">${isZh() ? '原币金额' : 'Native amount'}</th><th>${isZh() ? '有效性' : 'Effective'}</th></tr></thead>
+                    <tbody>${activityRows || `<tr><td colspan="6">${isZh() ? '暂无有效交易活动。' : 'No effective portfolio activity yet.'}</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>`;
+    if (window.lucide) lucide.createIcons();
+}
+
+async function loadCoreHistory() {
+    const container = document.getElementById('coreHistoryWorkspace');
+    if (!container) return;
+    if (coreHistoryLoadedPortfolioId === activePortfolioId && container.dataset.loaded === 'true') return;
+
+    container.dataset.loaded = 'false';
+    container.innerHTML = `<div class="core-loading-state"><span class="core-spinner"></span>${isZh() ? '正在读取 PostgreSQL 快照与有效活动...' : 'Loading PostgreSQL snapshots and effective activity...'}</div>`;
+    try {
+        const [snapshotResponse, activityResponse] = await Promise.all([
+            fetch(portfolioScopedUrl('/api/portfolio/history?days=365')),
+            fetch(portfolioScopedUrl('/api/portfolio/activities')),
+        ]);
+        if (!snapshotResponse.ok || !activityResponse.ok) {
+            throw new Error(`history ${snapshotResponse.status}; activity ${activityResponse.status}`);
+        }
+        const [snapshots, activities] = await Promise.all([
+            snapshotResponse.json(),
+            activityResponse.json(),
+        ]);
+        renderCoreHistory(snapshots, activities);
+        coreHistoryLoadedPortfolioId = activePortfolioId;
+        container.dataset.loaded = 'true';
+    } catch (error) {
+        container.innerHTML = `<div class="core-empty-panel"><i data-lucide="database-zap"></i><div><strong>${isZh() ? '历史数据暂不可用' : 'History data is unavailable'}</strong><p>${isZh() ? '无法从 PostgreSQL 读取当前组合的快照或有效交易。' : 'The current portfolio snapshots or effective transactions could not be read from PostgreSQL.'} ${_escapeHtml(error.message)}</p></div></div>`;
+        if (window.lucide) lucide.createIcons();
+    }
+}
+
 async function loadPerformanceKPIs() {
+    if (isFundResearchMode()) {
+        await loadCoreHistory();
+        return;
+    }
     if (_performanceData) {
         renderPerformanceKPIs(_performanceData);
         return;
@@ -4078,7 +4595,7 @@ async function importCsvPortfolio() {
     btn.textContent = t('csvImporting');
 
     try {
-        const res = await fetch('/api/portfolio/upload-csv', {
+        const res = await fetch(portfolioScopedUrl('/api/portfolio/upload-csv'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ positions: csvParsedData })
@@ -4136,7 +4653,7 @@ async function loadManagedHoldings() {
     if (body) body.innerHTML = `<tr><td colspan="7">${isZh() ? '加载中...' : 'Loading...'}</td></tr>`;
 
     try {
-        const res = await fetch('/api/portfolio/csv-positions');
+        const res = await fetch(portfolioScopedUrl('/api/portfolio/csv-positions'));
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
         managedHoldings = data.positions || [];
@@ -4232,7 +4749,7 @@ async function saveManagedPosition(event) {
     btn.textContent = isZh() ? '保存中...' : 'Saving...';
 
     try {
-        const res = await fetch(url, {
+        const res = await fetch(portfolioScopedUrl(url), {
             method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ position: payload }),
@@ -4263,7 +4780,7 @@ async function deleteManagedHolding(encodedTicker) {
     if (!ok) return;
 
     try {
-        const res = await fetch(`/api/portfolio/csv-positions/${encodeURIComponent(ticker)}`, {
+        const res = await fetch(portfolioScopedUrl(`/api/portfolio/csv-positions/${encodeURIComponent(ticker)}`), {
             method: 'DELETE',
         });
         const result = await res.json().catch(() => ({}));

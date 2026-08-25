@@ -6,6 +6,10 @@ PortfolioPilot 是一个面向基金投研场景的可追溯投资组合研究�
 
 项目聚焦研究流程与工程可追溯性，不提供自动交易，不构成投资建议、交易指令或收益承诺。
 
+![PortfolioPilot deterministic research workflow demo](docs/assets/current-demo/end-to-end-demo.gif)
+
+> 画面由当前代码运行 `make demo` 后使用真实浏览器捕获。数据为 synthetic fixture，模型为 deterministic mock，不代表真实模型效果或投资结果。
+
 ## 核心能力
 
 | 能力 | 当前实现 |
@@ -19,11 +23,12 @@ PortfolioPilot 是一个面向基金投研场景的可追溯投资组合研究�
 ## 系统界面与真实演示资源
 
 - 完整本地启动后访问 Dashboard：<http://localhost:8000>，Swagger：<http://localhost:8000/docs>。
+- 当前治理链路截图：[总览](docs/assets/current-demo/overview.png)、[风险与证据](docs/assets/current-demo/risk-and-evidence.png)、[Prompt 与 Trace](docs/assets/current-demo/trace-and-review.png)、[发布报告](docs/assets/current-demo/published-report.png)。
 - 面试演示流程：[docs/demo-script.md](docs/demo-script.md)。
 - 真实录屏准备与脱敏检查：[docs/demo-recording-guide.md](docs/demo-recording-guide.md)。
 - 旧版真实截图归档：[docs/assets/legacy-ui/](docs/assets/legacy-ui/)。这些图片带旧品牌和旧功能布局，只用于迁移对照，不代表当前 PostgreSQL/RAG 主线界面。
 
-仓库目前没有提交与最新治理链路完全一致的截图或 GIF，因此 README 不引用伪造图片或不存在的资源。完成一次按录屏指南执行的真实演示后，再将产物加入 `docs/assets/current-demo/`。
+当前图片只来自本机 deterministic demo。仓库没有配置或声称存在公网 Demo URL；捕获方法与真实性检查见 [current-demo README](docs/assets/current-demo/README.md)。
 
 ## 架构
 
