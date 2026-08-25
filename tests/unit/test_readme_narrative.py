@@ -48,13 +48,18 @@ def test_readme_architecture_covers_governed_flow() -> None:
         assert component in content
 
 
-def test_new_demo_docs_have_no_broken_local_links() -> None:
+def test_primary_documentation_has_no_broken_local_links() -> None:
     missing: list[str] = []
     documents = (
         README,
         ROOT / "docs" / "demo-quickstart.md",
         ROOT / "docs" / "demo-script.md",
         ROOT / "docs" / "demo-recording-guide.md",
+        ROOT / "docs" / "api.md",
+        ROOT / "docs" / "architecture.md",
+        ROOT / "docs" / "module-boundaries.md",
+        ROOT / "docs" / "current-limitations.md",
+        ROOT / "docs" / "deployment.md",
         ROOT / "docs" / "evaluation-v2.md",
         ROOT / "docs" / "assets" / "README.md",
         ROOT / "docs" / "assets" / "legacy-ui" / "README.md",

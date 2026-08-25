@@ -25,6 +25,7 @@ from models import SectorAllocation
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+tech_radar_router = APIRouter()
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
@@ -211,7 +212,7 @@ async def get_rebalancing(
     return context.summary.rebalancing.model_dump()
 
 
-@router.get("/api/tech-picks")
+@tech_radar_router.get("/api/tech-picks")
 async def get_tech_picks(
     portfolio_id: uuid.UUID | None = Query(default=None),
     principal: Principal = Depends(get_principal),

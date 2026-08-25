@@ -46,6 +46,20 @@ scripts/                    初始化与兼容迁移工具
 tests/contracts/            全量 route 与核心 OpenAPI contract 快照
 ```
 
+目录只是迁移位置，运行类别由显式注册器决定：
+
+```mermaid
+flowchart LR
+    MAIN[main.py] --> CORE[Core routes]
+    CORE --> PG[(PostgreSQL + pgvector)]
+    MAIN --> COMPAT[Compatibility adapters]
+    COMPAT --> PG
+    COMPAT -. explicit flag .-> SQLITE[(Legacy SQLite)]
+    MAIN -. feature flags .-> EXP[Experimental extensions]
+```
+
+逐模块分类和依赖方向见 [module-boundaries.md](module-boundaries.md)。
+
 ## 数据主链路
 
 ```mermaid
@@ -163,10 +177,17 @@ Render Web、Cron 和 Background Worker 的文件系统彼此独立，Cron 不�
 
 ## API 与兼容层
 
-`main.py` 直接从 `app.api` 注册 health、portfolio、market-data 和 evaluation router。
-`routes/evaluation.py` 只保留到 v3 compatibility boundary 的 import shim，不复制 endpoint 逻辑，
-也不会在正常请求中输出 deprecation 日志。其余根 `routes` 仍按
-[legacy-migration-map.md](legacy-migration-map.md) 渐进迁移。
+`main.py` 只组装应用生命周期、中间件和三个显式入口：`register_core_routes`、
+`register_compat_routes`、`register_experimental_routes`。Core 注册 PostgreSQL ledger、market data、
+health、governed RAG/Prompt/Trace/Workflow；Compatibility 保留旧 URL，并通过 adapter 读取 Core；
+Experimental 在对应 feature flag 为 `true` 前不会 import Router。
+
+`ENABLE_LEGACY_SQLITE_COMPAT=false` 是默认边界。它控制旧 SQLite 初始化、JSON-to-SQLite
+迁移、旧 in-memory Demo 和基于 SQLite 的历史分析读取，不关闭 PostgreSQL-backed 兼容 URL。
+关闭时历史分析 URL 返回空/不可用语义而不触发 SQLite import；显式开启后初始化错误会中止启动；
+production 配置会直接拒绝该模式。`routes/evaluation.py` 仍只是 import shim，不复制 endpoint 逻辑。
+详细清单见 [module-boundaries.md](module-boundaries.md) 和
+[legacy-migration-map.md](legacy-migration-map.md)。
 
 删除或移动 route 前必须先运行：
 
@@ -205,7 +226,9 @@ Qwen/OpenAI-Compatible HTTP client 与 Embedder 在应用 lifespan 内复用。�
 
 Workflow 的 POST 入口只创建 `PENDING` run 并返回 202。独立 Worker 以 `FOR UPDATE SKIP LOCKED` 领取任务，使用 `lease_owner/heartbeat_at/lease_expires_at` 处理进程崩溃；每个节点单独提交 checkpoint。节点唯一键、稳定 LLM Trace key、ReviewTask iteration 唯一键和 PublishedReport run 唯一键共同保证恢复幂等。
 
-SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。完整边界见 [current-limitations.md](current-limitations.md)。
+SQLite 只保留显式迁移与校验用途，核心服务不依赖 `database._get_conn`。`/health/live` 与
+Core readiness 不读取 SQLite；production 开启兼容开关会 fail closed。完整边界见
+[current-limitations.md](current-limitations.md)。
 
 ## 回测与 LLM 分工
 

@@ -1,7 +1,6 @@
 """PortfolioPilot FastAPI application entry point."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,10 +10,11 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
-from app.api.health import router as health_router
-from app.api.evaluation import router as evaluation_router
-from app.api.market_data import router as market_data_router
-from app.api.portfolios import router as db_portfolio_router
+from app.api.router_registry import (
+    register_compat_routes,
+    register_core_routes,
+    register_experimental_routes,
+)
 from app.db.session import dispose_async_engine, get_db_session
 from app.core.resources import close_resources, initialize_resources
 from app.services.legacy_portfolio_adapter import PortfolioRebuildRequired
@@ -22,20 +22,6 @@ from cache_manager import CacheManager
 from config import settings
 from logging_config import setup_logging
 from middleware.auth import BasicAuthMiddleware, ReadOnlyDemoMiddleware
-from routes.analysis import router as analysis_router
-from routes.analytics import router as analytics_router
-from routes.app_settings import router as app_settings_router
-from routes.demo import router as demo_router
-from routes.knowledge import router as knowledge_router
-from routes.parqet_oauth import router as parqet_oauth_router
-from routes.portfolio import router as portfolio_router
-from routes.prompts import router as prompts_router
-from routes.refresh import router as refresh_router
-from routes.research import router as research_router
-from routes.shadow_portfolio import router as shadow_portfolio_router
-from routes.streaming import router as streaming_router
-from routes.telegram import router as telegram_router
-from routes.workflows import router as workflows_router
 
 setup_logging(settings.ENVIRONMENT)
 logger = logging.getLogger(__name__)
@@ -52,22 +38,24 @@ async def reload_portfolio_and_subscribe() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize only compatibility storage; scheduled work runs in workers."""
+    """Initialize shared resources and explicitly enabled compatibility storage."""
     logger.info("PortfolioPilot starting")
     settings.validate_runtime_configuration()
     CacheManager.clear_volatile_caches()
     CacheManager.cleanup_stale_files()
     await initialize_resources()
 
-    # SQLite stays readable during incremental migration, but PostgreSQL schema
-    # creation remains exclusively owned by Alembic.
-    try:
+    if settings.ENABLE_LEGACY_SQLITE_COMPAT:
+        # PostgreSQL schema creation remains exclusively owned by Alembic. The
+        # compatibility migration is fail-fast so a broken legacy store cannot
+        # be mistaken for a complete startup.
         from database import init_db, migrate_json_to_sqlite
 
+        import asyncio
+
+        logger.warning("Legacy SQLite compatibility is explicitly enabled")
         await asyncio.to_thread(init_db)
         await asyncio.to_thread(migrate_json_to_sqlite)
-    except Exception as exc:
-        logger.debug("Legacy SQLite initialization skipped: %s", type(exc).__name__)
 
     yield
 
@@ -109,24 +97,9 @@ async def portfolio_rebuild_required_handler(
 STATIC_DIR.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-app.include_router(portfolio_router)
-app.include_router(refresh_router)
-app.include_router(streaming_router)
-app.include_router(analysis_router)
-app.include_router(analytics_router)
-app.include_router(telegram_router)
-app.include_router(parqet_oauth_router)
-app.include_router(demo_router)
-app.include_router(shadow_portfolio_router)
-app.include_router(research_router)
-app.include_router(app_settings_router)
-app.include_router(knowledge_router)
-app.include_router(prompts_router)
-app.include_router(workflows_router)
-app.include_router(evaluation_router)
-app.include_router(health_router)
-app.include_router(db_portfolio_router)
-app.include_router(market_data_router)
+register_core_routes(app)
+register_compat_routes(app)
+register_experimental_routes(app)
 
 
 @app.get("/health")

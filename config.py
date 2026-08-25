@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     ENABLE_TELEGRAM: bool = False
     ENABLE_PARQET: bool = False
     ENABLE_SHADOW_AGENT: bool = False
+    ENABLE_TECH_RADAR: bool = False
+    ENABLE_TRADE_ADVISOR: bool = False
+
+    # Explicit storage compatibility bridge. PostgreSQL-backed legacy URL
+    # adapters do not require this flag; it controls only the old SQLite
+    # initialization and JSON-to-SQLite migration path.
+    ENABLE_LEGACY_SQLITE_COMPAT: bool = False
 
     # Financial Modeling Prep
     FMP_API_KEY: str = ""
@@ -409,6 +416,8 @@ class Settings(BaseSettings):
             return
         if self.ALLOW_DEV_IDENTITY_HEADERS:
             raise RuntimeError("Development identity headers are forbidden in production")
+        if self.ENABLE_LEGACY_SQLITE_COMPAT:
+            raise RuntimeError("Legacy SQLite compatibility is forbidden in production")
         if not self.read_only_demo and not self.auth_configured:
             raise RuntimeError(
                 "Production must enable READ_ONLY_DEMO or configure authentication"

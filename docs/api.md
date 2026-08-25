@@ -2,6 +2,22 @@
 
 Alle Endpoints erfordern Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`), sofern nicht anders angegeben.
 
+## Runtime route groups
+
+路由按运行边界显式注册：PostgreSQL 账本、估值、治理式 RAG、Prompt/Trace 和 Workflow 属于 Core；旧 Dashboard URL 属于 Compatibility adapter；实验端点仅在对应 feature flag 为 `true` 时加载。默认配置不会导入或注册 Telegram、Shadow Portfolio、Parqet OAuth、Tech Radar、Trade Advisor 或 Polymarket 扩展。
+
+| 可选端点组 | 配置 |
+|---|---|
+| Legacy SQLite demo endpoints | `ENABLE_LEGACY_SQLITE_COMPAT=true`（仅 development/test；production 禁止） |
+| Telegram webhook/report triggers | `ENABLE_TELEGRAM=true` |
+| Shadow Portfolio Agent | `ENABLE_SHADOW_AGENT=true` |
+| Parqet OAuth/refresh | `ENABLE_PARQET=true` |
+| Tech picks/sector rotation | `ENABLE_TECH_RADAR=true` |
+| Trade Advisor | `ENABLE_TRADE_ADVISOR=true` |
+| Polymarket optional import/display | `ENABLE_POLYMARKET=true` |
+
+禁用的实验组不会进入 OpenAPI 路由表；完整分类与依赖方向见 [模块边界](module-boundaries.md)。旧 URL 的保留不表示 SQLite 或 `state.portfolio_data` 是正式事实源。
+
 ## Health (`app/api/health.py`)
 
 | Methode | Pfad | Beschreibung |

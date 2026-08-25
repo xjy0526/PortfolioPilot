@@ -14,14 +14,16 @@ def test_personal_mode_keeps_personal_features(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_TELEGRAM", False)
     monkeypatch.setattr(settings, "ENABLE_PARQET", False)
     monkeypatch.setattr(settings, "ENABLE_SHADOW_AGENT", False)
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", False)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", False)
 
     payload = app_settings._public_settings()
 
     assert payload["app_mode"] == "personal"
     assert payload["feature_flags"] == {
-        "tech_picks": True,
+        "tech_picks": False,
         "shadow_agent": False,
-        "trade_advisor": True,
+        "trade_advisor": False,
         "polymarket": False,
         "telegram": False,
         "parqet": False,
@@ -34,6 +36,8 @@ def test_fund_research_mode_hides_personal_features(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_TELEGRAM", False)
     monkeypatch.setattr(settings, "ENABLE_PARQET", False)
     monkeypatch.setattr(settings, "ENABLE_SHADOW_AGENT", False)
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", False)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", False)
 
     payload = app_settings._public_settings()
 
@@ -68,6 +72,17 @@ def test_shadow_agent_requires_explicit_feature_flag():
     assert enabled.shadow_agent_enabled is True
 
 
+def test_tech_radar_and_trade_advisor_require_explicit_feature_flags(monkeypatch):
+    monkeypatch.setattr(settings, "APP_MODE", "personal")
+    monkeypatch.setattr(settings, "ENABLE_TECH_RADAR", True)
+    monkeypatch.setattr(settings, "ENABLE_TRADE_ADVISOR", True)
+
+    flags = app_settings._public_settings()["feature_flags"]
+
+    assert flags["tech_picks"] is True
+    assert flags["trade_advisor"] is True
+
+
 def test_frontend_marks_personal_only_entries_and_neutral_labels():
     root = Path(__file__).resolve().parent.parent
     html = (root / "static" / "index.html").read_text(encoding="utf-8")
@@ -76,10 +91,22 @@ def test_frontend_marks_personal_only_entries_and_neutral_labels():
     assert 'data-personal-only="tech_picks"' in html
     assert 'data-personal-only="shadow_agent"' in html
     assert 'data-personal-only="trade_advisor"' in html
+    assert 'data-tab="advisor" data-feature="trade_advisor"' in html
+    assert 'id="tab-advisor" data-feature="trade_advisor"' in html
+    assert 'id="btnUpdateParqet" data-feature="parqet"' in html
     assert "研究关注" in js
     assert "维持观察" in js
     assert "降低风险暴露" in js
     assert "人工复核" in js
+
+
+def test_frontend_feature_controls_fail_closed_without_server_flags():
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "document.querySelectorAll('[data-feature]')" in js
+    assert "Boolean(feature && flags[feature])" in js
+    assert "appSettingsCache?.feature_flags?.parqet" in js
 
 
 def test_fund_research_mode_blocks_shadow_mutation(monkeypatch):

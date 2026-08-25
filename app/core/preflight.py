@@ -171,6 +171,7 @@ def _configuration_check(configuration: Settings) -> tuple[bool, dict[str, objec
         "status": "valid",
         "environment": configuration.ENVIRONMENT,
         "read_only_demo": configuration.read_only_demo,
+        "legacy_sqlite_compat": configuration.ENABLE_LEGACY_SQLITE_COMPAT,
     }
 
 

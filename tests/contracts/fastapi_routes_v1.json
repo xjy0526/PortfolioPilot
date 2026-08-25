@@ -1,35 +1,14 @@
 {
   "api_title": "PortfolioPilot",
   "api_version": "2.0.0",
-  "operation_count": 103,
-  "path_count": 97,
+  "operation_count": 80,
+  "path_count": 75,
   "routes": [
     {
       "deprecated": false,
       "method": "GET",
       "operation_id": "index__get",
       "path": "/",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "advisor_chat_endpoint_api_advisor_chat_post",
-      "path": "/api/advisor/chat",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "evaluate_trade_endpoint_api_advisor_evaluate_post",
-      "path": "/api/advisor/evaluate",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "holding_recommendations_endpoint_api_advisor_holding_recommendations_get",
-      "path": "/api/advisor/holding-recommendations",
       "tags": []
     },
     {
@@ -121,27 +100,6 @@
       "method": "GET",
       "operation_id": "get_correlation_api_correlation_get",
       "path": "/api/correlation",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "activate_demo_api_demo_activate_post",
-      "path": "/api/demo/activate",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "deactivate_demo_api_demo_deactivate_post",
-      "path": "/api/demo/deactivate",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "demo_status_api_demo_status_get",
-      "path": "/api/demo/status",
       "tags": []
     },
     {
@@ -265,20 +223,6 @@
       "method": "GET",
       "operation_id": "get_movers_api_movers_get",
       "path": "/api/movers",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "parqet_authorize_api_parqet_authorize_get",
-      "path": "/api/parqet/authorize",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "parqet_callback_api_parqet_callback_get",
-      "path": "/api/parqet/callback",
       "tags": []
     },
     {
@@ -510,20 +454,6 @@
     {
       "deprecated": false,
       "method": "POST",
-      "operation_id": "trigger_parqet_update_api_refresh_parqet_post",
-      "path": "/api/refresh/parqet",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "trigger_portfolio_refresh_api_refresh_portfolio_post",
-      "path": "/api/refresh/portfolio",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
       "operation_id": "trigger_price_refresh_api_refresh_prices_post",
       "path": "/api/refresh/prices",
       "tags": []
@@ -587,69 +517,6 @@
     {
       "deprecated": false,
       "method": "GET",
-      "operation_id": "get_sector_rotation_api_sectors_rotation_get",
-      "path": "/api/sectors/rotation",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_shadow_portfolio_api_shadow_portfolio_get",
-      "path": "/api/shadow-portfolio",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_shadow_config_api_shadow_portfolio_config_get",
-      "path": "/api/shadow-portfolio/config",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "save_shadow_config_api_shadow_portfolio_config_post",
-      "path": "/api/shadow-portfolio/config",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_shadow_decision_log_api_shadow_portfolio_decision_log_get",
-      "path": "/api/shadow-portfolio/decision-log",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_shadow_performance_api_shadow_portfolio_performance_get",
-      "path": "/api/shadow-portfolio/performance",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "reset_shadow_portfolio_api_shadow_portfolio_reset_post",
-      "path": "/api/shadow-portfolio/reset",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "run_shadow_agent_api_shadow_portfolio_run_post",
-      "path": "/api/shadow-portfolio/run",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_shadow_transactions_api_shadow_portfolio_transactions_get",
-      "path": "/api/shadow-portfolio/transactions",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
       "operation_id": "get_status_api_status_get",
       "path": "/api/status",
       "tags": []
@@ -680,36 +547,6 @@
       "method": "GET",
       "operation_id": "get_score_history_api_stock__ticker__score_history_get",
       "path": "/api/stock/{ticker}/score-history",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operation_id": "get_tech_picks_api_tech_picks_get",
-      "path": "/api/tech-picks",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "telegram_webhook_api_telegram_webhook__secret__post",
-      "path": "/api/telegram/webhook/{secret}",
-      "tags": [
-        "telegram"
-      ]
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "trigger_report_api_trigger_report_post",
-      "path": "/api/trigger-report",
-      "tags": []
-    },
-    {
-      "deprecated": false,
-      "method": "POST",
-      "operation_id": "trigger_weekly_digest_api_trigger_weekly_digest_post",
-      "path": "/api/trigger-weekly-digest",
       "tags": []
     },
     {

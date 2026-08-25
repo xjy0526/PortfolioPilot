@@ -46,7 +46,7 @@
                 <button class="nav-btn" data-tab="techpicks" data-personal-only="tech_picks" onclick="switchTab('techpicks')">
                     <i data-lucide="rocket"></i> <span data-i18n="techPicks">Tech Picks</span>
                 </button>
-                <button class="nav-btn" data-tab="advisor" onclick="switchTab('advisor')">
+                <button class="nav-btn" data-tab="advisor" data-feature="trade_advisor" onclick="switchTab('advisor')">
                     <i data-lucide="brain"></i> <span data-i18n="aiAdvisor">AI Advisor</span>
                 </button>
                 <button class="nav-btn" data-tab="shadow" data-personal-only="shadow_agent" onclick="switchTab('shadow')">
@@ -87,7 +87,7 @@
                             <button class="action-dropdown-item" id="btnManageHoldings" onclick="showHoldingsManager()">
                                 <i data-lucide="list-plus"></i> <span data-i18n="manageHoldings">Manage Holdings</span>
                             </button>
-                            <button class="action-dropdown-item" id="btnUpdateParqet" onclick="updateParqet()">
+                            <button class="action-dropdown-item" id="btnUpdateParqet" data-feature="parqet" onclick="updateParqet()">
                                 <i data-lucide="refresh-cw"></i> <span data-i18n="updateParqet">Update Parqet</span>
                             </button>
                             <button class="action-dropdown-item" id="btnEmailContact" onclick="openEmailContact()">
@@ -438,7 +438,7 @@
         </section>
 
         <!-- Tab: AI Trade Advisor -->
-        <section class="tab-content" id="tab-advisor">
+        <section class="tab-content" id="tab-advisor" data-feature="trade_advisor">
             <div class="advisor-container">
                 <!-- Mode Toggle -->
                 <div class="advisor-mode-toggle">
@@ -1049,7 +1049,7 @@
                 <i data-lucide="rocket"></i>
                 <span data-i18n="picks">Picks</span>
             </button>
-            <button class="bottom-nav-item" data-tab="advisor" onclick="switchTab('advisor'); updateBottomNav(this);">
+            <button class="bottom-nav-item" data-tab="advisor" data-feature="trade_advisor" onclick="switchTab('advisor'); updateBottomNav(this);">
                 <i data-lucide="brain"></i>
                 <span data-i18n="ai">AI</span>
             </button>

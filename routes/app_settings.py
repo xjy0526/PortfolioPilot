@@ -75,9 +75,11 @@ def _public_settings() -> dict[str, Any]:
         "app_name": settings.APP_NAME,
         "app_mode": settings.APP_MODE,
         "feature_flags": {
-            "tech_picks": not settings.fund_research_mode,
+            "tech_picks": settings.ENABLE_TECH_RADAR and not settings.fund_research_mode,
             "shadow_agent": settings.shadow_agent_enabled,
-            "trade_advisor": not settings.fund_research_mode,
+            "trade_advisor": (
+                settings.ENABLE_TRADE_ADVISOR and not settings.fund_research_mode
+            ),
             "polymarket": settings.ENABLE_POLYMARKET,
             "telegram": settings.ENABLE_TELEGRAM,
             "parqet": settings.ENABLE_PARQET,

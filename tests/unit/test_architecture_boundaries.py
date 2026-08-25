@@ -140,3 +140,15 @@ def test_legacy_portfolio_adapter_is_a_one_way_boundary() -> None:
     assert not violations, "The compatibility adapter may use DTOs, not legacy stores:\n" + (
         "\n".join(violations)
     )
+
+
+def test_postgres_mainline_does_not_use_global_portfolio_state() -> None:
+    files = [
+        *_python_files(ROOT / "app" / "api"),
+        *_python_files(ROOT / "app" / "services"),
+    ]
+    violations = _violations(files, {"state"})
+
+    assert not violations, "PostgreSQL APIs and services must not use portfolio_data:\n" + (
+        "\n".join(violations)
+    )
